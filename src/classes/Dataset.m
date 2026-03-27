@@ -1,4 +1,4 @@
-classdef Dataset < Structured
+classdef Dataset 
     % Dataset
     % -------------------------------------------------------------------------
     % Encapsulates the full lifecycle of a dataset used in surrogate modeling
@@ -20,8 +20,6 @@ classdef Dataset < Structured
 
     %% ===================== PUBLIC IMMUTABLE PROPERTIES =====================
     properties (SetAccess = private)
-        % Mission object that defines mission context
-        mission Mission
 
         % Logical dataset identifier ("apogee", "datcom", ...)
         % Drives dynamic resolution of the builder via updateFcn
@@ -42,6 +40,13 @@ classdef Dataset < Structured
         splitPerc (1,1) double        % Split percentage
         trainIdx  (:,1) logical       % Logical indeces for training
         testIdx   (:,1) logical       % Logical indeces for testing
+    end
+
+    %% ===================== CONSTANT PRIVATE PROPERTIES =====================
+    properties (Constant, Access = private)
+        projectRoot = fileparts(fileparts(fileparts(mfilename('fullpath'))))
+        configPath  = fullfile(Dataset.projectRoot, 'config')
+        dataPath    = fullfile(Dataset.projectRoot, 'data')
     end
 
     %% ===================== DEPENDENT PUBLIC PROPERTIES =====================
@@ -80,7 +85,7 @@ classdef Dataset < Structured
 
     %% ===================== CONSTRUCTOR =====================
     methods
-        function obj = Dataset(mission, modelName, configPath, varsIn, options)
+        function obj = Dataset(modelName, configPath, varsIn, options)
             % Constructor
             % -------------------------------------------------------------------------
             % Loads or builds the dataset depending on available files.
@@ -100,8 +105,7 @@ classdef Dataset < Structured
             %   2. Resolve varsIn from configPath if not provided
             %   3. Attempt file load; fall back to build (auto or interactive)
             %   4. Final readiness validation
-            arguments
-                mission                 Mission   
+            arguments  
                 modelName         (1,1) string 
                 configPath        (1,1) string    = ""
                 varsIn                  struct  = []
@@ -110,8 +114,6 @@ classdef Dataset < Structured
                 options.saveDataset     logical = true
             end
 
-            obj.mission   = mission;
-            
             % Assignment via setter → triggers updateFcn → resolves datasetFcn
             obj.modelName = modelName;
 
@@ -122,8 +124,8 @@ classdef Dataset < Structured
             else
                 % Autoresolve configPath if not explicitly provided
                 if strlength(configPath) == 0
-                    configPath = fullfile(mission.configPath, "datasets", ...
-                                          obj.modelName + "DatasetConfig");
+                    configPath = fullfile(obj.configPath, "datasets", ...
+                        obj.modelName + "DatasetConfig");
                 end
                 
                 % Load settings from the resolved path
@@ -202,7 +204,7 @@ classdef Dataset < Structured
                     "datasetFcn is not resolved. Assign modelName first.");
             end
             fprintf("Building %s dataset...\n", obj.modelName);
-            raw = obj.builder(obj.mission, obj.datasetOptions);
+            raw = obj.builder(obj.datasetOptions);
             obj = obj.assignDataFields(raw);
             fprintf("Build complete: %d samples, %d inputs, %d outputs.\n", ...
                 size(obj.xUnit_, 1), size(obj.xUnit_, 2), size(obj.y_, 2));
@@ -213,7 +215,7 @@ classdef Dataset < Structured
 
         % -------------------------------------------------------------------------
         function saveDataset(obj)
-            file = fullfile(obj.mission.dataPath, "datasets", ...
+            file = fullfile(obj.dataPath, "datasets", ...
                 obj.modelName + "Dataset.mat");
 
             data.xUnit     = obj.xUnit_;
@@ -257,7 +259,7 @@ classdef Dataset < Structured
                 return;
             end
 
-            file = fullfile(obj.mission.dataPath, "datasets", ...
+            file = fullfile(obj.dataPath, "datasets", ...
                 obj.modelName + "Dataset.mat");
 
             success = false;

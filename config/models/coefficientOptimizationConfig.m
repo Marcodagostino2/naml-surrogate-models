@@ -2,7 +2,7 @@
 % Optimization via Multi-Start Gradient-Enhanced SQP with GLS Profiling
 % Decision vector: z = [log10(theta_1..theta_d), p_1..p_d, lambda]
 
-optimizationOptions.nInputs  = 4;
+optimizationOptions.nInputs  = 3;
 optimizationOptions.nOutputs = 1;
 
 % --- SQP OPTIMIZER & MULTI-START SETTINGS ---

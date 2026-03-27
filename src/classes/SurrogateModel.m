@@ -1,4 +1,4 @@
-classdef SurrogateModel < Structured
+classdef SurrogateModel
     % SurrogateModel
     % -------------------------------------------------------------------------
     % High-level manager for training and predicting with surrogate models.
@@ -21,9 +21,6 @@ classdef SurrogateModel < Structured
     %% ===================== PUBLIC IMMUTABLE PROPERTIES =====================
     properties (SetAccess = private)
 
-        % Mission object that defines mission context
-        mission           (1,1) Mission
-
         % Logical identifier (e.g., "coefficient", "apogee")
         modelName         (1,1) string
 
@@ -41,6 +38,13 @@ classdef SurrogateModel < Structured
 
         % Readiness flag: TRUE when model is trained and consistent
         isReady           logical = false
+    end
+
+    %% ===================== CONSTANT PRIVATE PROPERTIES =====================
+    properties (Constant, Access = private)
+        projectRoot = fileparts(fileparts(fileparts(mfilename('fullpath'))))
+        configPath  = fullfile(SurrogateModel.projectRoot, 'config')
+        dataPath    = fullfile(SurrogateModel.projectRoot, 'data')
     end
 
     %% ===================== DEPENDENT PUBLIC PROPERTIES =====================
@@ -74,7 +78,7 @@ classdef SurrogateModel < Structured
 
     %% ===================== CONSTRUCTOR =====================
     methods
-        function obj = SurrogateModel(mission, modelName, surrogateType, ...
+        function obj = SurrogateModel(modelName, surrogateType, ...
                 data, configPath, varsIn, options)
             % Loads or trains the surrogate model.
             %
@@ -90,7 +94,6 @@ classdef SurrogateModel < Structured
             %   autoTrain       → if true, train without interactive prompt
             %   saveModel       → persist model to file after training
             arguments
-                mission            (1,1) Mission
                 modelName          (1,1) string
                 surrogateType      (1,1) string
                 data                     struct = []
@@ -100,8 +103,6 @@ classdef SurrogateModel < Structured
                 options.autoTrain        logical = false
                 options.saveModel        logical = true
             end
-
-            obj.mission   = mission;
 
             % Assignments trigger updateFcn and checkProperties
             obj.modelName     = modelName;
@@ -115,7 +116,7 @@ classdef SurrogateModel < Structured
             else
                 % Autoresolve configPath if not explicitly provided
                 if strlength(configPath) == 0
-                    configPath = fullfile(mission.configPath, "models", ...
+                    configPath = fullfile(obj.configPath, "models", ...
                         obj.modelName + "OptimizationConfig");
                 end
 
@@ -276,7 +277,7 @@ classdef SurrogateModel < Structured
 
         % -------------------------------------------------------------------------
         function saveModel(obj)
-            file = fullfile(obj.mission.dataPath, "models",...
+            file = fullfile(obj.dataPath, "models",...
                 obj.modelName + "Model.mat");
             model.data        = obj.data_;
             model.hyperparams = obj.hyperparams_;
@@ -305,7 +306,7 @@ classdef SurrogateModel < Structured
                 return;
             end
 
-            file = fullfile(obj.mission.dataPath, "models", ...
+            file = fullfile(obj.dataPath, "models", ...
                 obj.modelName + "Model.mat");
             success = false;
 

@@ -1,16 +1,14 @@
-classdef CoefficientModel < Structured
+classdef CoefficientModel 
     % COEFFICIENTMODEL Aerodynamic surrogate model and lookup table generator.
     %
     % This class centralizes the generation of aerodynamic datasets (CFD/Datcom),
-    % manages the training of Kriging or Co-Kriging surrogate models, and compiles
-    % a fast N-dimensional interpolation grid (AeroDeck) for rapid 6DOF inference.
+    % manages the training of Kriging or Co-Kriging surrogate models.
     %
     % It supports handling aerodynamic targets in both Body axes and Alpha-Total 
     % axes, automatically converting Alpha-Total predictions back to Body axes 
     % during inference to ensure compatibility with flight dynamics integration.
     
     properties (SetAccess = private)
-        mission       (1,1) Mission           % Mission configuration object
         datcomDataset       Dataset           % Low-fidelity dataset wrapper
         cfdDataset          Dataset           % High-fidelity dataset wrapper
         model               SurrogateModel    % Surrogate predictor core
@@ -23,8 +21,6 @@ classdef CoefficientModel < Structured
     
     properties (Access = private)
         stateFlags struct                     % Logic flags to suppress repetitive warnings
-        gridVectors                           % N-dimensional grid vectors for interpolation
-        aeroDeck                              % Pre-computed N-dimensional griddedInterpolant
     end
     
     properties (Constant, Access = private)
@@ -41,13 +37,12 @@ classdef CoefficientModel < Structured
     end
     
     methods
-        function obj = CoefficientModel(mission, options)
+        function obj = CoefficientModel(options)
             % COEFFICIENTMODEL Constructor.
-            % Instantiates datasets based on the selected mode, validates geometries,
-            % trains the surrogate model, and compiles the AeroDeck interpolator.
+            % Instantiates datasets based on the selected mode, validates
+            % geometries and trains the surrogate model.
             
             arguments
-                mission             (1,1) Mission
                 options.mode        (1,1) string  = "multiFidelity"
                 options.splitPerc                 = 0.85;
                 options.reBuild     (1,1) logical = false
@@ -56,24 +51,23 @@ classdef CoefficientModel < Structured
                 options.saveModel   (1,1) logical = true
             end
             
-            obj.mission = mission;
             obj.datasetMode = options.mode;
             obj.stateFlags = struct('altitudeIgnored', false, 'phiIgnored', false, 'outOfBounds', struct());
             
             % Dataset Initialization & Splitting based on Mode
             switch obj.datasetMode
                 case "cfd"
-                    obj.cfdDataset = Dataset(mission, "cfd", 'reBuild', options.reBuild, 'saveDataset', options.saveDataset);
+                    obj.cfdDataset = Dataset("cfd", 'reBuild', options.reBuild, 'saveDataset', options.saveDataset);
                     [obj.cfdDataset, train, ~] = obj.cfdDataset.split(options.splitPerc);
                     
                     primaryDataset = obj.cfdDataset;
                     
                     surrogateData = struct('x', train.xUnit, 'y', train.y);
-                    obj.model = SurrogateModel(mission, "coefficient", "kriging", surrogateData, ...
+                    obj.model = SurrogateModel("coefficient", "kriging", surrogateData, ...
                         'reTrain', options.reTrain, 'saveModel', options.saveModel);
                         
                 case "datcom"
-                    obj.datcomDataset = Dataset(mission, "datcom", 'reBuild', options.reBuild, 'saveDataset', options.saveDataset);
+                    obj.datcomDataset = Dataset("datcom", 'reBuild', options.reBuild, 'saveDataset', options.saveDataset);
                     [obj.datcomDataset, train, ~] = obj.datcomDataset.split(options.splitPerc);
                     primaryDataset = obj.datcomDataset;
 
@@ -85,12 +79,12 @@ classdef CoefficientModel < Structured
                         surrogateData.gradMap = primaryDataset.metadata.gradMap;
                     end
 
-                    obj.model = SurrogateModel(mission, "coefficient", "kriging", surrogateData, ...
+                    obj.model = SurrogateModel("coefficient", "kriging", surrogateData, ...
                         'reTrain', options.reTrain, 'saveModel', options.saveModel);
                         
                 case "multiFidelity"
-                    obj.datcomDataset = Dataset(mission, "datcom", 'reBuild', options.reBuild, 'saveDataset', options.saveDataset);
-                    obj.cfdDataset    = Dataset(mission, "cfd", 'reBuild', options.reBuild, 'saveDataset', options.saveDataset);
+                    obj.datcomDataset = Dataset("datcom", 'reBuild', options.reBuild, 'saveDataset', options.saveDataset);
+                    obj.cfdDataset    = Dataset("cfd", 'reBuild', options.reBuild, 'saveDataset', options.saveDataset);
 
                     [obj.cfdDataset, trainHF, ~]    = obj.cfdDataset.split(options.splitPerc);
 
@@ -104,7 +98,7 @@ classdef CoefficientModel < Structured
                     surrogateData = struct(...
                         'xC', obj.datcomDataset.xUnit, 'yC', obj.datcomDataset.y, ...
                         'xE', trainHF.xUnit,           'yE', trainHF.y);
-                    obj.model = SurrogateModel(mission, "coefficient", "coKriging", surrogateData, ...
+                    obj.model = SurrogateModel("coefficient", "coKriging", surrogateData, ...
                         'reTrain', options.reTrain, 'saveModel', options.saveModel);
 
                 otherwise
@@ -115,7 +109,6 @@ classdef CoefficientModel < Structured
             obj.geometry    = primaryDataset.metadata.geometry;
             obj.inNames     = primaryDataset.metadata.inNames;
             obj.outNames    = primaryDataset.metadata.outNames;
-            obj.gridVectors = primaryDataset.metadata.gridVectors; 
             
             % Constraints Check
             for i = 1:length(obj.requiredInputs)
@@ -132,9 +125,6 @@ classdef CoefficientModel < Structured
             if ~ismember("phi", obj.inNames)
                 obj.stateFlags.phiIgnored = true; 
             end
-            
-            % Build/Load Interpolation Deck
-            % obj = obj.buildAeroDeck(options.reTrain);
         end
 
         % -----------------------------------------------------------------
@@ -293,23 +283,6 @@ classdef CoefficientModel < Structured
                 coeffs(hasOut) = yInt(locOut(hasOut)).';
             end
 
-            
- 
-            % % ── De-trasformazione Cl se il dataset usa Cl/sin(phi) ─────────
-            % % Il dataset CFD può salvare C_lbeta = Cl/sin(phi) invece di Cl
-            % % per migliorare l'accuratezza del surrogate (funzione più liscia).
-            % % Se il flag è attivo, ripristina: Cl = C_lbeta * sin(phi).
-            % primary = obj.getPrimaryDataset();
-            % if isfield(primary.metadata, 'clTransformed') && primary.metadata.clTransformed
-            %     idxCl = find(obj.allOutputs == "Cl");
-            %     if ~isempty(idxCl) && hasOut(idxCl)
-            %         % psi è phi fisico in gradi già calcolato sopra (angolo foldato)
-            %         % phi è il valore originale prima del folding
-            %         coeffs(idxCl) = coeffs(idxCl) * sind(phi);
-            %     end
-            % end
-
-
             % Restore fin symmetry rotation in the body frame (if phi folding was active)
             % If neither phi nor beta is present, it's a pure longitudinal case (CA only)
             if ~hasPhi && ~hasBeta
@@ -328,22 +301,13 @@ classdef CoefficientModel < Structured
 
             coeffs(4:6) = coeffs(4:6) + (deltaXcg / refLength) * [0; coeffs(3); coeffs(2)];
         end
-
-        % -----------------------------------------------------------------
-        % UNIT PREDICTION API (For Diagnostics/Benchmarking)
-        % -----------------------------------------------------------------
-        function yPred = predictAeroDeck(obj, xQueryUnit)
-            % PREDICTAERODECK Directly evaluates the lookup table on unit hypercube inputs.
-            % Bypasses physical units and spatial transport logic.
-            yPred = obj.aeroDeck(xQueryUnit);
-        end
         
         % -----------------------------------------------------------------
         % VISUAL DIAGNOSTICS
         % ----------------------------------------------------------------
         function plotDiagnostics(obj)
-            % PLOTDIAGNOSTICS Generates diagnostic plots to visually compare 
-            % the continuous Surrogate Model against the gridded AeroDeck interpolation.
+            % PLOTDIAGNOSTICS Generates diagnostic plots to visually analyse 
+            % the continuous Surrogate Model.
             
             originalWindowStyle = get(0, 'DefaultFigureWindowStyle');
             set(0, 'DefaultFigureWindowStyle', 'docked');
@@ -364,7 +328,7 @@ classdef CoefficientModel < Structured
             
             for j = 1:numel(obj.outNames)
                 coeffName = obj.outNames(j);
-                fprintf("  Plotting %s Surrogate vs AeroDeck...\n", coeffName);
+                fprintf("  Plotting %s Surrogate ...\n", coeffName);
                 
                 % Continuous Kriging predictor handle
                 surrogateHandle = @(x) getSingleOutputPrediction(obj.model, x, j);
@@ -389,8 +353,7 @@ classdef CoefficientModel < Structured
                     "outputName", coeffName, ...
                     "plotSurface", true, ...
                     "ranges", primary.ranges, ...
-                    "power", primary.power, ...
-                    "gridVectors", obj.gridVectors);
+                    "power", primary.power);
             end
             set(0, 'DefaultFigureWindowStyle', originalWindowStyle);
         end
@@ -411,74 +374,6 @@ classdef CoefficientModel < Structured
             % unpredictable surrogate extrapolation.
             ranges = obj.getPrimaryDataset().ranges;
             xQueryClipped = max(ranges(1,:), min(ranges(2,:), xQuery));
-        end
-        
-        function obj = buildAeroDeck(obj, forceRebuild)
-            % BUILDAERODECK Compiles or loads the N-dimensional interpolation grid.
-            % Evaluates if the evaluation grid or the surrogate model has changed
-            % to determine if a cache rebuild is necessary.
-            
-            gridVecs = obj.gridVectors;
-            nActive = length(obj.inNames);
-            
-            if length(gridVecs) ~= nActive
-                warning('CoefficientModel:GridDimensionMismatch', ...
-                    'The number of gridVectors (%d) does not match inNames (%d).', length(gridVecs), nActive);
-                obj.isValid = false; 
-                return;
-            end
-            
-            deckFilePath = fullfile(obj.mission.dataPath, "datasets", "aeroDeck.mat");
-            
-            % Attempt to load cached AeroDeck
-            if ~forceRebuild && isfile(deckFilePath)
-                try
-                    loadedData = load(deckFilePath, 'aeroDeck', 'gridVectors', 'hyperparams');
-                    
-                    isGridConsistent = isfield(loadedData, 'gridVectors') && isequal(gridVecs, loadedData.gridVectors);
-                    isModelConsistent = isfield(loadedData, 'hyperparams') && isequal(obj.model.hyperparams, loadedData.hyperparams);
-                    
-                    if isGridConsistent && isModelConsistent
-                        obj.aeroDeck = loadedData.aeroDeck;
-                        return;
-                    end
-                catch
-                    warning('CoefficientModel:AeroDeckLoadFailed', 'Failed to load existing Aero Deck. Rebuilding...');
-                end
-            end
-            
-            % Generate N-dimensional grid (Rebuild needed)
-            [xND{1:nActive}] = ndgrid(gridVecs{:});
-            numelPoints = numel(xND{1});
-            xQueryUnit = zeros(numelPoints, nActive);
-            for i = 1:nActive
-                xQueryUnit(:, i) = xND{i}(:); 
-            end
-            
-            % Evaluate surrogate model over the entire grid
-            yPred = obj.model.predict(xQueryUnit);
-            sz = size(xND{1});
-            nOut = length(obj.outNames);
-            yND = reshape(yPred, [sz, nOut]);
-            
-            % Construct interpolator ('linear' evaluation, 'nearest' extrapolation)
-            obj.aeroDeck = griddedInterpolant(gridVecs, yND, 'linear', 'nearest');
-            
-            % Export compiled AeroDeck and reference state to disk
-            try
-                datasetDir = fullfile(obj.mission.dataPath, "datasets");
-                if ~isfolder(datasetDir)
-                    mkdir(datasetDir); 
-                end
-                
-                saveData.aeroDeck    = obj.aeroDeck;
-                saveData.gridVectors = gridVecs;
-                saveData.hyperparams = obj.model.hyperparams; 
-                
-                save(deckFilePath, '-struct', 'saveData');
-            catch ME
-                warning('CoefficientModel:AeroDeckSaveFailed', 'Aero Deck built but failed to save: %s', ME.message);
-            end
         end
     end
 end

@@ -1,4 +1,4 @@
-function coeffModel = mainCoefficientModel(missionName, options)
+function coeffModel = mainCoefficientModel(options)
 % mainCoefficientModel  Builds and evaluates aerodynamic surrogate models.
 %
 % This function serves as the primary entry point to initialize, train, and 
@@ -7,7 +7,6 @@ function coeffModel = mainCoefficientModel(missionName, options)
 % delegating dataset generation, training, and gridding to the CoefficientModel class.
 %
 % INPUTS
-%   missionName : String identifier for the mission (e.g., '2026_Hydra_Portugal_October').
 %   options     : Name-value pairs for configuration:
 %                 - mode        (string)  : Dataset mode ("multiFidelity", "cfd", "datcom").
 %                 - splitPerc   (double)  : Train/test split ratio (default 0.8).
@@ -21,7 +20,6 @@ function coeffModel = mainCoefficientModel(missionName, options)
 %                 surrogate.
 
 arguments
-    missionName          (1,1)   string  = '2026_Hydra_Portugal_October'
     options.mode         (1,1)   string  = "multiFidelity" 
     options.splitPerc    (1,1)   double  = 0.85
     options.reBuild      (1,1)   logical = true
@@ -32,12 +30,11 @@ arguments
 end
 
 %% PATHS & MISSION SETUP
-mission = Mission(missionName);
 setupPaths();
 
 %% COEFFICIENT MODEL INITIALIZATION & TRAINING
 fprintf("\n=== INITIALIZING COEFFICIENT MODEL (%s) ===\n", upper(options.mode));
-coeffModel = CoefficientModel(mission, ...
+coeffModel = CoefficientModel( ...
     "mode", options.mode, ...
     "splitPerc", options.splitPerc, ...
     "reBuild", options.reBuild, ...

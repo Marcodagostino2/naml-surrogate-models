@@ -1,18 +1,16 @@
-function dataset = buildDatcomDataset(mission, datasetOptions)
+function dataset = buildDatcomDataset(datasetOptions)
 % buildDatcomDataset  Evaluate DATCOM and package the dataset.
 %
 % Retrieves the LHS sampling plan, evaluates the DATCOM aerodynamic
 % interpolator, structures the raw data, and packages metadata.
 %
 % INPUTS
-%   mission        : Mission object for identification
 %   datasetOptions : Main dataset settings struct.
 %
 % OUTPUTS
 %   dataset        : Datcom dataset struct.
 
 arguments
-    mission        Mission
     datasetOptions struct
 end
 
@@ -25,9 +23,8 @@ samplingPlan = getSamplingPlan('', nPoints, nDim, seed, []);
 fprintf(" Sampling plan: %d points in %d dimensions\n", nPoints, nDim);
 
 % Evaluate target function (DATCOM)
-fprintf("  Evaluating target function: %s\n", datasetOptions.functionName);
-targetFunction = datasetOptions.targetFunction;
-[xUnit, xReal, y, dy, metadata] = targetFunction(samplingPlan, mission, datasetOptions);
+fprintf("  Evaluating target function \n");
+[xUnit, xReal, y, dy, metadata] = coeffsGridInterp(samplingPlan, datasetOptions);
 
 % Package dataset
 dataset = constructDataset( ...
