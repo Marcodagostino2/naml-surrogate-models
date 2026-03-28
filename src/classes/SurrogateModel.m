@@ -38,6 +38,10 @@ classdef SurrogateModel
 
         % Readiness flag: TRUE when model is trained and consistent
         isReady           logical = false
+
+        % Seconds elapsed during fit()
+        trainingTime      (1,1) double = NaN 
+
     end
 
     %% ===================== CONSTANT PRIVATE PROPERTIES =====================
@@ -201,6 +205,7 @@ classdef SurrogateModel
                 nOut = size(obj.data_.y, 2);
             end
 
+            tFit = tic;
             for i = 1:nOut
                 fprintf("  -> Tuning output %d of %d...\n", i, nOut);
 
@@ -267,6 +272,9 @@ classdef SurrogateModel
             obj.hyperparams = hyperCache;
             obj.math        = mathCache;
             obj.normStats   = normCache;
+
+            obj.trainingTime = toc(tFit);
+            fprintf("Training complete in %.1f s.\n", obj.trainingTime);
 
             fprintf("Training complete.\n");
 

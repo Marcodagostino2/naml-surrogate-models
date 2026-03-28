@@ -1,0 +1,17 @@
+results/*
+!results/.gitkeep
+*.asv
+*~
+*.fig
+*.mlappinstall
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.pytest_cache/
+venv/
+env/
+.env
+.DS_Store
+Thumbs.db
+.vscode/

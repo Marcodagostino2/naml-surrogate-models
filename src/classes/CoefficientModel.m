@@ -23,7 +23,7 @@ classdef CoefficientModel
         stateFlags struct                     % Logic flags to suppress repetitive warnings
     end
     
-    properties (Constant, Access = private)
+    properties (Constant)
         allInputs      = ["mach", "alpha", "beta", "phi", "alt", "hprot"];
         allOutputs     = ["CA", "CY", "CN", "Cl", "Cm", "Cn"];
         requiredInputs = ["mach", "alpha", "hprot"];
@@ -87,6 +87,7 @@ classdef CoefficientModel
                     obj.cfdDataset    = Dataset("cfd", 'reBuild', options.reBuild, 'saveDataset', options.saveDataset);
 
                     [obj.cfdDataset, trainHF, ~]    = obj.cfdDataset.split(options.splitPerc);
+                    [obj.datcomDataset, trainLF, ~] = obj.datcomDataset.split(1.0);
 
                     primaryDataset = obj.cfdDataset; % High-fidelity used as master reference
 
@@ -96,8 +97,8 @@ classdef CoefficientModel
 
                     % Aggiungiamo gradDataC per il Low-Fidelity (DATCOM)
                     surrogateData = struct(...
-                        'xC', obj.datcomDataset.xUnit, 'yC', obj.datcomDataset.y, ...
-                        'xE', trainHF.xUnit,           'yE', trainHF.y);
+                        'xC', trainLF.xUnit, 'yC', trainLF.y, ...
+                        'xE', trainHF.xUnit, 'yE', trainHF.y);
                     obj.model = SurrogateModel("coefficient", "coKriging", surrogateData, ...
                         'reTrain', options.reTrain, 'saveModel', options.saveModel);
 
@@ -301,73 +302,55 @@ classdef CoefficientModel
 
             coeffs(4:6) = coeffs(4:6) + (deltaXcg / refLength) * [0; coeffs(3); coeffs(2)];
         end
-        
+
         % -----------------------------------------------------------------
         % VISUAL DIAGNOSTICS
-        % ----------------------------------------------------------------
-        function plotDiagnostics(obj)
-            % PLOTDIAGNOSTICS Generates diagnostic plots to visually analyse 
-            % the continuous Surrogate Model.
-            
-            originalWindowStyle = get(0, 'DefaultFigureWindowStyle');
+        % -----------------------------------------------------------------
+        function diagnose(obj, options)
+            % diagnose  Runs the visual and textual diagnostic suite.
+            %
+            % Docks figures automatically during generation to prevent
+            % window clutter. If exportPath is provided, plots are saved.
+            arguments
+                obj
+                options.exportPath   (1,1) string  = ""
+                options.exportFormat (1,1) string  = "png"
+                options.plotSurface  (1,1) logical = true
+                options.fontSize     (1,1) double  = 11
+            end
+
+            % Temporarily set figures to docked to avoid screen clutter
+            originalStyle = get(0, 'DefaultFigureWindowStyle');
             set(0, 'DefaultFigureWindowStyle', 'docked');
-            
-            primary = obj.getPrimaryDataset();
-            
-            % Reconstruct train/test splits for plotting markers
-            if obj.datasetMode == "multiFidelity"
-                [~, trainLF, ~] = obj.datcomDataset.split(1.0);
-                [~, trainHF, testHF] = obj.cfdDataset.split();
-                baseTrainSets = [trainLF, trainHF];
-                baseTestSets  = testHF;
-            else
-                [~, trainSet, testSet] = primary.split(0.85);
-                baseTrainSets = trainSet;
-                baseTestSets  = testSet;
-            end
-            
-            for j = 1:numel(obj.outNames)
-                coeffName = obj.outNames(j);
-                fprintf("  Plotting %s Surrogate ...\n", coeffName);
-                
-                % Continuous Kriging predictor handle
-                surrogateHandle = @(x) getSingleOutputPrediction(obj.model, x, j);
-                
-                % Structure data formatting for surrogatePlot compatibility
-                slicedTrainSets = struct('xUnit', {}, 'xReal', {}, 'y', {});
-                for iFid = 1:length(baseTrainSets)
-                    slicedTrainSets(iFid).xUnit = baseTrainSets(iFid).xUnit;
-                    slicedTrainSets(iFid).xReal = baseTrainSets(iFid).xReal;
-                    slicedTrainSets(iFid).y     = baseTrainSets(iFid).y(:, j); 
-                end
-                
-                slicedTestSets = struct('xUnit', {}, 'xReal', {}, 'y', {});
-                for iFid = 1:length(baseTestSets)
-                    slicedTestSets(iFid).xUnit = baseTestSets(iFid).xUnit;
-                    slicedTestSets(iFid).xReal = baseTestSets(iFid).xReal;
-                    slicedTestSets(iFid).y     = baseTestSets(iFid).y(:, j);
-                end
-                
-                % Plot continuous surrogate surface
-                surrogatePlot(surrogateHandle, obj.inNames, slicedTrainSets, slicedTestSets, ...
-                    "outputName", coeffName, ...
-                    "plotSurface", true, ...
-                    "ranges", primary.ranges, ...
-                    "power", primary.power);
-            end
-            set(0, 'DefaultFigureWindowStyle', originalWindowStyle);
+
+            % Ensure global state is restored even if an error occurs
+            cleanupObj = onCleanup(@() set(0, 'DefaultFigureWindowStyle', originalStyle));
+
+            % Automatically enable saving if a valid export path is provided
+            doSave = strlength(strtrim(options.exportPath)) > 0;
+
+            % Initialize and run diagnostics
+            diag = ModelDiagnostics(obj, ...
+                "savePlots",    doSave, ...
+                "exportPath",   options.exportPath,   ...
+                "exportFormat", options.exportFormat, ...
+                "plotSurface",  options.plotSurface,  ...
+                "fontSize",     options.fontSize);
+
+            diag.runDiagnostics();
         end
-    end
-    
-    methods (Access = private)
+
         function ds = getPrimaryDataset(obj)
             % GETPRIMARYDATASET Returns the governing dataset based on operational mode.
             if obj.datasetMode == "datcom"
                 ds = obj.datcomDataset;
             else
-                ds = obj.cfdDataset; 
+                ds = obj.cfdDataset;
             end
         end
+    end
+    
+    methods (Access = private)
         
         function xQueryClipped = checkBounds(obj, xQuery)
             % CHECKBOUNDS Enforces physical variable boundaries to prevent 
@@ -376,12 +359,4 @@ classdef CoefficientModel
             xQueryClipped = max(ranges(1,:), min(ranges(2,:), xQuery));
         end
     end
-end
-
-%% HELPER FOR PLOT
-function ySingle = getSingleOutputPrediction(modelObj, x, outIndex)
-    % getSingleOutputPrediction Helper function to wrap multi-output prediction 
-    % into a single-output function handle for surrogatePlot.
-    yFull = modelObj.predict(x);
-    ySingle = yFull(:, outIndex);
 end

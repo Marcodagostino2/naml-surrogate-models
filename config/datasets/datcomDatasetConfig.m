@@ -19,7 +19,7 @@ datasetOptions.nOut     = numel(datasetOptions.outNames);
 datasetOptions.gradNames = {};
 
 % ===== MACH =====
-datasetOptions.mach.lower   = 0.2;
+datasetOptions.mach.lower   = 0.1;
 datasetOptions.mach.upper   = 2;
 datasetOptions.mach.power   = 1;
 datasetOptions.mach.unit    = '[-]';

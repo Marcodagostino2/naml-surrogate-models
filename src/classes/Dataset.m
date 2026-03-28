@@ -190,6 +190,23 @@ classdef Dataset
         end
 
         % -------------------------------------------------------------------------
+        function plot(obj, options)
+            arguments
+                obj
+                options.exportPath   (1,1) string  = ""
+                options.exportFormat (1,1) string  = "png"
+                options.maxPairs     (1,1) double  = 6
+                options.fontSize     (1,1) double  = 11
+            end
+            p = DatasetPlotter(obj, ...
+                "exportPath",   options.exportPath,   ...
+                "exportFormat", options.exportFormat, ...
+                "maxPairs",     options.maxPairs,     ...
+                "fontSize",     options.fontSize);
+            p.plotAll();
+        end
+
+        % -------------------------------------------------------------------------
         function obj = build(obj, options)
             % Generate dataset by calling the dynamically resolved builder.
             %
