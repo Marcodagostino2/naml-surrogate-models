@@ -66,9 +66,6 @@ classdef SurrogateModel
         
         % Pre-computed matrices/vectors for fast inference {1 x nOutputs}
         math            struct
-        
-        % Simulink-ready representation (broadcasted parameters)
-        modelCHAD       struct
     end
 
     %% ===================== PRIVATE BACKING STORAGE =====================
@@ -77,7 +74,6 @@ classdef SurrogateModel
         hyperparams_ struct = []
         math_        struct = []
         normStats_   struct = [] 
-        modelCHAD_   struct = struct()
     end
 
     %% ===================== CONSTRUCTOR =====================
@@ -391,72 +387,6 @@ classdef SurrogateModel
             end
         end
 
-        % -------------------------------------------------------------------------
-        function obj = buildModelCHAD(obj)
-            % Create Simulink-compatible surrogate representation.
-            % Broadcasts params for fast execution. Seamlessly supports GEK
-            % by zero-padding the augmented beta (psiV) arrays.
-            if strcmpi(obj.surrogateType, "kriging") && ~isempty(obj.hyperparams_)
-                nOut  = length(obj.hyperparams_);
-                N     = size(obj.data_.x, 1);
-                nDim  = size(obj.data_.x, 2);
-                nPoly = size(obj.math_(1).mu, 1);
-                
-                % Find max length of beta to accommodate GEK augmented arrays
-                maxBetaLen = max(arrayfun(@(m) length(m.beta), obj.math_));
-                
-                % Preallocate broadcasted arrays based on multi-output
-                chad.x      = obj.data_.x;
-                chad.mu     = zeros(nPoly, nOut);
-                chad.theta  = zeros(N, nDim, nOut);
-                chad.p      = zeros(N, nDim, nOut);
-                chad.psiV   = zeros(maxBetaLen, nOut); % Padded to max length
-                
-                % Added Output Scaling Parameters
-                chad.yMu    = zeros(1, nOut);
-                chad.ySigma = zeros(1, nOut);
-                
-                % Added GEK Metadata for Simulink inference 
-                chad.isGEK  = false(1, nOut);
-                chad.dyDirs = zeros(nDim, nOut); % Padded index matrix
-                
-                for i = 1:nOut
-                    chad.mu(:, i) = obj.math_(i).mu;
-                    
-                    % Extract standard p
-                    pCurrent = obj.hyperparams_(i).p;
-                    
-                    % Handle GEK specific data
-                    if isfield(obj.math_(i), 'isGEK') && obj.math_(i).isGEK
-                        chad.isGEK(i) = true;
-                        activeDirs = obj.math_(i).dyDirs;
-                        
-                        % Force mathematical consistency for derivatives
-                        pCurrent(activeDirs) = 2; 
-                        
-                        % Store active directions padded with zeros
-                        chad.dyDirs(1:length(activeDirs), i) = activeDirs(:);
-                    end
-                    
-                    chad.theta(:, :, i) = repmat(obj.hyperparams_(i).theta, N, 1);
-                    chad.p(:, :, i)     = repmat(pCurrent, N, 1);
-                    
-                    % Assign beta (padded with zeros if smaller than maxBetaLen)
-                    beta_i = obj.math_(i).beta;
-                    chad.psiV(1:length(beta_i), i) = beta_i;
-                    
-                    if ~isempty(obj.normStats_)
-                        chad.yMu(i)    = obj.normStats_(i).mu;
-                        chad.ySigma(i) = obj.normStats_(i).sigma;
-                    end
-                end
-                
-                obj.modelCHAD_ = chad;
-            else
-                % CoKriging or unsupported CHAD export
-                obj.modelCHAD_ = struct();
-            end
-        end
 
         % -------------------------------------------------------------------------
         function ready = checkProperties(obj)
@@ -516,30 +446,20 @@ classdef SurrogateModel
         function obj = set.hyperparams(obj, val)
             obj.hyperparams_ = val;
             obj.isReady = obj.checkProperties();
-            if obj.isReady, obj = obj.buildModelCHAD(); end
         end
         function v = get.hyperparams(obj), v = obj.hyperparams_; end
         
         function obj = set.math(obj, val)
             obj.math_ = val;
             obj.isReady = obj.checkProperties();
-            if obj.isReady, obj = obj.buildModelCHAD(); end
         end
         function v = get.math(obj), v = obj.math_; end
 
         function obj = set.normStats(obj, val)
             obj.normStats_ = val;
             obj.isReady = obj.checkProperties();
-            if obj.isReady, obj = obj.buildModelCHAD(); end
         end
         function v = get.normStats(obj), v = obj.normStats_; end
-        
-        function obj = set.modelCHAD(obj, val), obj.modelCHAD_ = val; end
-        function v = get.modelCHAD(obj)
-            if strcmpi(obj.surrogateType, "coKriging")
-                warning("modelCHAD is not fully supported for coKriging.");
-            end
-            v = obj.modelCHAD_;
-        end
+       
     end
 end
