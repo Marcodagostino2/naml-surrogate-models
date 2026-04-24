@@ -16,7 +16,7 @@ optimizationOptions.fminconDisplay   = 'off';    % Console display level
 % KRIGING HYPERPARAMETER OPTIMIZATION SETTINGS
 
 % --- POLYNOMIAL TREND OPTIONS ---
-optimizationOptions.polyDegree = 1;
+optimizationOptions.polyDegree = 0;
 
 % Correlation length bounds (optimized in log10 space)
 optimizationOptions.lbLogTheta = -5 * ones(1, optimizationOptions.nInputs);
@@ -27,15 +27,16 @@ optimizationOptions.lbP        = 1.5 * ones(1, optimizationOptions.nInputs);
 optimizationOptions.ubP        = 2 * ones(1, optimizationOptions.nInputs);
 
 % Nugget / regularization parameter bounds
-optimizationOptions.lbLambda   = 1e-10;
+optimizationOptions.lbLambda   = 1e-6;
 optimizationOptions.ubLambda   = 1e-2;
 
 % CO-KRIGING HYPERPARAMETER OPTIMIZATION SETTINGS
 % Note: The scaling factor (rho) is profiled analytically inside the solver
 
 % --- POLYNOMIAL TREND OPTIONS ---
-optimizationOptions.polyDegreeC = 1;
-optimizationOptions.polyDegreeD = 0;
+optimizationOptions.polyDegreeC   = 2;
+optimizationOptions.polyDegreeD   = 0;
+optimizationOptions.polyDegreeRho = 0;
 
 % --- COARSE MODEL (LOW-FIDELITY) BOUNDS ---
 % Correlation length bounds (optimized in log10 space)
@@ -60,5 +61,5 @@ optimizationOptions.lbPD        = 1.5 * ones(1, optimizationOptions.nInputs);
 optimizationOptions.ubPD        = 2 * ones(1, optimizationOptions.nInputs);
 
 % Nugget / regularization parameter bounds
-optimizationOptions.lbLambdaD   = 1e-5;
+optimizationOptions.lbLambdaD   = 1e-6;
 optimizationOptions.ubLambdaD   = 1e-2;

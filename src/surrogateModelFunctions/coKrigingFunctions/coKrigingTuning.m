@@ -1,23 +1,25 @@
 function [hyperparams, math] = coKrigingTuning(xC, yC, xE, yE, options)
-% coKrigingTuning  Fit an AR(1) Co-Kriging model using Gradient-Enhanced SQP.
+% coKrigingTuning  Fit a Recursive Co-Kriging model using Gradient-Enhanced SQP.
 %
-% Optimizes an autoregressive co-kriging model via a decoupled 2-step process:
+% Optimizes an autoregressive co-kriging model via a decoupled 2-step process
+% following Le Gratiet's formulation:
 %   1) Fit a standard Kriging model on the Low-Fidelity (cheap) dataset.
 %   2) Tune the discrepancy model on the High-Fidelity (expensive) dataset.
-%      The scaling factor (rho) is profiled analytically via Generalized Least 
-%      Squares (GLS) alongside the trend, enabling robust gradient-based tuning.
+%      The spatially variable scaling factor rho(x) = fRho * betaRho is 
+%      profiled analytically via Generalized Least Squares (GLS).
 %
 % INPUTS
 %   xC      : [nC x d] Matrix of cheap dataset inputs.
 %   yC      : [nC x nOut] Matrix of cheap dataset outputs.
 %   xE      : [nE x d] Matrix of expensive dataset inputs.
 %   yE      : [nE x nOut] Matrix of expensive dataset outputs.
-%   options : Struct containing bounds and SQP/Multi-Start settings.
+%   options : Struct containing bounds, polynomial degrees, and SQP settings.
 %
 % OUTPUTS
 %   hyperparams : {1 x nOut} Struct array with optimized parameters
-%                 (rho, thetaC, pC, lambdaC, thetaD, pD, lambdaD).
+%                 (betaRho, thetaC, pC, lambdaC, thetaD, pD, lambdaD).
 %   math        : {1 x nOut} Struct array with derived augmented matrices.
+
 arguments
     xC      (:, :) double
     yC      (:, :) double
@@ -29,18 +31,19 @@ end
 d    = size(xC, 2);
 nOut = size(yC, 2);
 
-% Extract multi-start settings
-numStarts = options.numStarts;
-
-polyDegreeD = options.polyDegreeD;
+% Extract multi-start and trend settings
+numStarts   = options.numStarts;
+polyDegreeD   = options.polyDegreeD;
+polyDegreeRho = options.polyDegreeRho;
 
 % Prepare options and bounds for sub-models
 cheapOpt  = coDefaultCheapOptions(d, options);
 boundsD   = buildCoKrigingBounds(d, options); % Discrepancy bounds (excludes rho)
 optimOpts = buildOptimizerOptions(options);
 
-% Build design matrix for polynomial trend
-FD = buildPolynomialMatrix(xE, polyDegreeD);
+% Build design matrices for polynomial trends (evaluated at expensive points)
+fD   = buildPolynomialMatrix(xE, polyDegreeD);
+fRho = buildPolynomialMatrix(xE, polyDegreeRho);
 
 for i = 1:nOut
     yCurrentC = yC(:, i);
@@ -56,7 +59,7 @@ for i = 1:nOut
     yCAtE       = krigingPredictor(xE, dummyData, hypC, mathC);
     
     % Tune Discrepancy Model
-    % Note: Rho is profiled analytically inside the NLL function via GLS.
+    % Note: betaRho is profiled analytically inside the NLL function via GLS.
     zStarts = generateMultiStarts(boundsD, numStarts);
     
     plotFun = setupOptimizationPlot(sprintf('Discrepancy Tuning (Out %d)', i), d);
@@ -64,37 +67,45 @@ for i = 1:nOut
     
     bestLoss  = inf;
     bestParam = zStarts(1, :);
-    objFun = @(z) coNegLogLikelihood(z, xE, yCurrentE, yCAtE, d, FD);
+    objFun = @(z) coNegLogLikelihood(z, xE, yCurrentE, yCAtE, d, fD, fRho);
     
     for s = 1:numStarts
         fprintf('  Disc. Start %d/%d... ', s, numStarts);
-        [zOpt, fval] = fmincon(objFun, zStarts(s, :), [], [], [], [], boundsD.lb, boundsD.ub, [], optimOpts);
-        fprintf('Loss: %.4f\n', fval);
-        
-        if fval < bestLoss
-            bestLoss = fval;
-            bestParam = zOpt;
+        try
+            [zOpt, fval] = fmincon(objFun, zStarts(s, :), [], [], [], [], boundsD.lb, boundsD.ub, [], optimOpts);
+            fprintf('Loss: %.4f\n', fval);
+            
+            if fval < bestLoss
+                bestLoss = fval;
+                bestParam = zOpt;
+            end
+        catch
+            fprintf('Factorization failed.\n');
+            continue;
         end
     end
     
-    % Unpack Discrepancy Parameters and Extract Optimal Rho
+    % Unpack Discrepancy Parameters
     [thetaD, pD, lambdaD] = unpackCoKrigingParameters(bestParam, d);
     
-    % Call the objective function one last time to retrieve the analytical rho
-    [~, ~, rho, ~] = coNegLogLikelihood(bestParam, xE, yCurrentE, yCAtE, d, FD);
+    % Call the objective function one last time to retrieve the analytical betaRho
+    [~, ~, betaRho, ~] = coNegLogLikelihood(bestParam, xE, yCurrentE, yCAtE, d, fD, fRho);
     
-    % Compute exact discrepancy target and build independent math struct
-    yD = yCurrentE - rho * yCAtE;
+    % Compute exact discrepancy target by subtracting the spatially scaled cheap prediction
+    % yD(x) = yE(x) - [fRho(x) * betaRho] * yCAtE(x)
+    yD = yCurrentE - (fRho * betaRho) .* yCAtE;
+    
+    % Build independent math struct for the discrepancy process
     mathD = buildKrigingMath(xE, yD, thetaD, pD, lambdaD, polyDegreeD);
     
     hypD.theta  = thetaD;
     hypD.p      = pD;
     hypD.lambda = lambdaD;
     
-    % Build Augmented Co-Kriging System
-    augMath = buildCoKrigingMath(xC, yCurrentC, xE, yCurrentE, hypC, mathC, hypD, mathD, rho);
+    % Build Augmented Co-Kriging System 
+    augMath = buildCoKrigingMath(xC, xE, yCurrentE, hypC, mathC, hypD, mathD, polyDegreeRho);
     
-    hyperStruct.rho     = rho;
+    hyperStruct.betaRho = betaRho;
     hyperStruct.thetaC  = hypC.theta;
     hyperStruct.pC      = hypC.p;
     hyperStruct.lambdaC = hypC.lambda;

@@ -106,45 +106,59 @@ classdef SurrogatePlotter < handle
                 outputIdx         (1,1) double = 1
                 options.numSlices (1,1) double = 50
             end
-            
+
             outName = obj.outNames(outputIdx);
             nDim    = numel(obj.inNames);
             nFid    = numel(obj.trainSets);
-            
+
             fig = figure("Name", sprintf("1D Slices — %s", outName), "NumberTitle", "off", "Color", "w");
             nCols = min(nDim, 3);
             nRows = ceil(nDim / nCols);
             tl = tiledlayout(fig, nRows, nCols, "TileSpacing", "compact", "Padding", "compact");
-            
+
             % Build fixed parameters string for subtitle
             fixedStrs = arrayfun(@(i) sprintf('%s=%.3g', obj.formatLabel(obj.inNames(i), false, true), obj.opReal(i)), ...
                 1:nDim, 'UniformOutput', false);
-            
+
             for iFeat = 1:nDim
                 ax = nexttile(tl);
                 hold(ax, "on"); grid(ax, "on"); ax.GridAlpha = 0.3; ax.Box = "off";
-                
+
                 % Sweeps
                 uSweep = linspace(0, 1, options.numSlices)';
                 rSweep = obj.mapToReal(uSweep, iFeat);
-                
+
                 % Build query matrix: base is OpPoint, replace iFeat with sweep
                 xQ = repmat(obj.opUnit, options.numSlices, 1);
                 xQ(:, iFeat) = uSweep;
-                
-                % Predict and Plot Mean
-                yFull = obj.predictFcn(xQ);
+
+                % Predict Mean and Variance
+                [yFull, varFull] = obj.predictFcn(xQ);
+
                 yMean = yFull(:, outputIdx);
+
+                % Plot Uncertainty Ribbon
+                yStd = sqrt(max(0, varFull(:, outputIdx))); % Max for numerical safety
+                yUpper = yMean + 3 * yStd;
+                yLower = yMean - 3 * yStd;
+
+                xFill = [rSweep; flipud(rSweep)];
+                yFill = [yUpper; flipud(yLower)];
+
+                % Transparent fill for 3-sigma confidence bounds
+                fill(ax, xFill, yFill, [0.5 0.5 0.5], ...
+                    "FaceAlpha", 0.3, "EdgeColor", "none", ...
+                    "DisplayName", "$\pm 3\sigma$ Confidence");
+
+                % Plot Mean Curve
                 plot(ax, rSweep, yMean, "-", "LineWidth", 2.0, "Color", "k", "DisplayName", "Surrogate");
-                
+
                 % Overlay Training Data
                 for iFid = 1:nFid
                     ds = obj.trainSets(iFid);
-
                     idx = obj.getSubsampleIdx(size(ds.xReal, 1));
                     xPlot = ds.xReal(idx, iFeat);
                     yPlot = ds.y(idx, outputIdx);
-
                     c  = obj.getFidelityColor(iFid, nFid);
                     m  = obj.getFidelityMarker(iFid, nFid);
                     name = sprintf("Train Fid %d", iFid);
@@ -157,37 +171,167 @@ classdef SurrogatePlotter < handle
                         "MarkerFaceAlpha", 0.6, "DisplayName", name);
 
                     % Vertical "error" lines (Train Y vs Model Prediction at Train X)
-                    yPredTrainFull = obj.predictFcn(ds.xUnit(idx, :));
-                    yPredTrain     = yPredTrainFull(:, outputIdx);
+                    [yPredTrainFull, ~] = obj.predictFcn(ds.xUnit(idx, :));
 
+                    yPredTrain = yPredTrainFull(:, outputIdx);
                     lineStyle = ":"; if iFid == nFid, lineStyle = "-"; end
+
                     plot(ax, [xPlot, xPlot]', [yPlot, yPredTrain]', ...
                         lineStyle, "Color", [c, 0.4], "LineWidth", 1.0, "HandleVisibility", "off");
                 end
-                
+
                 % Labels
                 xlabel(ax, obj.formatLabel(obj.inNames(iFeat), false), "Interpreter", "latex", "FontSize", obj.fontSize);
                 ylabel(ax, obj.formatLabel(outName, false), "Interpreter", "latex", "FontSize", obj.fontSize);
                 set(ax, 'TickLabelInterpreter', 'latex');
-                
+
                 % Subtitle indicating fixed variables
                 fixedIdx = setdiff(1:nDim, iFeat);
                 if ~isempty(fixedIdx)
                     subStr = strjoin(fixedStrs(fixedIdx), ', ');
                     title(ax, sprintf("Fixed: $%s$", subStr), "Interpreter", "latex", "FontSize", obj.fontSize - 2);
                 end
-                
-                if iFeat == 1, lgd = legend(ax, "Location", "best", "Interpreter", "latex"); lgd.Box = "off"; end
+
+                if iFeat == 1
+                    lgd = legend(ax, "Location", "best", "Interpreter", "latex");
+                    lgd.Box = "off";
+                end
             end
-            
+
             title(tl, sprintf("1D Parametric Slices: \\textbf{%s}", obj.formatLabel(outName, false)), ...
                 "Interpreter", "latex", "FontSize", obj.fontSize + 2);
-                
+
             if strlength(obj.exportPath) > 0
                 exportFigure(fig, "1DSlices_" + outName, obj.exportPath, obj.exportFormat);
             end
         end
-        
+
+        function plot2DContours(obj, outputIdx, options)
+            % plot2DContours  Generates 2D contour maps for predictive mean and uncertainty.
+            %
+            % Creates a multi-row tiled layout. For each valid pair of inputs,
+            % plots the Mean response on the left and the Predictive Std on the right.
+            arguments
+                obj
+                outputIdx         (1,1) double = 1
+                options.res       (1,1) double = 100 % Higher resolution for smooth contours
+                options.maxPairs  (1,1) double = 6
+            end
+
+            outName = obj.outNames(outputIdx);
+            nDim    = numel(obj.inNames);
+            nFid    = numel(obj.trainSets);
+
+            pairs  = nchoosek(1:nDim, 2);
+            nPairs = min(size(pairs, 1), options.maxPairs);
+            if nPairs == 0, return; end
+
+            fig = figure("Name", sprintf("2D Contours — %s", outName), "NumberTitle", "off", "Color", "w");
+            % 2 columns: Left = Mean, Right = Uncertainty
+            tl = tiledlayout(fig, nPairs, 2, "TileSpacing", "compact", "Padding", "compact");
+
+            % Generate base operating point matrices
+            uSweep = linspace(0, 1, options.res);
+            [U1, U2] = meshgrid(uSweep, uSweep);
+            nQ = numel(U1);
+
+            for p = 1:nPairs
+                i1 = pairs(p, 1);
+                i2 = pairs(p, 2);
+
+                % Build query
+                xQ = repmat(obj.opUnit, nQ, 1);
+                xQ(:, i1) = U1(:);
+                xQ(:, i2) = U2(:);
+
+                % Predict Mean and Variance safely
+                try
+                    [yFull, varFull] = obj.predictFcn(xQ);
+                catch
+                    yFull = obj.predictFcn(xQ);
+                    varFull = zeros(size(yFull)); % Fallback if variance fails
+                end
+
+                ZMean = reshape(yFull(:, outputIdx), options.res, options.res);
+                ZStd  = reshape(sqrt(max(0, varFull(:, outputIdx))), options.res, options.res);
+
+                % Real Coordinates for plotting
+                R1 = obj.mapToReal(U1, i1);
+                R2 = obj.mapToReal(U2, i2);
+
+                % ---------------------------------------------------------
+                % LEFT TILE: Predictive Mean
+                % ---------------------------------------------------------
+                axMean = nexttile(tl);
+                hold(axMean, "on"); axMean.Box = "on";
+
+                contourf(axMean, R1, R2, ZMean, 40, "LineColor", "none");
+                colormap(axMean, turbo); % Great for aerodynamics
+                colorbar(axMean, "TickLabelInterpreter", "latex");
+
+                % Overlay training points (2D scatter)
+                for iFid = 1:nFid
+                    ds = obj.trainSets(iFid);
+                    idx = obj.getSubsampleIdx(size(ds.xReal, 1));
+                    x1C = ds.xReal(idx, i1);
+                    x2C = ds.xReal(idx, i2);
+                    c = obj.getFidelityColor(iFid, nFid);
+                    m = obj.getFidelityMarker(iFid, nFid);
+                    name = sprintf("Train Fid %d", iFid);
+                    if nFid == 2 && iFid == 1, name = "Train LF"; end
+                    if nFid == 2 && iFid == 2, name = "Train HF"; end
+
+                    scatter(axMean, x1C, x2C, 35, m, "filled", ...
+                        "MarkerFaceColor", c, "MarkerEdgeColor", "k", ...
+                        "DisplayName", name);
+                end
+
+                xlabel(axMean, obj.formatLabel(obj.inNames(i1), false), "Interpreter", "latex", "FontSize", obj.fontSize);
+                ylabel(axMean, obj.formatLabel(obj.inNames(i2), false), "Interpreter", "latex", "FontSize", obj.fontSize);
+                set(axMean, 'TickLabelInterpreter', 'latex');
+                if p == 1
+                    title(axMean, "Predictive Mean $\mu(\mathbf{x})$", "Interpreter", "latex", "FontSize", obj.fontSize + 1);
+                    lgd = legend(axMean, "Location", "best", "Interpreter", "latex"); lgd.Box = "off";
+                end
+
+                % ---------------------------------------------------------
+                % RIGHT TILE: Predictive Standard Deviation
+                % ---------------------------------------------------------
+                axStd = nexttile(tl);
+                hold(axStd, "on"); axStd.Box = "on";
+
+                contourf(axStd, R1, R2, ZStd, 40, "LineColor", "none");
+                colormap(axStd, hot); % Highlights the regions of high uncertainty
+                colorbar(axStd, "TickLabelInterpreter", "latex");
+
+                % Overlay training points (to show variance goes to 0 near them)
+                for iFid = 1:nFid
+                    ds = obj.trainSets(iFid);
+                    idx = obj.getSubsampleIdx(size(ds.xReal, 1));
+                    x1C = ds.xReal(idx, i1);
+                    x2C = ds.xReal(idx, i2);
+                    c = obj.getFidelityColor(iFid, nFid);
+                    m = obj.getFidelityMarker(iFid, nFid);
+                    scatter(axStd, x1C, x2C, 35, m, "filled", ...
+                        "MarkerFaceColor", c, "MarkerEdgeColor", "k", "HandleVisibility", "off");
+                end
+
+                xlabel(axStd, obj.formatLabel(obj.inNames(i1), false), "Interpreter", "latex", "FontSize", obj.fontSize);
+                ylabel(axStd, obj.formatLabel(obj.inNames(i2), false), "Interpreter", "latex", "FontSize", obj.fontSize);
+                set(axStd, 'TickLabelInterpreter', 'latex');
+                if p == 1
+                    title(axStd, "Predictive Std. Dev. $\sigma(\mathbf{x})$", "Interpreter", "latex", "FontSize", obj.fontSize + 1);
+                end
+            end
+
+            title(tl, sprintf("2D Contour Slices: \\textbf{%s}", obj.formatLabel(outName, false)), ...
+                "Interpreter", "latex", "FontSize", obj.fontSize + 2);
+
+            if strlength(obj.exportPath) > 0
+                exportFigure(fig, "2DContours_" + outName, obj.exportPath, obj.exportFormat);
+            end
+        end
+
         function plot3DSurfaces(obj, outputIdx, options)
             % plot3DSurfaces  3D physical surfaces with data point projections.
             arguments

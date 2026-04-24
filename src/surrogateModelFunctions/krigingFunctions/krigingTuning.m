@@ -59,7 +59,6 @@ for i = 1:nOut
     else
         dyCurrent = [];
         dyDirs    = [];
-        % Chiamata standard
         objFun = @(z) negLogLikelihood(z, x, yCurrent, d, F);
     end
     

@@ -126,32 +126,64 @@ classdef ModelDiagnostics < handle
 
                 if obj.plotSurface
                     p.plot1DSlices(j);
+                    p.plot2DContours(j);
                     p.plot3DSurfaces(j);
                 end
             end
             fprintf('=================================\n');
         end
-        
+
         function printMetricsSummary(obj)
-            % printMetricsSummary  Prints a clean ASCII table of regression metrics.
-            % Replaces the legacy tiled bar chart layout for faster execution.
+            % printMetricsSummary  Prints clean ASCII tables of regression and variance metrics.
             testSet = obj.testSets(end);
             nOut    = numel(obj.coeffModel.outNames);
-            
-            fprintf('\n=== Metrics Summary (Test Set) ===\n');
+
+            % --- 1. Standard Regression Metrics Table ---
+            fprintf('\n=== Standard Regression Metrics (Test Set) ===\n');
             fprintf('%-10s | %-8s | %-8s | %-8s | %-8s\n', 'Coeff', 'RMSE', 'R^2', 'MAPE [%]', 'MaxAE');
             fprintf('%s\n', repmat('-', 1, 55));
-            
             for j = 1:nOut
                 yTrue = testSet.y(:, j);
-                yPred = obj.coeffModel.model.predict(testSet.xUnit);
-                yPred = yPred(:, j);
-                
+
+                % Fail-safe prediction call
+                [yFull, varFull] = obj.coeffModel.model.predict(testSet.xUnit);
+
+                yPred = yFull(:, j);
                 m = calculateMetrics(yTrue, yPred, obj.relErrFloor);
+
                 fprintf('%-10s | %8.4f | %8.4f | %8.2f | %8.4f\n', ...
                     obj.coeffModel.outNames(j), m.rmse, m.r2, m.mape, m.maxAE);
             end
             fprintf('%s\n', repmat('-', 1, 55));
+
+            % --- 2. Predictive Variance Diagnostics Table ---
+            % Check if variance prediction is available and successfully evaluated
+            if ~isempty(varFull)
+                fprintf('\n=== Predictive Variance Diagnostics ===\n');
+                fprintf('%-10s | %-8s | %-8s | %-8s\n', 'Coeff', 'MSSE', 'Cov 95%', 'Cov 99.7%');
+                fprintf('%s\n', repmat('-', 1, 45));
+                for j = 1:nOut
+                    yTrue = testSet.y(:, j);
+                    yPred = yFull(:, j);
+
+                    % Safety max(0, var) to avoid complex numbers from numerical noise
+                    vPred = max(0, varFull(:, j));
+                    stdPred = sqrt(vPred);
+                    err = yTrue - yPred;
+
+                    % 1. Mean Standardized Squared Error (Ideal = 1.0)
+                    % Added eps to denominator to prevent division by zero
+                    msse = mean((err.^2) ./ (vPred + eps));
+
+                    % 2. Coverage Probabilities (Ideal = 95% and 99.7%)
+                    cov95 = sum(abs(err) <= 1.96 * stdPred) / length(yTrue) * 100;
+                    cov99 = sum(abs(err) <= 3.00 * stdPred) / length(yTrue) * 100;
+
+                    fprintf('%-10s | %8.4f | %7.2f%% | %7.2f%%\n', ...
+                        obj.coeffModel.outNames(j), msse, cov95, cov99);
+                end
+                fprintf('%s\n', repmat('-', 1, 45));
+            end
         end
         
         function printTimings(obj)

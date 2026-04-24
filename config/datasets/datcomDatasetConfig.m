@@ -1,6 +1,6 @@
 % ===== DATASET =====
 datasetOptions.gridDataFile = 'datcomGrid.mat';
-datasetOptions.nPoints      = 600;
+datasetOptions.nPoints      = 800;
 datasetOptions.seed         = 2;
 
 % ===== SAMPLING =====
@@ -20,14 +20,14 @@ datasetOptions.gradNames = {};
 
 % ===== MACH =====
 datasetOptions.mach.lower   = 0.1;
-datasetOptions.mach.upper   = 2;
+datasetOptions.mach.upper   = 1.2;
 datasetOptions.mach.power   = 1;
 datasetOptions.mach.unit    = '[-]';
 datasetOptions.mach.default = 0.8;
 
 % ===== ANGLE OF ATTACK =====
 datasetOptions.alpha.lower   = 0;
-datasetOptions.alpha.upper   = 30;
+datasetOptions.alpha.upper   = 20;
 datasetOptions.alpha.power   = 1;
 datasetOptions.alpha.unit    = '[deg]';
 datasetOptions.alpha.default = 0;

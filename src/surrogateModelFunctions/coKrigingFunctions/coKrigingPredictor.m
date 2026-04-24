@@ -1,17 +1,21 @@
-function prediction = coKrigingPredictor(xQuery, data, hyperparams, math)
-% coKrigingPredictor  Evaluate the AR(1) co-kriging surrogate model.
+function [yPred, varPred] = coKrigingPredictor(xQuery, data, hyperparams, math)
+% coKrigingPredictor  Evaluate the Recursive Co-Kriging surrogate model.
 %
-% This function evaluates the posterior mean of the autoregressive co-kriging 
-% model at query points using precomputed augmented system vectors.
+% This function evaluates the predictive mean and predictive variance of the 
+% decoupled AR(1) Co-Kriging model (Le Gratiet 2013) at query points.
+% It heavily exploits precomputed vectors from buildCoKrigingMath to ensure
+% execution in O(m * nE) time, without rebuilding joint covariance matrices.
 %
 % INPUTS
 %   xQuery      : [m x d] Matrix of query points in unit space.
 %   data        : Struct containing training data (.xC and .xE required).
-%   hyperparams : Struct containing optimized parameters (rho, thetaC, pC, etc.).
-%   math        : Struct containing derived augmented matrices (mu, beta, sigma2C, sigma2D).
+%   hyperparams : Struct containing optimized parameters (betaRho, thetaD, etc.).
+%   math        : Struct containing derived precomputed matrices.
 %
-% OUTPUT
-%   prediction  : [m x 1] Vector of high-fidelity predictions.
+% OUTPUTS
+%   yPred       : [m x 1] Vector of high-fidelity predictions (Mean).
+%   varPred     : [m x 1] Vector of high-fidelity predictive variances.
+
 arguments
     xQuery      (:, :) double
     data        (1, 1) struct
@@ -19,39 +23,70 @@ arguments
     math        (1, 1) struct
 end
 
-xC = data.xC;
-xE = data.xE;
+% Extract parameters
+pD = math.polyDegreeD;
+pRho = math.polyDegreeRho;
 
-rho      = hyperparams.rho;
+% Evaluate the Low-Fidelity Kriging model at the query points
+dummyData.x = data.xC;
 
-thetaC   = hyperparams.thetaC;
-pC       = hyperparams.pC;
-polyDegC = math.polyDegreeC;
+hyperparamsC.theta  = hyperparams.thetaC;
+hyperparamsC.p      = hyperparams.pC;
+hyperparamsC.lambda = hyperparams.lambdaC;
 
-thetaD   = hyperparams.thetaD;
-pD       = hyperparams.pD;
-polyDegD = math.polyDegreeD;
+[yCPred, varCPred] = krigingPredictor(xQuery, dummyData, hyperparamsC, math.mathC);
 
-% L = math.L;
-muC     = math.muC;
-muD     = math.muD;
-% alpha = math.alpha;
-beta    = math.beta;
-sigma2C = math.sigma2C;
-sigma2D = math.sigma2D;
+% Build polynomial bases at the query locations
+fDQuery   = buildPolynomialMatrix(xQuery, pD);
+fRhoQuery = buildPolynomialMatrix(xQuery, pRho);
 
-% Evaluate cross-correlation between xQuery and the augmented dataset [xC; xE]
-% cNew is [(nC + nE) x m]
-cNew = crossCorrMatrixMF(xQuery, xC, xE, rho, thetaC, pC, sigma2C, thetaD, pD, sigma2D);
+% Construct the augmented design matrix h(x) for the query points
+% hQuery = [fD(x), rhoBasis(x) * yC(x)]
+hQuery = [fDQuery, fRhoQuery .* yCPred];
 
-% Polynomial query matrices
-fCQuery = buildPolynomialMatrix(xQuery, polyDegC);
-fDQuery = buildPolynomialMatrix(xQuery, polyDegD);
+% Evaluate spatial cross-correlation r_D(x) between xE and xQuery
+% rD has dimension [nE x m]
+rD = crossCorrMatrix(math.xE, xQuery, hyperparams.thetaD, hyperparams.pD);
 
-trend = rho * (fCQuery * muC) + (fDQuery * muD);
+% -------------------------------------------------------------------------
+% PREDICTIVE MEAN (Le Gratiet 2013, Eq. 17)
+% -------------------------------------------------------------------------
+% The term (hQuery * math.lambdaHat) expands to:
+% fDQuery * muD + fRhoQuery * betaRho .* yCPred
+% This intrinsically computes both the discrepancy trend and rho(x)*yCPred!
+trendMF = hQuery * math.lambdaHat;
 
-% Compute the final prediction
-prediction = trend + cNew' * beta;
+% Add the stochastic innovation: r_D(x)^T * R_D^-1 * (yE - H * lambdaHat)
+yPred = trendMF + rD' * math.betaD;
 
+% -------------------------------------------------------------------------
+% PREDICTIVE VARIANCE (Le Gratiet 2013, Eq. 18)
+% -------------------------------------------------------------------------
+if nargout > 1
+    % Component transported from the Low-Fidelity model: rho(x)^2 * varC(x)
+    % Extract betaRho (the last rhoBasis elements of lambdaHat)
+    rhoBasis = size(fRhoQuery, 2);
+
+    betaRho = math.lambdaHat(end - rhoBasis + 1: end);
+    rhoPred = fRhoQuery * betaRho;
+    varRhoC = (rhoPred .^ 2) .* varCPred;
+    
+    % Base Kriging spatial variance: 1 - r_D(x)^T * R_D^-1 * r_D(x)
+    invRrD = math.lD' \ (math.lD \ rD); % [nE x m]
+    varGP  = 1 - sum(rD .* invRrD, 1)';   % Fast vectorized diagonal, [m x 1]
+    varGP(varGP < 0) = 0;                 % Numerical safety cap
+    
+    % Universal Kriging inflation due to GLS parameter uncertainty:
+    % u(x)^T * Sigma_t * u(x), where u(x) = h(x) - H^T * R_D^-1 * r_D(x)
+    % math.RinvH is precomputed (R_D^-1 * H)
+    uQuery = hQuery - (math.rInvH' * rD)'; % [m x (pD + pRho)]
+    varTrend = sum((uQuery * math.covBeta) .* uQuery, 2); % Vectorized diag, [m x 1]
+    
+    % Total Discrepancy Variance
+    varDPred = math.sigma2D * (varGP + varTrend);
+    
+    % Final Multi-Fidelity Predictive Variance
+    varPred = varRhoC + varDPred;
 end
 
+end

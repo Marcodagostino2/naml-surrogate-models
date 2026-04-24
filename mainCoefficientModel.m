@@ -3,7 +3,7 @@ function coeffModel = mainCoefficientModel(options)
 %
 % INPUTS (name-value)
 %   mode         : "multiFidelity" | "cfd" | "datcom"
-%   splitPerc    : Train/test split ratio          (default 0.85)
+%   splitPerc    : Train/test split ratio          (default 0.8)
 %   reBuild      : Force dataset rebuild           (default true)
 %   reTrain      : Force surrogate retraining      (default true)
 %   saveDataset  : Persist dataset to disk         (default true)
@@ -17,11 +17,11 @@ function coeffModel = mainCoefficientModel(options)
 %   coeffModel   : Trained CoefficientModel instance.
 arguments
     options.mode         (1,1) string  = "multiFidelity"
-    options.splitPerc    (1,1) double  = 0.85
+    options.splitPerc    (1,1) double  = 0.7
     options.reBuild      (1,1) logical = true
     options.reTrain      (1,1) logical = true
-    options.saveDataset  (1,1) logical = true
-    options.saveModel    (1,1) logical = true
+    options.saveDataset  (1,1) logical = false
+    options.saveModel    (1,1) logical = false
     options.plots        (1,1) logical = true
     options.exportPath   (1,1) string  = ""
     options.exportFormat (1,1) string  = "png"

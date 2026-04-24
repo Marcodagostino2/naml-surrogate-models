@@ -139,14 +139,15 @@ classdef SurrogateModel
     %% ===================== PUBLIC API =====================
     methods (Access = public)
         
-        function yPred = predict(obj, xQuery)
+        function [yPred, varPred] = predict(obj, xQuery)
             % Evaluate the surrogate model for all outputs.
             %
             % INPUT
-            %   xQuery → Points to evaluate [nPoints x nInputs]
+            %   xQuery  → Points to evaluate [nPoints x nInputs]
             %
-            % OUTPUT
-            %   yPred  → Predicted values [nPoints x nOutputs]
+            % OUTPUTS
+            %   yPred   → Predicted mean values [nPoints x nOutputs]
+            %   varPred → Predicted variance [nPoints x nOutputs] (if supported)
 
             if ~obj.isReady
                 error("SurrogateModel:NotReady", ...
@@ -156,13 +157,14 @@ classdef SurrogateModel
             nOut = length(obj.hyperparams_);
             nPoints = size(xQuery, 1);
             yPred = zeros(nPoints, nOut);
+            varPred = zeros(nPoints, nOut);
 
             % Create a temporarily normalized dataset for the internal predictors
             normData = obj.data_;
             for i = 1:nOut
                 yMu = obj.normStats_(i).mu;
                 ySigma = obj.normStats_(i).sigma;
-                
+
                 if strcmpi(obj.surrogateType, "coKriging")
                     normData.yC(:, i) = (normData.yC(:, i) - yMu) / ySigma;
                     normData.yE(:, i) = (normData.yE(:, i) - yMu) / ySigma;
@@ -173,12 +175,18 @@ classdef SurrogateModel
 
             % Multi-output loop: independent predictions
             for i = 1:nOut
-                % Predict using the normalized dataset
-                yPredNorm = obj.modelPredictorFcn(xQuery, normData, ...
-                    obj.hyperparams_(i), obj.math_(i));
-                
-                % Un-scale to return physical targets to the user
-                yPred(:, i) = yPredNorm * obj.normStats_(i).sigma + obj.normStats_(i).mu;
+                ySigma = obj.normStats_(i).sigma;
+                yMu    = obj.normStats_(i).mu;
+
+                % Attempt to predict both mean and variance
+                [yPredNorm, varPredNorm] = obj.modelPredictorFcn(xQuery, normData, ...
+                        obj.hyperparams_(i), obj.math_(i));
+
+                % Un-scale to return physical mean targets to the user
+                yPred(:, i) = yPredNorm * ySigma + yMu;
+
+                % Un-scale the variance: Var(a*X + b) = a^2 * Var(X)
+                varPred(:, i) = varPredNorm * (ySigma^2);
             end
         end
 

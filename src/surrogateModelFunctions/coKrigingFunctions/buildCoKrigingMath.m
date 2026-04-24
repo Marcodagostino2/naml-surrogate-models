@@ -1,113 +1,103 @@
-function math = buildCoKrigingMath(xC, yC, xE, yE, hypC, mathC, hypD, mathD, rho)
-% buildCoKrigingMath  Construct the augmented matrices required for Co-Kriging prediction.
+function math = buildCoKrigingMath(xC, xE, yE, hypC, mathC, hypD, mathD, polyDegreeRho)
+% buildCoKrigingMath  Precompute math structures for Recursive Co-Kriging prediction.
 %
-% This function builds the augmented covariance matrix C for the stacked 
-% observations yAug = [yC; yE]. It computes the Cholesky factorization, 
-% estimates the global mean (mu) via Generalized Least Squares (GLS), and 
-% computes the pre-weighted beta vector (corrVector) used for fast predictions.
+% Implements the Universal Co-Kriging equations of Le Gratiet (2013), Prop. 2.
+% All matrix-vector products needed for fast evaluation of the predictive mean 
+% (Eq. 17) and the predictive variance (Eq. 18) are precomputed here and stored 
+% in the math struct, avoiding repeated expensive inversions during inference.
 %
 % INPUTS
-%   xC    : [nC x d] Cheap training inputs.
-%   yC    : [nC x 1] Cheap training outputs.
-%   xE    : [nE x d] Expensive training inputs.
-%   yE    : [nE x 1] Expensive training outputs.
-%   hypC  : Struct containing tuned hyperparameters for the cheap GP.
-%   mathC : Struct containing derived math parameters (including sigma2) for cheap GP.
-%   hypD  : Struct containing tuned hyperparameters for the discrepancy GP.
-%   mathD : Struct containing derived math parameters (including sigma2) for discrepancy GP.
-%   rho   : Scalar autoregressive scaling factor.
+%   xC              : [nC x d] LF training inputs.
+%   xE, yE          : [nE x d], [nE x 1] HF training inputs and outputs.
+%   hypC, mathC     : Tuned hyperparameters and math struct for the LF model.
+%   hypD, mathD     : Tuned hyperparameters and math struct for the Discrepancy model.
+%   polyDegreeRho   : Degree of the spatial polynomial for rho(x).
 %
 % OUTPUT
-%   math : Struct containing:
-%                - L       : Cholesky factorization of the augmented covariance.
-%                - mu      : Estimated global mean.
-%                - sigma2  : Variance scalar of the model
-%                - alpha   : C^-1 * 1 Precomputed inverse vector product for fast prediction
-%                - beta    : Precomputed inverse vector product (formerly corrVector).
+%   math : Struct containing precomputed quantities for fast inference:
+%          .mathC       - LF model math struct (unchanged)
+%          .xC, .xE     - Training data locations
+%          .lD          - Cholesky factor of rD for fast solves
+%          .rInvH       - rD^-1 * hT (needed for both mean and variance)
+%          .covBeta     - Sigma_t = (H^T rD^-1 H)^-1 (parameter covariance)
+%          .lambdaHat   - Sigma_t * nu_t = GLS estimator [muD; betaRho]
+%          .betaD       - rD^-1 * (yE - H * lambdaHat) (innovation for mean)
+%          .sigma2D     - Hat{Q}_t / (2*a_t): REML variance estimate
+%          .polyDegreeD, .polyDegreeRho  - Polynomial degrees
+
 arguments
-    xC          (:, :) double
-    yC          (:, 1) double
-    xE          (:, :) double
-    yE          (:, 1) double
-    hypC        (1, 1) struct
-    mathC       (1, 1) struct
-    hypD        (1, 1) struct
-    mathD       (1, 1) struct
-    rho         (1, 1) double
+    xC            (:, :) double
+    xE            (:, :) double
+    yE            (:, 1) double
+    hypC          (1, 1) struct
+    mathC         (1, 1) struct
+    hypD          (1, 1) struct
+    mathD         (1, 1) struct
+    polyDegreeRho (1, 1) double
 end
 
-nC = size(xC, 1);
 nE = size(xE, 1);
-nTot = nC + nE;
+d  = size(xE, 2);
 
-% Extract variance scalings from the underlying Kriging math structs
-sigma2C = mathC.sigma2;
-sigma2D = mathD.sigma2;
+% Store independent model and data for cross-correlation during prediction
+math.mathC         = mathC;
+math.xC            = xC;
+math.xE            = xE;
+math.polyDegreeD   = mathD.polyDegree;
+math.polyDegreeRho = polyDegreeRho;
 
-% Build basic correlation matrices using parameters from hypC and hypD
-PsiCC = corrMatrix(xC, hypC.theta, hypC.p);
-PsiEE = corrMatrix(xE, hypC.theta, hypC.p);
-PsiDD = corrMatrix(xE, hypD.theta, hypD.p);
-
-% Efficient cross-correlation between cheap and expensive locations
-PsiCE = crossCorrMatrix(xC, xE, hypC.theta, hypC.p);
-
-% Assemble augmented covariance matrix C with nugget (lambda) regularization
-cov11 = sigma2C * (PsiCC + hypC.lambda * eye(nC, class(xC)));
-cov12 = rho * sigma2C * PsiCE;
-cov21 = cov12.';
-cov22 = (rho^2) * sigma2C * PsiEE + sigma2D * (PsiDD + hypD.lambda * eye(nE, class(xE)));
-
-C = [cov11, cov12; 
-     cov21, cov22];
-
-% Stable Cholesky Factorization
-[L, flag] = chol(C, "lower"); % Try strictly first
-
-% Add jitter if standard factorization fails and no nugget was provided
-if flag ~= 0 && (hypC.lambda == 0 && hypD.lambda == 0)
-    jitter = eps(class(C));
-    [L, flag] = chol(C + jitter * eye(nTot, class(C)), "lower");
+% --- Build rD: Correlation matrix of the Discrepancy process ---
+corrMatrixD = zeros(nE, nE);
+for k = 1:d
+    corrMatrixD = corrMatrixD + hypD.theta(k) * (abs(xE(:, k) - xE(:, k)') .^ hypD.p(k));
 end
+rD = exp(-corrMatrixD) + hypD.lambda * eye(nE, class(xE));
 
+[lD, flag] = chol(rD, 'lower');
 if flag ~= 0
-    error("buildCoKrigingMath:NotPD", ...
-        "Augmented covariance matrix is not positive definite. Check lambda bounds or duplicate samples.");
+    error('buildCoKrigingMath:NotPD', ...
+        'Discrepancy correlation matrix rD is not positive definite.');
 end
+math.lD = lD;
+solveRD = @(b) (lD' \ (lD \ b));
 
-solveCinv = @(b) (L' \ (L \ b));  
+% --- Build augmented design matrix hT = [fD, diag(yCAtE) * fRho] ---
+% This is the Ht matrix used in Eq. (17) and (18) of Le Gratiet.
+dummyData.x = xC;
+yCAtE = krigingPredictor(xE, dummyData, hypC, mathC);
 
-yAug = [yC; yE];
-muD  = mathD.mu; 
+fD   = buildPolynomialMatrix(xE, mathD.polyDegree);
+fRho = buildPolynomialMatrix(xE, polyDegreeRho);
+hT   = [fD, fRho .* yCAtE];
 
-% Polynmial design matrices
-fCC = buildPolynomialMatrix(xC, mathC.polyDegree);
-fCE = buildPolynomialMatrix(xE, mathC.polyDegree);
-fDE = buildPolynomialMatrix(xE, mathD.polyDegree);
+% --- Precompute rD^-1 * hT  (used in both mean Eq.17 and variance Eq.18) ---
+rInvH        = solveRD(hT);
+math.rInvH   = rInvH;
 
-% Matrici aumentate H e K per il calcolo GLS
-H = [fCC; rho * fCE]; 
-K = [zeros(nC, size(fDE, 2)); fDE];
+% --- Precompute Sigma_t = (H' * rD^-1 * H)^-1: parameter covariance ---
+% (Eq. 15, ninfo case: Sigma_t = [H^T R^-1 H]^-1)
+covBeta        = (hT' * rInvH) \ eye(size(hT, 2));
+math.covBeta   = covBeta;
 
-% Aggiornamento Bayesiano del trend LF (muC) con i dati HF
-yAdjusted = yAug - K * muD;
-alpha = solveCinv(H);
-term1 = H' * alpha;
-term2 = H' * solveCinv(yAdjusted);
-muC   = term1 \ term2;
+% --- Precompute lambda_hat = Sigma_t * nu_t = GLS estimator ---
+% nu_t = H' * rD^-1 * yE   (Eq. 15, ninfo)
+% lambda_hat = covBeta * nu_t  = [muD; betaRho]  (Eq. 17)
+nuBeta           = hT' * solveRD(yE);
+lambdaHat        = covBeta * nuBeta;
+math.lambdaHat   = lambdaHat; 
 
-yCentered = yAug - (H * muC + K * muD);
-beta      = solveCinv(yCentered);
+% --- Precompute beta_D = rD^-1 * (yE - H * lambda_hat) ---
+% This is the innovation term r_t(x)^T * rD^-1 * (...) in Eq. (17)
+math.betaD = solveRD(yE - hT * lambdaHat);
 
-% Assemble final math structure
-math.L           = L;
-math.muC         = muC; 
-math.muD         = muD; 
-math.polyDegreeC = mathC.polyDegree; 
-math.polyDegreeD = mathD.polyDegree; 
-math.alpha       = alpha;
-math.beta        = beta;
-math.sigma2C     = sigma2C;
-math.sigma2D     = sigma2D;
+% --- Precompute sigma2_D = Q_hat_t / (2 * a_t): REML variance estimate ---
+% Q_hat_t = (yE - H * lambdaHat)' * rD^-1 * (yE - H * lambdaHat)  (Eq. 16)
+% a_t = (nE - pD - pRho) / 2  (ninfo case, Eq. 16)
+pD   = size(fD, 2);
+pRho = size(fRho, 2);
+residuals   = yE - hT * lambdaHat;
+qHat        = residuals' * solveRD(residuals);
+aT          = (nE - pD - pRho) / 2;
+math.sigma2D = qHat / (2 * aT);
 
 end
