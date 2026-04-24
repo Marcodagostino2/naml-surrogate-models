@@ -1,0 +1,20 @@
+csv_path: data/CFD_SamplingPlan_output.csv
+input_columns:
+  - sim_machNumberValue
+  - sim_aoaValue
+  - geom_abk_openingPercentage
+target_columns:
+  - cfd_cfx
+
+dropna: true
+train_ratio: 0.70
+val_ratio: 0.15
+test_ratio: 0.15
+
+normalize_inputs: true
+normalize_targets: true
+
+batch_size: 64
+num_workers: 0
+pin_memory: false
+random_seed: 42

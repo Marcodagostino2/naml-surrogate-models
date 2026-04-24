@@ -1,0 +1,14 @@
+model_name: mlp_regressor
+
+# Width of each hidden layer, from input to output.
+hidden_layers:
+  - 128
+  - 128
+  - 64
+
+# Activation between linear layers. Supported values include relu, gelu, tanh,
+# elu, leaky_relu, selu, sigmoid, softplus, mish, silu, identity.
+activation: tanh
+
+# Dropout probability applied after activations. Set to 0.0 to disable.
+dropout: 0.0

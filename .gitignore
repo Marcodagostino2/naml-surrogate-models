@@ -1,5 +1,9 @@
 results/*
 !results/.gitkeep
+
+# Generated ML outputs and result artifacts
+python_nngp/outputs/
+python_nngp/**/smoke_test/
 *.asv
 *~
 *.fig
