@@ -105,6 +105,14 @@ def build_data_bundle(dataset_cfg: Dict, project_root: Path) -> DataBundle:
         shuffle=True,
     )
 
+    # Preserve physical-domain splits before optional normalization.
+    x_train_raw = x_train.copy()
+    y_train_raw = y_train.copy()
+    x_val_raw = x_val.copy()
+    y_val_raw = y_val.copy()
+    x_test_raw = x_test.copy()
+    y_test_raw = y_test.copy()
+
     feature_scaler: Optional[StandardScaler] = None
     target_scaler: Optional[StandardScaler] = None
 
@@ -167,10 +175,10 @@ def build_data_bundle(dataset_cfg: Dict, project_root: Path) -> DataBundle:
         target_scaler=target_scaler,
         feature_bounds=feature_bounds,
         target_bounds=target_bounds,
-        train_features_raw=x_train,
-        train_targets_raw=y_train,
-        val_features_raw=x_val,
-        val_targets_raw=y_val,
-        test_features_raw=x_test,
-        test_targets_raw=y_test,
+        train_features_raw=x_train_raw,
+        train_targets_raw=y_train_raw,
+        val_features_raw=x_val_raw,
+        val_targets_raw=y_val_raw,
+        test_features_raw=x_test_raw,
+        test_targets_raw=y_test_raw,
     )

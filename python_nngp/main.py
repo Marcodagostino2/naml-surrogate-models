@@ -14,11 +14,22 @@ from src.training.trainer import _resolve_device
 from src.utils import load_yaml, save_json, save_pickle, set_global_seed
 
 
+def _clean_plot_images(directory: Path) -> int:
+    if not directory.exists():
+        return 0
+    removed = 0
+    for image_path in directory.glob("*.png"):
+        image_path.unlink()
+        removed += 1
+    return removed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train baseline MLP on CFD aerodynamic data.")
     parser.add_argument("--dataset-config", default="config/dataset_config.yaml")
     parser.add_argument("--model-config", default="config/model_config.yaml")
     parser.add_argument("--training-config", default="config/training_config.yaml")
+    parser.add_argument("--visualization-config", default="config/visualization_config.yaml")
     return parser.parse_args()
 
 
@@ -29,6 +40,8 @@ def main() -> None:
     dataset_cfg = load_yaml(project_root / args.dataset_config)
     model_cfg = load_yaml(project_root / args.model_config)
     training_cfg = load_yaml(project_root / args.training_config)
+    visualization_cfg_path = project_root / args.visualization_config
+    visualization_cfg = load_yaml(visualization_cfg_path) if visualization_cfg_path.exists() else {}
 
     seed = int(training_cfg.get("random_seed", dataset_cfg.get("random_seed", 42)))
     set_global_seed(seed)
@@ -93,25 +106,35 @@ def main() -> None:
 
     if bool(training_cfg.get("generate_plots", True)):
         plots_dir = output_dir / "plots"
+        diagnostics_dir = plots_dir / "diagnostics"
+        sweeps_dir = plots_dir / "physical_sweeps"
+
+        removed_diagnostics = _clean_plot_images(diagnostics_dir)
+        removed_sweeps = _clean_plot_images(sweeps_dir)
+
         diagnostic_files = plot_diagnostics(
             model=model,
             loader=data_bundle.test_loader,
             device=device,
             target_scaler=data_bundle.target_scaler,
             target_names=data_bundle.target_columns,
-            output_dir=plots_dir / "diagnostics",
+            output_dir=diagnostics_dir,
+            visualization_cfg=visualization_cfg,
         )
         reference_point = np.median(data_bundle.train_features_raw, axis=0)
-        sweep_files = plot_physical_sweeps(
+        sweep_files, sweep_reference = plot_physical_sweeps(
             model=model,
             device=device,
             feature_scaler=data_bundle.feature_scaler,
             target_scaler=data_bundle.target_scaler,
             input_columns=data_bundle.input_columns,
-            target_name=data_bundle.target_columns[0],
+            target_names=data_bundle.target_columns,
             feature_bounds=data_bundle.feature_bounds,
             reference_point=reference_point,
-            output_dir=plots_dir / "physical_sweeps",
+            output_dir=sweeps_dir,
+            train_features_physical=data_bundle.train_features_raw,
+            train_targets_physical=data_bundle.train_targets_raw,
+            visualization_cfg=visualization_cfg,
             num_points=int(training_cfg.get("diagnostics_num_points", 200)),
         )
         report["diagnostic_plots"] = {
@@ -119,6 +142,16 @@ def main() -> None:
         }
         report["physical_sweep_plots"] = {
             key: str(path.relative_to(project_root)) for key, path in sweep_files.items()
+        }
+        report["visualization"] = {
+            "config_path": str(visualization_cfg_path.relative_to(project_root))
+            if visualization_cfg_path.exists()
+            else None,
+            "sweep_reference": sweep_reference,
+            "cleaned_plot_files": {
+                "diagnostics_png": removed_diagnostics,
+                "physical_sweeps_png": removed_sweeps,
+            },
         }
         save_json(history_path, report)
 
