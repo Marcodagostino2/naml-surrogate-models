@@ -1,4 +1,7 @@
-model_name: mlp_regressor
+model_name: attention_mlp_regressor
+# model_name options:
+# - mlp_regressor (baseline)
+# - attention_mlp_regressor (feature embedding + self-attention + MLP)
 
 # Width of each hidden layer, from input to output.
 hidden_layers:
@@ -6,9 +9,16 @@ hidden_layers:
   - 128
   - 64
 
+# Self-attention options (used only for attention_mlp_regressor).
+embed_dim: 64
+num_heads: 8
+attention_dropout: 0.0
+# Aggregation of contextualized feature tokens before MLP head: mean | flatten
+aggregation: flatten
+
 # Activation between linear layers. Supported values include relu, gelu, tanh,
 # elu, leaky_relu, selu, sigmoid, softplus, mish, silu, identity.
-activation: tanh
+activation: selu
 
 # Dropout probability applied after activations. Set to 0.0 to disable.
 dropout: 0.0

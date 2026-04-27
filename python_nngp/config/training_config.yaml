@@ -15,7 +15,7 @@ optimizer_name: adam
 optimizer_kwargs: {}
 
 # Stop early if validation loss does not improve for this many epochs.
-early_stopping_patience: 100
+early_stopping_patience: 200
 # Enable tqdm-based progress visualization.
 use_tqdm: true
 # Progress style:
@@ -24,7 +24,7 @@ use_tqdm: true
 # - off: no tqdm bars, only periodic text logs
 progress_mode: epoch
 # Print a compact status line every N epochs.
-log_every_n_epochs: 1
+log_every_n_epochs: 10
 
 # auto = use CUDA if available, otherwise CPU.
 device: auto

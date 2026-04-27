@@ -16,7 +16,7 @@ function coeffModel = mainCoefficientModel(options)
 % OUTPUTS
 %   coeffModel   : Trained CoefficientModel instance.
 arguments
-    options.mode         (1,1) string  = "multiFidelity"
+    options.mode         (1,1) string  = "cfd"
     options.splitPerc    (1,1) double  = 0.7
     options.reBuild      (1,1) logical = true
     options.reTrain      (1,1) logical = true

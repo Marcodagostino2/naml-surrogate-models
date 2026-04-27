@@ -2,7 +2,7 @@
 % Optimization via Multi-Start Gradient-Enhanced SQP with GLS Profiling
 % Decision vector: z = [log10(theta_1..theta_d), p_1..p_d, lambda]
 
-optimizationOptions.nInputs  = 3;
+optimizationOptions.nInputs  = 5;
 optimizationOptions.nOutputs = 1;
 
 % --- SQP OPTIMIZER & MULTI-START SETTINGS ---
@@ -27,7 +27,7 @@ optimizationOptions.lbP        = 1.5 * ones(1, optimizationOptions.nInputs);
 optimizationOptions.ubP        = 2 * ones(1, optimizationOptions.nInputs);
 
 % Nugget / regularization parameter bounds
-optimizationOptions.lbLambda   = 1e-6;
+optimizationOptions.lbLambda   = 1e-7;
 optimizationOptions.ubLambda   = 1e-2;
 
 % CO-KRIGING HYPERPARAMETER OPTIMIZATION SETTINGS

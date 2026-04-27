@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from src.data import build_data_bundle
-from src.models import MLPRegressor
+from src.models import build_regressor
 from src.plot import plot_diagnostics, plot_physical_sweeps
 from src.training import evaluate_model, train_model
 from src.training.trainer import _resolve_device
@@ -25,7 +25,9 @@ def _clean_plot_images(directory: Path) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train baseline MLP on CFD aerodynamic data.")
+    parser = argparse.ArgumentParser(
+        description="Train tabular regressors (MLP or attention-augmented MLP) on CFD aerodynamic data."
+    )
     parser.add_argument("--dataset-config", default="config/dataset_config.yaml")
     parser.add_argument("--model-config", default="config/model_config.yaml")
     parser.add_argument("--training-config", default="config/training_config.yaml")
@@ -47,7 +49,7 @@ def main() -> None:
     set_global_seed(seed)
 
     data_bundle = build_data_bundle(dataset_cfg, project_root)
-    model = MLPRegressor(
+    model = build_regressor(
         input_dim=data_bundle.input_dim,
         output_dim=data_bundle.output_dim,
         model_cfg=model_cfg,
