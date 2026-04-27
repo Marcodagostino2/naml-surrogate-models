@@ -1,0 +1,29 @@
+# ============================================================================
+# Gaussian Process (Kriging) Training Configuration
+# ============================================================================
+# Training hyperparameters specific to the standalone GP using GPyTorch.
+#
+# The GP is trained by maximizing the Exact Marginal Log-Likelihood (EMLL),
+# not via stochastic gradient descent on a loss function.
+
+# Optimizer: "adam", "sgd"
+optimizer: "adam"
+
+# Learning rate for EMLL optimization
+learning_rate: 0.1
+
+# Number of optimization steps
+n_training_steps: 200
+
+# Convergence criteria
+abs_tol: 1e-5
+rel_tol: 1e-3
+
+# Convergence check frequency
+convergence_check_interval: 10
+
+# Device: "cuda", "cpu", "auto"
+device: "auto"
+
+# Checkpointing
+save_checkpoint_every_n_steps: 20

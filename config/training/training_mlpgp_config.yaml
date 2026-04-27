@@ -1,0 +1,31 @@
+# ============================================================================
+# Hybrid MLP+Kriging Training Configuration
+# ============================================================================
+# Joint training settings for the end-to-end MLP+Kriging hybrid model.
+#
+# The model is trained by maximizing the Exact Marginal Log-Likelihood,
+# where the MLP hyperparameters are jointly optimized with the GP.
+
+# Optimizer: "adam", "sgd", "adamw"
+optimizer: "adam"
+
+# Learning rates (can be different for MLP and GP components)
+mlp_learning_rate: 0.001
+gp_learning_rate: 0.01
+
+# Number of joint training steps
+n_training_steps: 300
+
+# Convergence criteria
+abs_tol: 1e-5
+rel_tol: 1e-3
+
+# Early stopping
+early_stopping_patience: 30
+early_stopping_min_delta: 1e-5
+
+# Device: "cuda", "cpu", "auto"
+device: "auto"
+
+# Checkpointing
+save_checkpoint_every_n_steps: 20

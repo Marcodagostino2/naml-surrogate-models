@@ -1,0 +1,18 @@
+# ============================================================================
+# Main Configuration Orchestrator
+# ============================================================================
+# This file controls the overall experiment run: which model to train, random
+# seed, and execution mode. Specific model/training configs are loaded
+# dynamically based on the 'model_to_train' selection.
+
+# Global random seed for reproducibility
+global_seed: 42
+
+# Model selection: "mlp", "gp", "mlpgp", or "all"
+model_to_train: "mlp"
+
+# Execution mode: "training", "test", or "training+test"
+run_mode: "training"
+
+# Verbose logging
+verbose: true

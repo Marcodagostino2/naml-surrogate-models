@@ -1,0 +1,29 @@
+# ============================================================================
+# MLP Model Configuration
+# ============================================================================
+# Defines the architecture and hyperparameters for the standalone MLP.
+#
+# The 'architecture' field is a list of tuples:
+#   - Each tuple is: ([layer_sizes], "activation_name")
+#   - Layers within a block use the same activation
+#   - For example:
+#       architecture:
+#         - ([128, 128], "relu")
+#         - ([64, 32], "tanh")
+#     Creates: input -> Linear -> ReLU -> Linear -> ReLU -> 
+#              Linear -> Tanh -> Linear -> Tanh -> output
+
+architecture:
+  - layers: [128, 128, 64]
+    activation: "tanh"
+  - layers: [32]
+    activation: "relu"
+
+# Dropout probability (0.0 to disable)
+dropout: 0.0
+
+# Batch normalization: true or false
+batch_norm: false
+
+# Output activation (usually "identity" for regression)
+output_activation: "identity"

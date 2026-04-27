@@ -1,0 +1,35 @@
+# ============================================================================
+# Gaussian Process (Kriging) Model Configuration
+# ============================================================================
+# Defines the kernel structure and hyperparameter bounds for the GP.
+#
+# The GP model uses:
+#   - Mean: ConstantMean()
+#   - Covariance: ScaleKernel(BaseKernel) where BaseKernel includes:
+#       * lengthscale (θ): Controls spatial correlation length
+#       * power exponent (p): Bounded between 1.5 and 2.0 for generalized exponential
+#       * nugget (λ): Adds small diagonal regularization
+#
+# All hyperparameters are optimized via Exact Marginal Log-Likelihood.
+
+# Kernel type: "matern" or "exponential"
+kernel_type: "matern"
+
+# Initial hyperparameter estimates
+initial_lengthscale: 1.0
+initial_nugget: 0.01
+
+# Power exponent bounds for generalized exponential kernel
+power_exponent_lower: 1.5
+power_exponent_upper: 2.0
+
+# Likelihood noise scale (separate from nugget)
+likelihood_noise: 1e-4
+
+# Optimization settings
+n_training_steps: 100
+learning_rate: 0.1
+
+# Convergence tolerance
+abs_tol: 1e-5
+rel_tol: 1e-3

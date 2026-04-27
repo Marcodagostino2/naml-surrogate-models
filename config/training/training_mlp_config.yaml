@@ -1,0 +1,29 @@
+# ============================================================================
+# MLP Training Configuration
+# ============================================================================
+# Training hyperparameters specific to the standalone MLP.
+
+# Optimizer: "adam", "sgd", "adamw"
+optimizer: "adam"
+
+# Learning rate
+learning_rate: 0.001
+
+# Batch size for training
+batch_size: 128
+
+# Number of epochs
+n_epochs: 200
+
+# Early stopping
+early_stopping_patience: 20
+early_stopping_min_delta: 1e-5
+
+# Loss function: "mse", "mae", "huber"
+loss_function: "mse"
+
+# Device: "cuda", "cpu", "auto"
+device: "auto"
+
+# Checkpointing
+save_checkpoint_every_n_epochs: 10

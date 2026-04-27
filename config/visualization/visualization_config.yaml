@@ -1,0 +1,32 @@
+# ============================================================================
+# Visualization and Plotting Configuration
+# ============================================================================
+# Controls diagnostic plots and output formatting.
+
+# Plot output format: "png", "pdf", "svg"
+plot_format: "png"
+
+# Figure DPI for raster formats
+dpi: 300
+
+# Figure size (width, height) in inches
+figsize:
+  - 12
+  - 8
+
+# Color scheme
+colormap: "viridis"
+
+# Plot types to generate: true to enable, false to disable
+plots:
+  parity_plot: true
+  residual_plot: true
+  prediction_uncertainty: true
+  training_history: true
+  kernel_surface: true
+
+# Show plots interactively: true or false
+show_interactive: false
+
+# Save plots to disk: true or false
+save_plots: true

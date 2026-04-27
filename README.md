@@ -1,103 +1,210 @@
-# naml-surrogate-models
+# NAML Aerodynamic Surrogate Models
 
-MATLAB implementation of Kriging and Co-Kriging surrogate models for rocket aerodynamic coefficients in the context of the Numerical Analysis for Machine Learning (NAML) course.
+A unified, production-ready Python framework for training and comparing three different surrogate models for aerodynamic coefficient prediction:
 
-The project combines low-fidelity DATCOM data and high-fidelity CFD data to build fast surrogate models that can be queried inside simulation workflows.
+1. **MLP** - Multi-Layer Perceptron
+2. **GP (Kriging)** - Gaussian Process / Kriging  
+3. **Hybrid MLP+Kriging** - Combined feature extraction + non-stationary Kriging (under development)
 
-## Project goals
+## Features
 
-- Estimate aerodynamic coefficients as a function of flight conditions (Mach, angle variables, altitude, airbrake/protuberance parameter).
-- Reduce computational cost relative to direct CFD evaluations.
-- Preserve enough accuracy for repeated evaluations in trajectory and dynamics loops.
-- Compare single-fidelity and multi-fidelity surrogate strategies.
+- **Modular Architecture**: Clean separation of concerns across data, models, training, inference, and plotting modules.
+- **Dynamic Configuration**: YAML-based, hierarchical configuration system for easy experimentation.
+- **MLP Model**: Block-based architecture with flexible layer definitions, batch normalization, dropout, and multiple activation functions.
+- **GP/Kriging Model**: GPyTorch-based exact GP with learnable hyperparameters (lengthscale, power exponent, nugget).
+- **Uncertainty Quantification**: GP provides predictive uncertainty (±2σ confidence bands).
+- **Comprehensive Diagnostics**: Parity plots, residual analysis, training curves, uncertainty visualization.
+- **Reproducibility**: Config snapshots, random seed management, deterministic training.
+- **Output Management**: Timestamped runs with checkpoints, config copies, plots, and summary metrics.
 
-## Main features
+## Installation
 
-- Single-fidelity Kriging mode:
-	- CFD-only or DATCOM-only training.
-- Multi-fidelity Co-Kriging mode:
-	- DATCOM as low-fidelity support.
-	- CFD as high-fidelity reference.
-- Multi-output training (per aerodynamic coefficient).
-- Hyperparameter tuning with analytical gradients and MATLAB fmincon multi-start optimization.
-- Diagnostic pipeline for:
-	- timing,
-	- regression metrics,
-	- residual and parity plots,
-	- response surfaces/slices.
+### Prerequisites
+- Python 3.10 or higher
+- CUDA 12.1+ (optional, for GPU acceleration)
 
-## Repository structure
+### Setup
 
-- [mainCoefficientModel.m](mainCoefficientModel.m): entry-point workflow.
-- [config/](config): dataset and optimization settings.
-- [data/](data): persisted datasets and trained surrogate models.
-- [src/classes/](src/classes): object-oriented core:
-	- [src/classes/Dataset.m](src/classes/Dataset.m)
-	- [src/classes/SurrogateModel.m](src/classes/SurrogateModel.m)
-	- [src/classes/CoefficientModel.m](src/classes/CoefficientModel.m)
-	- [src/classes/ModelDiagnostics.m](src/classes/ModelDiagnostics.m)
-- [src/datasetGeneration/](src/datasetGeneration): dataset build/parsing utilities.
-- [src/surrogateModelFunctions/](src/surrogateModelFunctions): Kriging/Co-Kriging math, optimization helpers, and predictors.
-- [src/plot/](src/plot): plotting and metric utilities.
+1. Clone and navigate to project:
+   ```bash
+   cd naml-surrogate-models
+   ```
 
-## Quick start
+2. Create Python environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # Windows: venv\Scripts\activate
+   ```
 
-Open MATLAB in the repository root and run:
+3. Install dependencies:
+   ```bash
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
 
-```matlab
-coeffModel = mainCoefficientModel( ...
-		"mode", "multiFidelity", ...
-		"splitPerc", 0.85, ...
-		"reBuild", false, ...
-		"reTrain", false, ...
-		"plots", true, ...
-		"exportFormat", "png", ...
-		"plotSurface", true);
+## Quick Start
+
+### Train MLP Model
+
+```bash
+# Configure to use MLP
+# config/main_config.yaml: model_to_train: "mlp"
+
+python main.py
 ```
 
-Available modes:
+### Train Gaussian Process Model
 
-- "multiFidelity"
-- "cfd"
-- "datcom"
+```bash
+# Configure to use GP
+# config/main_config.yaml: model_to_train: "gp"
+
+python main.py
+```
+
+### Run with Custom Config
+
+```bash
+python main.py --main-config config/main_config.yaml --output-dir outputs
+```
+
+## Project Structure
+
+```
+├── README.md
+├── requirements.txt
+├── .gitignore
+├── main.py                          # Main entry point
+├── src/
+│   ├── __init__.py
+│   ├── data/
+│   │   ├── __init__.py
+│   │   └── dataset.py              # Data loading, preprocessing, splitting
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── mlp.py                  # MLP regression model
+│   │   ├── gp.py                   # GPyTorch-based Kriging model
+│   │   └── mlpgp.py                # Hybrid MLP+Kriging (placeholder)
+│   ├── training/
+│   │   ├── __init__.py
+│   │   ├── trainer.py              # MLPTrainer, GPTrainer classes
+│   │   └── metrics.py              # Evaluation metrics
+│   ├── inference/
+│   │   ├── __init__.py
+│   │   └── predictor.py            # Unified prediction interface
+│   ├── plot/
+│   │   ├── __init__.py
+│   │   └── diagnostics.py          # Plotting and visualization
+│   └── utils/
+│       ├── __init__.py
+│       └── config.py               # YAML I/O, logging, device management
+├── config/
+│   ├── main_config.yaml
+│   ├── dataset/
+│   │   └── dataset_config.yaml
+│   ├── model/
+│   │   ├── mlp_config.yaml
+│   │   ├── gp_config.yaml
+│   │   └── mlpgp_config.yaml
+│   ├── training/
+│   │   ├── training_mlp_config.yaml
+│   │   ├── training_gp_config.yaml
+│   │   └── training_mlpgp_config.yaml
+│   └── visualization/
+│       └── visualization_config.yaml
+└── outputs/
+    ├── mlp/
+    ├── gp/
+    └── mlpgp/
+```
 
 ## Configuration
 
-Edit these files to customize experiments:
+### Main Orchestrator (`config/main_config.yaml`)
 
-- [config/datasets/cfdDatasetConfig.m](config/datasets/cfdDatasetConfig.m)
-- [config/datasets/datcomDatasetConfig.m](config/datasets/datcomDatasetConfig.m)
-- [config/models/coefficientOptimizationConfig.m](config/models/coefficientOptimizationConfig.m)
+Controls which model to train and execution mode:
+- `global_seed`: Random seed for reproducibility
+- `model_to_train`: "mlp", "gp", "mlpgp", or "all"
+- `run_mode`: "training", "test", or "training+test"
 
-Typical configurable items include:
+### MLP Architecture (`config/model/mlp_config.yaml`)
 
-- variable bounds,
-- selected outputs,
-- train/test split,
-- polynomial trend degree,
-- bounds for theta, p, and nugget (lambda),
-- optimizer settings (algorithm, tolerances, iterations, multi-start count).
+Block-based layer definition:
+```yaml
+architecture:
+  - ([128, 128, 64], "relu")
+  - ([32], "relu")
+dropout: 0.0
+batch_norm: false
+output_activation: "identity"
+```
 
-## Diagnostics and outputs
+### GP Hyperparameters (`config/model/gp_config.yaml`)
 
-When plotting is enabled, diagnostics are exported under [results/](results) by mode and timestamp.
+Kernel configuration and optimization:
+```yaml
+kernel_type: "matern"
+initial_lengthscale: 1.0
+initial_nugget: 0.01
+likelihood_noise: 1e-4
+```
 
-The diagnostic pipeline reports:
+### Training Settings
 
-- training and inference timing,
-- RMSE, R2, MAPE, MaxAE,
-- residual diagnostics,
-- parity plots,
-- 1D/3D surrogate visualizations.
+Edit training configs to control optimization:
+- `optimizer`: "adam", "sgd", "adamw"
+- `learning_rate`: Learning rate
+- `n_epochs` (MLP) / `n_training_steps` (GP)
+- Early stopping and convergence criteria
 
-## Notes on persistence
+## Outputs
 
-By default in [mainCoefficientModel.m](mainCoefficientModel.m), these are currently set to false:
+Each training run creates `outputs/<model>/ run_<YYYYMMDD_HHMMSS>/` with:
+- **checkpoint.pt** - Trained model weights
+- **config/** - Config files used (for reproducibility)
+- **plot/** - Diagnostic plots (parity, residuals, training history, uncertainty)
 
-- saveDataset
-- saveModel
+At model level: `outputs/<model>/summary.csv` aggregates metrics across all runs.
 
-Set them to true if you want to persist rebuilt datasets and retrained models in [data/](data).
+## Python API Usage
+
+```python
+from src.data import load_and_preprocess_data
+from src.models import MLPRegressor
+from src.training import MLPTrainer
+from src.inference import Predictor
+
+# Load data
+data_bundle = load_and_preprocess_data(
+    csv_path="data/HYDDB_v2_output.csv",
+    input_columns=["col1", "col2", ...],
+    target_columns=["target"],
+)
+
+# Create and train model
+model = MLPRegressor(data_bundle.n_inputs, data_bundle.n_outputs, model_cfg)
+trainer = MLPTrainer(model, train_loader, val_loader, training_cfg)
+trainer.train()
+
+# Predict
+predictor = Predictor(model, target_scaler_mean, target_scaler_std)
+predictions = predictor.predict(X_test)
+```
+
+## Metrics
+
+Supported evaluation metrics:
+- MSE, MAE, RMSE, R², MAPE
+
+## References
+
+- **GPyTorch**: https://gpytorch.ai/
+- **PyTorch**: https://pytorch.org/
+- **Gaussian Processes**: Rasmussen & Williams (2006)
+
+## License
+
+Proprietary - NAML Project
 
 ## Dependencies
 

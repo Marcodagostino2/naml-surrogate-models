@@ -1,0 +1,35 @@
+# ============================================================================
+# Hybrid MLP+Kriging Model Configuration
+# ============================================================================
+# Defines both the MLP feature extractor and the non-stationary GP kernel.
+#
+# The MLP acts as a feature extractor that outputs local hyperparameters:
+#   - Lengthscale(x) from MLP output layer
+#   - Nugget(x) from MLP output layer
+# 
+# These are passed into a custom non-stationary GP kernel for prediction.
+
+# MLP feature extractor architecture
+mlp_architecture:
+  - ([128, 128, 64], "relu")
+  - ([32], "relu")
+
+# MLP dropout and batch norm
+mlp_dropout: 0.0
+mlp_batch_norm: false
+
+# Number of outputs from MLP feature extractor
+# (typically 2: lengthscale and nugget, or more for richer kernels)
+mlp_output_dim: 2
+
+# MLP output activation (must use Softplus to ensure positive params)
+mlp_output_activation: "softplus"
+
+# GP kernel settings for non-stationary version
+kernel_type: "matern"
+likelihood_noise: 1e-4
+
+# Joint training settings
+mlp_learning_rate: 0.001
+gp_learning_rate: 0.01
+n_training_steps: 200
