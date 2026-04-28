@@ -276,10 +276,16 @@ def train_gp(
     )
 
     # Train
+    # Validation tensors
+    X_val_t = torch.from_numpy(data_bundle.X_val).float()
+    y_val_t = torch.from_numpy(data_bundle.y_val).float()
+
     trainer = GPTrainer(
         model=model,
         X_train=X_train_t,
         y_train=y_train_t,
+        X_val=X_val_t,
+        y_val=y_val_t,
         training_cfg=training_cfg,
         device=device,
     )
@@ -387,10 +393,15 @@ def train_mlpgp(
         likelihood=likelihood,
     )
 
+    X_val_t = torch.from_numpy(data_bundle.X_val).float()
+    y_val_t = torch.from_numpy(data_bundle.y_val).float()
+
     trainer = MLPGPTrainer(
         model=model,
         X_train=X_train_t,
         y_train=y_train_t,
+        X_val=X_val_t,
+        y_val=y_val_t,
         training_cfg=training_cfg,
         device=device,
     )

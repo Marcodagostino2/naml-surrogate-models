@@ -11,6 +11,7 @@ Supports:
 from __future__ import annotations
 
 import time
+import copy
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -195,6 +196,11 @@ class MLPTrainer:
             if val_loss < self.best_val_loss - self.early_stopping_min_delta:
                 self.best_val_loss = val_loss
                 self.patience_counter = 0
+                # Save best model state
+                try:
+                    self._best_model_state = copy.deepcopy(self.model.state_dict())
+                except Exception:
+                    self._best_model_state = None
             else:
                 self.patience_counter += 1
 
@@ -210,6 +216,14 @@ class MLPTrainer:
 
         elapsed = time.time() - start_time
         logger.info(f"Training completed in {elapsed:.2f} seconds")
+
+        # Restore best model state if available
+        if hasattr(self, "_best_model_state") and self._best_model_state is not None:
+            try:
+                self.model.load_state_dict(self._best_model_state)
+                logger.info("Restored MLP model to best validation state")
+            except Exception:
+                logger.warning("Failed to restore best MLP model state_dict")
 
         return {
             "train_losses": self.train_losses,
@@ -232,6 +246,8 @@ class GPTrainer:
         X_train: torch.Tensor,
         y_train: torch.Tensor,
         training_cfg: Dict[str, Any],
+        X_val: Optional[torch.Tensor] = None,
+        y_val: Optional[torch.Tensor] = None,
         device: Optional[torch.device] = None,
     ) -> None:
         """
@@ -259,7 +275,8 @@ class GPTrainer:
         self.model.to(self.device)
         self.X_train = self.X_train.to(self.device)
         self.y_train = self.y_train.to(self.device)
-
+        self.X_val = X_val.to(self.device) if X_val is not None else None
+        self.y_val = y_val.to(self.device) if y_val is not None else None
         self.objective_name = str(training_cfg.get("objective", "concentrated")).lower()
         self.concentrated_cholesky_jitter = float(training_cfg.get("concentrated_cholesky_jitter", 1e-8))
 
@@ -303,6 +320,10 @@ class GPTrainer:
         self.last_profiled_mean: Optional[torch.Tensor] = None
 
         logger.info(f"GPTrainer initialized on device: {self.device}")
+
+        # Best-validation tracking
+        self.best_val_loss = float("inf")
+        self._best_model_state: Optional[Dict[str, torch.Tensor]] = None
 
     def _optimizable_parameters(self):
         if self.objective_name == "concentrated":
@@ -411,12 +432,39 @@ class GPTrainer:
                     logger.info(f"Converged at step {step} (rel_change={rel_change:.6f})")
                     break
 
+            # Validation check and best-state save (if validation provided)
+            if self.X_val is not None and self.y_val is not None:
+                try:
+                    self.model.eval()
+                    with torch.no_grad():
+                        out = self.model(self.X_val)
+                        mean = out.mean
+                        val_loss = torch.nn.functional.mse_loss(mean, self.y_val).item()
+
+                    if val_loss < self.best_val_loss - 1e-12:
+                        self.best_val_loss = val_loss
+                        try:
+                            self._best_model_state = copy.deepcopy(self.model.state_dict())
+                            logger.info(f"Saved best GP model at step {step} (val_loss={val_loss:.6e})")
+                        except Exception:
+                            self._best_model_state = None
+                except Exception:
+                    logger.debug("Validation evaluation failed during GP training step")
+
         elapsed = time.time() - start_time
 
         if self.objective_name == "concentrated":
             self._apply_profiled_parameters()
 
         logger.info(f"GP optimization completed in {elapsed:.2f} seconds")
+
+        # Restore best validation state if available
+        if self._best_model_state is not None:
+            try:
+                self.model.load_state_dict(self._best_model_state)
+                logger.info("Restored GP model to best validation state")
+            except Exception:
+                logger.warning("Failed to restore best GP model state_dict")
 
         return {
             "mll_history": self.mll_history,
@@ -469,6 +517,8 @@ class MLPGPTrainer:
         X_train: torch.Tensor,
         y_train: torch.Tensor,
         training_cfg: Dict[str, Any],
+        X_val: Optional[torch.Tensor] = None,
+        y_val: Optional[torch.Tensor] = None,
         device: Optional[torch.device] = None,
     ) -> None:
         self.model = model
@@ -480,6 +530,8 @@ class MLPGPTrainer:
         self.model.to(self.device)
         self.X_train = self.X_train.to(self.device)
         self.y_train = self.y_train.to(self.device)
+        self.X_val = X_val.to(self.device) if X_val is not None else None
+        self.y_val = y_val.to(self.device) if y_val is not None else None
 
         self.objective_name = self.config.objective
         if self.objective_name == "concentrated" and not self._supports_concentrated_objective():
@@ -500,6 +552,10 @@ class MLPGPTrainer:
         self.mll_history: List[float] = []
         self.last_profiled_sigma2: Optional[torch.Tensor] = None
         self.last_profiled_mean: Optional[torch.Tensor] = None
+
+        # Best-validation tracking
+        self.best_val_loss = float("inf")
+        self._best_model_state: Optional[Dict[str, torch.Tensor]] = None
 
         logger.info(f"MLPGPTrainer initialized on device: {self.device}, objective={self.objective_name}")
 
@@ -650,11 +706,37 @@ class MLPGPTrainer:
                     logger.info(f"Converged at step {step} (rel_change={rel_change:.6f})")
                     break
 
+            # Validation check and best-state save (if validation provided)
+            if self.X_val is not None and self.y_val is not None and step % check_every == 0:
+                try:
+                    self.model.eval()
+                    with torch.no_grad():
+                        out = self.model(self.X_val)
+                        mean = out.mean
+                        val_loss = torch.nn.functional.mse_loss(mean, self.y_val).item()
+
+                    if val_loss < self.best_val_loss - 1e-12:
+                        self.best_val_loss = val_loss
+                        try:
+                            self._best_model_state = copy.deepcopy(self.model.state_dict())
+                            logger.info(f"Saved best MLPGP model at step {step} (val_loss={val_loss:.6e})")
+                        except Exception:
+                            self._best_model_state = None
+                except Exception:
+                    logger.debug("Validation evaluation failed during MLPGP training step")
+
         if self.objective_name == "concentrated":
             self._apply_profiled_parameters()
 
         elapsed = time.time() - start_time
         logger.info(f"MLPGP optimization completed in {elapsed:.2f} seconds")
+        # Restore best validation state if available
+        if self._best_model_state is not None:
+            try:
+                self.model.load_state_dict(self._best_model_state)
+                logger.info("Restored MLPGP model to best validation state")
+            except Exception:
+                logger.warning("Failed to restore best MLPGP model state_dict")
 
         return {
             "mll_history": self.mll_history,
