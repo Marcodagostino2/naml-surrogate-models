@@ -7,8 +7,8 @@ __author__ = "NAML Surrogate Models Team"
 
 from src.data import DataBundle, load_and_preprocess_data
 from src.inference import Predictor
-from src.models import GPRegressionModel, MLPRegressor, MLPGPHybrid
-from src.training import GPTrainer, MLPTrainer, compute_all_metrics
+from src.models import GPRegressionModel, MLPRegressor, MLPGPModel
+from src.training import GPTrainer, MLPTrainer, MLPGPTrainer, compute_all_metrics
 from src.utils import (
     load_json,
     load_pickle,
@@ -26,9 +26,10 @@ __all__ = [
     "load_and_preprocess_data",
     "MLPRegressor",
     "GPRegressionModel",
-    "MLPGPHybrid",
+    "MLPGPModel",
     "MLPTrainer",
     "GPTrainer",
+    "MLPGPTrainer",
     "compute_all_metrics",
     "Predictor",
     "load_yaml",

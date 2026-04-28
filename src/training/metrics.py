@@ -14,6 +14,19 @@ import numpy as np
 import torch
 
 
+def _to_numpy_1d_or_2d(value: np.ndarray | torch.Tensor) -> np.ndarray:
+    """Convert tensors/arrays to a NumPy array with at least one dimension."""
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().numpy()
+
+    array = np.asarray(value)
+    if array.ndim == 0:
+        return array.reshape(1)
+    if array.ndim > 2:
+        raise ValueError(f"Expected 1D or 2D array, got shape {array.shape}")
+    return array
+
+
 def mse(y_true: np.ndarray | torch.Tensor, y_pred: np.ndarray | torch.Tensor) -> float:
     """
     Compute Mean Squared Error.
@@ -30,10 +43,11 @@ def mse(y_true: np.ndarray | torch.Tensor, y_pred: np.ndarray | torch.Tensor) ->
     float
         MSE value.
     """
-    if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
-    if isinstance(y_pred, torch.Tensor):
-        y_pred = y_pred.cpu().numpy()
+    y_true = _to_numpy_1d_or_2d(y_true)
+    y_pred = _to_numpy_1d_or_2d(y_pred)
+
+    y_true = np.squeeze(y_true)
+    y_pred = np.squeeze(y_pred)
 
     return np.mean((y_true - y_pred) ** 2)
 
@@ -54,10 +68,8 @@ def mae(y_true: np.ndarray | torch.Tensor, y_pred: np.ndarray | torch.Tensor) ->
     float
         MAE value.
     """
-    if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
-    if isinstance(y_pred, torch.Tensor):
-        y_pred = y_pred.cpu().numpy()
+    y_true = np.squeeze(_to_numpy_1d_or_2d(y_true))
+    y_pred = np.squeeze(_to_numpy_1d_or_2d(y_pred))
 
     return np.mean(np.abs(y_true - y_pred))
 
@@ -78,10 +90,8 @@ def r2_score(y_true: np.ndarray | torch.Tensor, y_pred: np.ndarray | torch.Tenso
     float
         R² score (1.0 is perfect, 0.0 is baseline, negative is worse than baseline).
     """
-    if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
-    if isinstance(y_pred, torch.Tensor):
-        y_pred = y_pred.cpu().numpy()
+    y_true = np.squeeze(_to_numpy_1d_or_2d(y_true))
+    y_pred = np.squeeze(_to_numpy_1d_or_2d(y_pred))
 
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
@@ -127,10 +137,8 @@ def mape(y_true: np.ndarray | torch.Tensor, y_pred: np.ndarray | torch.Tensor) -
     float
         MAPE value (as percentage).
     """
-    if isinstance(y_true, torch.Tensor):
-        y_true = y_true.cpu().numpy()
-    if isinstance(y_pred, torch.Tensor):
-        y_pred = y_pred.cpu().numpy()
+    y_true = np.squeeze(_to_numpy_1d_or_2d(y_true))
+    y_pred = np.squeeze(_to_numpy_1d_or_2d(y_pred))
 
     mask = y_true != 0
     if not mask.any():

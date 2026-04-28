@@ -82,6 +82,7 @@ Thumbs.db
 # Project specific
 outputs/
 results/
+scripts/
 report/
 data/*.csv
 *.mat

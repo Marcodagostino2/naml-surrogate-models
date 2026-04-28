@@ -1,35 +1,38 @@
 # ============================================================================
 # Hybrid MLP+Kriging Model Configuration
 # ============================================================================
-# Defines both the MLP feature extractor and the non-stationary GP kernel.
+# Explicit MLPGP configuration.
 #
-# The MLP acts as a feature extractor that outputs local hyperparameters:
-#   - Lengthscale(x) from MLP output layer
-#   - Nugget(x) from MLP output layer
-# 
-# These are passed into a custom non-stationary GP kernel for prediction.
+# feature_extractor controls the MLP that outputs local kernel parameters:
+#   - sigma(x): local amplitude factor
+#   - l(x): local lengthscale (scalar or per-dimension)
+#
+# kernel keeps the stationary kernel hyperparameters separate and explicit:
+#   - theta
+#   - power_exponent
+#   - nugget
+#   - tau2
+#   - likelihood_noise
 
-# MLP feature extractor architecture
-mlp_architecture:
-  - ([128, 128, 64], "relu")
-  - ([32], "relu")
+feature_extractor:
+  architecture:
+   - layers: [128, 128, 64]
+     activation: "tanh"
+   - layers: [32, 32]
+     activation: "relu"
+  dropout: 0.0
+  batch_norm: false
+  output_activation: "softplus"
+  sigma_floor: 1e-8
+  lengthscale_floor: 1e-8
+  lengthscale_mode: "per_dimension"
 
-# MLP dropout and batch norm
-mlp_dropout: 0.0
-mlp_batch_norm: false
+kernel:
+  type: "exponential"
+  theta: [1.0, 1.0, 1.0, 1.0, 1.0]
+  power_exponent: [2.0, 2.0, 2.0, 2.0, 2.0]
+  nugget: 0.01
+  tau2: 1.0
+  likelihood_noise: 1e-8
 
-# Number of outputs from MLP feature extractor
-# (typically 2: lengthscale and nugget, or more for richer kernels)
-mlp_output_dim: 2
-
-# MLP output activation (must use Softplus to ensure positive params)
-mlp_output_activation: "softplus"
-
-# GP kernel settings for non-stationary version
-kernel_type: "matern"
-likelihood_noise: 1e-4
-
-# Joint training settings
-mlp_learning_rate: 0.001
-gp_learning_rate: 0.01
-n_training_steps: 200
+trend_degree: 1

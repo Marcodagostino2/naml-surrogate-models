@@ -3,17 +3,23 @@
 # ============================================================================
 # Training hyperparameters specific to the standalone GP using GPyTorch.
 #
-# The GP is trained by maximizing the Exact Marginal Log-Likelihood (EMLL),
-# not via stochastic gradient descent on a loss function.
+# The GP is trained by maximizing the exact marginal log-likelihood,
+# profiling out the mean coefficients and tau^2 analytically.
 
-# Optimizer: "adam", "sgd"
-optimizer: "adam"
+# Optimizer: "adam", "sgd", "lbfgs"
+optimizer: "lbfgs"
+
+# Objective: "concentrated" or "exact_mll"
+objective: "exact_mll"
 
 # Learning rate for EMLL optimization
-learning_rate: 0.1
+learning_rate: 0.05
 
 # Number of optimization steps
-n_training_steps: 200
+n_training_steps: 2000
+
+# Maximum inner iterations per LBFGS step
+lbfgs_max_iter: 20
 
 # Convergence criteria
 abs_tol: 1e-5
@@ -24,6 +30,9 @@ convergence_check_interval: 10
 
 # Device: "cuda", "cpu", "auto"
 device: "auto"
+
+# Numerical jitter used only for Cholesky stabilization.
+concentrated_cholesky_jitter: 1e-8
 
 # Checkpointing
 save_checkpoint_every_n_steps: 20

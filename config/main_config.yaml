@@ -6,10 +6,10 @@
 # dynamically based on the 'model_to_train' selection.
 
 # Global random seed for reproducibility
-global_seed: 42
+global_seed: 20
 
 # Model selection: "mlp", "gp", "mlpgp", or "all"
-model_to_train: "mlp"
+model_to_train: "mlpgp"
 
 # Execution mode: "training", "test", or "training+test"
 run_mode: "training"

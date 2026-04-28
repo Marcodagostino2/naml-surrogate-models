@@ -3,20 +3,22 @@ Gaussian Process (Kriging) model for aerodynamic coefficient prediction.
 
 Implemented using GPyTorch with:
 - Exact inference (ExactGP)
-- ConstantMean
-- ScaleKernel wrapping a spatial kernel (Matérn or generalized exponential)
-- Learnable hyperparameters: lengthscale, power exponent, nugget
+- Polynomial trend mean
+- Exponential covariance kernel with learnable theta, p, and nugget
+- Global variance scale tau^2 via ScaleKernel
 """
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from itertools import combinations_with_replacement
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import gpytorch
 import torch
+from gpytorch.constraints import GreaterThan, Interval
 from gpytorch.distributions import MultivariateNormal
-from gpytorch.kernels import MaternKernel, ScaleKernel
-from gpytorch.means import ConstantMean
+from gpytorch.kernels import ScaleKernel
+from gpytorch.means import Mean
 from gpytorch.models import ExactGP
 
 from src.utils import setup_logger
@@ -24,99 +26,127 @@ from src.utils import setup_logger
 logger = setup_logger(__name__)
 
 
-class GeneralizedExponentialKernel(gpytorch.kernels.Kernel):
-    """
-    Generalized exponential kernel with power exponent p.
+def _require_config_value(config: Dict, key: str, context: str):
+    if key not in config:
+        raise KeyError(f"Missing required config key '{key}' in {context}.")
+    return config[key]
 
-    The kernel is: k(x, x') = τ² * exp(-||x - x'||^p / θ²)
 
-    where:
-    - τ² is the scale (global variance)
-    - θ is the lengthscale
-    - p is the power exponent (1.5 to 2.0)
-    - λ is the nugget (added to diagonal)
-    """
+class PolynomialTrendMean(Mean):
+    """Polynomial trend mean with all monomials up to a given degree."""
+
+    def __init__(self, input_dim: int, degree: int = 1) -> None:
+        super().__init__()
+        self.input_dim = int(input_dim)
+        self.degree = int(degree)
+        self.exponents: List[Tuple[int, ...]] = self._build_exponents(self.input_dim, self.degree)
+        self.register_parameter(
+            "coefficients",
+            torch.nn.Parameter(torch.zeros(len(self.exponents), dtype=torch.get_default_dtype())),
+        )
+
+    @staticmethod
+    def _build_exponents(input_dim: int, degree: int) -> List[Tuple[int, ...]]:
+        exponents: List[Tuple[int, ...]] = [tuple()]
+        for current_degree in range(1, degree + 1):
+            for combo in combinations_with_replacement(range(input_dim), current_degree):
+                exponents.append(combo)
+        return exponents
+
+    def _design_matrix(self, x: torch.Tensor) -> torch.Tensor:
+        features: List[torch.Tensor] = [torch.ones(x.shape[0], device=x.device, dtype=x.dtype)]
+
+        for exponent in self.exponents[1:]:
+            term = torch.ones(x.shape[0], device=x.device, dtype=x.dtype)
+            for feature_index in exponent:
+                term = term * x[:, feature_index]
+            features.append(term)
+
+        return torch.stack(features, dim=-1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._design_matrix(x) @ self.coefficients
+
+
+class ExponentialKernel(gpytorch.kernels.Kernel):
+    """Anisotropic generalized exponential covariance with learnable theta, p, and nugget."""
 
     is_stationary = True
-    has_lengthscale = True
+    has_lengthscale = False
 
-    def __init__(self, power_exponent: float = 2.0, **kwargs) -> None:
-        """
-        Initialize GeneralizedExponentialKernel.
-
-        Parameters
-        ----------
-        power_exponent : float, optional
-            Power exponent p. Default: 2.0 (squared exponential).
-        """
+    def __init__(
+        self,
+        input_dim: int,
+        initial_theta: float | Sequence[float],
+        initial_power_exponent: float | Sequence[float],
+        initial_nugget: float,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
-        # Register power exponent as a parameter (bounded)
+        self.input_dim = int(input_dim)
+
+        initial_theta_tensor = self._coerce_vector(initial_theta, "initial_theta")
+        initial_power_tensor = self._coerce_vector(initial_power_exponent, "initial_power_exponent")
+
+        self.register_parameter(
+            "raw_theta",
+            torch.nn.Parameter(initial_theta_tensor.clone()),
+        )
         self.register_parameter(
             "raw_power_exponent",
-            torch.nn.Parameter(torch.tensor(power_exponent)),
+            torch.nn.Parameter(initial_power_tensor.clone()),
         )
+        self.register_parameter(
+            "raw_nugget",
+            torch.nn.Parameter(torch.tensor(float(initial_nugget))),
+        )
+        self.register_constraint("raw_theta", GreaterThan(1e-10))
+        self.register_constraint("raw_power_exponent", Interval(1.5, 2.0))
+        self.register_constraint("raw_nugget", GreaterThan(1e-10))
+
+    def _coerce_vector(self, value: float | Sequence[float], name: str) -> torch.Tensor:
+        tensor = torch.as_tensor(value, dtype=torch.get_default_dtype()).flatten()
+        if tensor.numel() == 1:
+            tensor = tensor.repeat(self.input_dim)
+        elif tensor.numel() != self.input_dim:
+            raise ValueError(f"{name} must be a scalar or have one value per input dimension ({self.input_dim}).")
+        return tensor
+
+    @property
+    def theta(self) -> torch.Tensor:
+        return self.raw_theta_constraint.transform(self.raw_theta)
 
     @property
     def power_exponent(self) -> torch.Tensor:
-        """Get power exponent with constraints (1.5 to 2.0)."""
-        return torch.clamp(self.raw_power_exponent, min=1.5, max=2.0)
+        return self.raw_power_exponent_constraint.transform(self.raw_power_exponent)
+
+    @property
+    def nugget(self) -> torch.Tensor:
+        return self.raw_nugget_constraint.transform(self.raw_nugget)
+
+    def _anisotropic_distance(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+        diff = (x1.unsqueeze(-2) - x2.unsqueeze(-3)).abs()
+        scaled = self.theta * diff.pow(self.power_exponent)
+        return torch.sum(scaled, dim=-1)
 
     def forward(self, x1: torch.Tensor, x2: torch.Tensor, diag: bool = False, **kwargs) -> torch.Tensor:
-        """
-        Compute kernel matrix.
-
-        Parameters
-        ----------
-        x1 : torch.Tensor
-            First set of points.
-        x2 : torch.Tensor
-            Second set of points.
-        diag : bool, optional
-            If True, only return diagonal. Default: False.
-
-        Returns
-        -------
-        torch.Tensor
-            Kernel matrix or diagonal.
-        """
-        # Compute distance scaled by lengthscale
-        x1_ = x1 / self.lengthscale
-        x2_ = x2 / self.lengthscale
-
         if diag:
-            diff = x1_ - x2_
-            distance = torch.norm(diff, p=2, dim=-1)
-        else:
-            diff = x1_.unsqueeze(-2) - x2_.unsqueeze(-3)
-            distance = torch.norm(diff, p=2, dim=-1)
+            base_diag = torch.ones(x1.shape[:-1], device=x1.device, dtype=x1.dtype)
+            return base_diag + self.nugget
 
-        # Generalized exponential: exp(-distance^p)
-        return torch.exp(-(distance ** self.power_exponent))
+        distance = self._anisotropic_distance(x1, x2)
+        covariance = torch.exp(-distance)
+
+        same_inputs = x1.shape == x2.shape and torch.equal(x1, x2)
+        if same_inputs:
+            eye = torch.eye(x1.shape[-2], device=x1.device, dtype=x1.dtype)
+            covariance = covariance + self.nugget * eye
+
+        return covariance
 
 
 class GPRegressionModel(ExactGP):
-    """
-    Exact Gaussian Process regression model for aerodynamic prediction.
-
-    Features:
-    - ConstantMean (μ)
-    - ScaleKernel(GeneralizedExponentialKernel)
-    - Marginal log-likelihood optimization
-    - Supports uncertainty quantification
-
-    Parameters
-    ----------
-    X_train : torch.Tensor
-        Training inputs (n_train, n_features).
-    y_train : torch.Tensor
-        Training targets (n_train, n_outputs).
-    model_cfg : Dict
-        Configuration with keys:
-        - kernel_type: "matern" or "exponential"
-        - initial_lengthscale: float
-        - initial_nugget: float
-        - likelihood_noise: float
-    """
+    """Exact Gaussian Process regression model for aerodynamic prediction."""
 
     def __init__(
         self,
@@ -125,65 +155,46 @@ class GPRegressionModel(ExactGP):
         model_cfg: Dict,
         likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
     ) -> None:
-        """
-        Initialize GPRegressionModel.
-
-        Parameters
-        ----------
-        X_train : torch.Tensor
-            Training inputs.
-        y_train : torch.Tensor
-            Training targets.
-        model_cfg : Dict
-            Model configuration.
-        likelihood : gpytorch.likelihoods.Likelihood, optional
-            Custom likelihood. If None, Gaussian likelihood is created.
-        """
         if likelihood is None:
-            likelihood = gpytorch.likelihoods.GaussianLikelihood()
+            likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=GreaterThan(1e-10))
 
         super().__init__(X_train, y_train, likelihood)
 
-        # Mean
-        self.mean_module = ConstantMean()
+        kernel_cfg = model_cfg.get("kernel", model_cfg)
+        trend_degree = int(_require_config_value(model_cfg, "trend_degree", "GP model config"))
+        self.mean_module = PolynomialTrendMean(input_dim=X_train.shape[-1], degree=trend_degree)
 
-        # Covariance kernel
-        kernel_type = model_cfg.get("kernel_type", "matern").lower()
+        kernel_type = str(kernel_cfg.get("type", kernel_cfg.get("kernel_type", "exponential"))).lower()
+        if kernel_type != "exponential":
+            raise ValueError("Only the exponential kernel is supported in this refactor.")
 
-        if kernel_type == "exponential":
-            base_kernel = GeneralizedExponentialKernel(power_exponent=2.0)
-        elif kernel_type == "matern":
-            base_kernel = MaternKernel(nu=2.5)
-        else:
-            raise ValueError(f"Unknown kernel type: {kernel_type}")
+        initial_theta = _require_config_value(kernel_cfg, "theta", "GP kernel config")
+        initial_p = _require_config_value(kernel_cfg, "power_exponent", "GP kernel config")
+        initial_nugget = float(_require_config_value(kernel_cfg, "nugget", "GP kernel config"))
+        initial_tau2 = float(_require_config_value(kernel_cfg, "tau2", "GP kernel config"))
+        likelihood_noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "GP kernel config"))
 
-        # Initialize lengthscale
-        initial_lengthscale = float(model_cfg.get("initial_lengthscale", 1.0))
-        base_kernel.lengthscale = initial_lengthscale
+        base_kernel = ExponentialKernel(
+            input_dim=X_train.shape[-1],
+            initial_power_exponent=initial_p,
+            initial_theta=initial_theta,
+            initial_nugget=initial_nugget,
+        )
 
         self.covar_module = ScaleKernel(base_kernel)
-
-        # Set likelihood noise
-        likelihood_noise = float(model_cfg.get("likelihood_noise", 1e-4))
+        self.covar_module.outputscale = initial_tau2
         self.likelihood.noise = likelihood_noise
+        self.likelihood.raw_noise.requires_grad_(False)
 
-        logger.info(f"GPRegressionModel initialized with kernel_type={kernel_type}")
-        logger.info(f"Initial lengthscale={initial_lengthscale}, noise={likelihood_noise}")
+        logger.info(
+            "GPRegressionModel initialized: "
+            f"trend_degree={trend_degree}, theta={base_kernel.theta.flatten().detach().cpu().tolist()}, "
+            f"power_exponent={base_kernel.power_exponent.flatten().detach().cpu().tolist()}, "
+            f"nugget={float(base_kernel.nugget.item()):.6f}, "
+            f"tau2={float(self.covar_module.outputscale.item()):.6f}, noise={likelihood_noise}"
+        )
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:
-        """
-        Forward pass through GP.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input points (n, n_features).
-
-        Returns
-        -------
-        MultivariateNormal
-            Multivariate normal distribution.
-        """
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x)
         return MultivariateNormal(mean_x, covar_x)

@@ -10,12 +10,14 @@ Supports:
 from __future__ import annotations
 
 from typing import Optional, Tuple
+import warnings
 
 import gpytorch
 import numpy as np
 import torch
+from gpytorch.utils.warnings import GPInputWarning
 
-from src.models import GPRegressionModel, MLPRegressor
+from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
 from src.utils import resolve_device, setup_logger
 
 logger = setup_logger(__name__)
@@ -30,7 +32,7 @@ class Predictor:
 
     def __init__(
         self,
-        model: MLPRegressor | GPRegressionModel,
+        model: MLPRegressor | GPRegressionModel | MLPGPModel,
         target_scaler_mean: np.ndarray,
         target_scaler_std: np.ndarray,
         device: Optional[torch.device] = None,
@@ -40,7 +42,7 @@ class Predictor:
 
         Parameters
         ----------
-        model : MLPRegressor or GPRegressionModel
+        model : MLPRegressor or GPRegressionModel or MLPGPModel
             Trained model.
         target_scaler_mean : np.ndarray
             Mean used for target normalization.
@@ -109,10 +111,14 @@ class Predictor:
         """
         X_t = torch.from_numpy(X).float().to(self.device)
 
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+        with torch.no_grad(), warnings.catch_warnings():
+            warnings.simplefilter("ignore", GPInputWarning)
             posterior = self.model.likelihood(self.model(X_t))
             mean_normalized = posterior.mean.cpu().numpy()
             std_normalized = posterior.stddev.cpu().numpy()
+
+        mean_normalized = np.asarray(mean_normalized).reshape(-1)
+        std_normalized = np.asarray(std_normalized).reshape(-1)
 
         if denormalize:
             mean = mean_normalized * self.target_scaler_std + self.target_scaler_mean
@@ -122,7 +128,7 @@ class Predictor:
             mean = mean_normalized
             std = std_normalized
 
-        return mean, std
+        return np.asarray(mean).reshape(-1, 1) if np.asarray(mean).ndim == 1 else np.asarray(mean), np.asarray(std).reshape(-1, 1) if np.asarray(std).ndim == 1 else np.asarray(std)
 
     def predict(
         self,
@@ -149,7 +155,7 @@ class Predictor:
         """
         if isinstance(self.model, MLPRegressor):
             return self.predict_mlp(X, denormalize=denormalize)
-        elif isinstance(self.model, GPRegressionModel):
+        elif isinstance(self.model, (GPRegressionModel, MLPGPModel)):
             mean, std = self.predict_gp(X, denormalize=denormalize)
             if return_uncertainty:
                 return mean, std

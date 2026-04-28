@@ -17,14 +17,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import numpy as np
 import torch
 
 from src.data import load_and_preprocess_data
 from src.inference import Predictor
-from src.models import GPRegressionModel, MLPRegressor
+from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
 from src.plot import generate_diagnostics
-from src.training import GPTrainer, MLPTrainer, compute_all_metrics
+from src.training import GPTrainer, MLPTrainer, MLPGPTrainer, compute_all_metrics
 from src.utils import (
     load_yaml,
     resolve_device,
@@ -160,7 +159,6 @@ def train_mlp(
     batch_size = int(dataset_cfg.get("batch_size", 128))
     train_loader = data_bundle.get_train_loader(batch_size=batch_size)
     val_loader = data_bundle.get_val_loader(batch_size=batch_size)
-    test_loader = data_bundle.get_test_loader(batch_size=batch_size)
 
     # Train
     trainer = MLPTrainer(
@@ -341,6 +339,113 @@ def train_gp(
     }
 
 
+def train_mlpgp(
+    data_bundle,
+    model_cfg: Dict,
+    training_cfg: Dict,
+    run_dir: Path,
+    device: Optional[torch.device] = None,
+) -> Dict[str, Any]:
+    """
+    Train end-to-end MLPGP model.
+
+    Parameters
+    ----------
+    data_bundle
+        DataBundle object.
+    model_cfg : Dict
+        MLPGP model configuration.
+    training_cfg : Dict
+        MLPGP training configuration.
+    run_dir : Path
+        Run output directory.
+    device : torch.device, optional
+        Device to use.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Results including metrics and model.
+    """
+    logger.info("=" * 60)
+    logger.info("Training MLPGP Model")
+    logger.info("=" * 60)
+
+    device = device or resolve_device(training_cfg.get("device", "auto"))
+
+    X_train_t = torch.from_numpy(data_bundle.X_train).float()
+    y_train_t = torch.from_numpy(data_bundle.y_train).float()
+
+    if y_train_t.ndim == 2 and y_train_t.shape[1] == 1:
+        y_train_t = y_train_t.squeeze(-1)
+
+    likelihood = None
+    model = MLPGPModel(
+        X_train=X_train_t,
+        y_train=y_train_t,
+        model_cfg=model_cfg,
+        likelihood=likelihood,
+    )
+
+    trainer = MLPGPTrainer(
+        model=model,
+        X_train=X_train_t,
+        y_train=y_train_t,
+        training_cfg=training_cfg,
+        device=device,
+    )
+
+    history = trainer.train()
+
+    logger.info("Evaluating MLPGP on test set...")
+
+    predictor = Predictor(
+        model=model,
+        target_scaler_mean=data_bundle.target_scaler_mean,
+        target_scaler_std=data_bundle.target_scaler_std,
+        device=device,
+    )
+
+    y_train_pred, y_train_std = predictor.predict(data_bundle.X_train, return_uncertainty=True)
+    y_val_pred, y_val_std = predictor.predict(data_bundle.X_val, return_uncertainty=True)
+    y_test_pred, y_test_std = predictor.predict(data_bundle.X_test, return_uncertainty=True)
+
+    y_train = data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
+    y_val = data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
+    y_test = data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
+
+    train_metrics = compute_all_metrics(y_train, y_train_pred)
+    val_metrics = compute_all_metrics(y_val, y_val_pred)
+    test_metrics = compute_all_metrics(y_test, y_test_pred)
+
+    logger.info(f"Test R²: {test_metrics['r2']:.6f}, Test RMSE: {test_metrics['rmse']:.6f}")
+
+    generate_diagnostics(
+        y_train_true=y_train,
+        y_train_pred=y_train_pred,
+        y_val_true=y_val,
+        y_val_pred=y_val_pred,
+        y_test_true=y_test,
+        y_test_pred=y_test_pred,
+        y_val_std=y_val_std,
+        y_test_std=y_test_std,
+        output_dir=run_dir / "plot",
+    )
+
+    checkpoint_path = run_dir / "checkpoint.pt"
+    torch.save(model.state_dict(), checkpoint_path)
+    logger.info(f"Model checkpoint saved to {checkpoint_path}")
+
+    return {
+        "model": model,
+        "predictor": predictor,
+        "train_metrics": train_metrics,
+        "val_metrics": val_metrics,
+        "test_metrics": test_metrics,
+        "history": history,
+    }
+
+
 def main() -> None:
     """Main training pipeline orchestrator."""
 
@@ -457,8 +562,12 @@ def main() -> None:
                     run_dir=run_dir,
                 )
             else:
-                logger.warning("MLPGP training is not implemented yet. Skipping.")
-                continue
+                results = train_mlpgp(
+                    data_bundle=data_bundle,
+                    model_cfg=model_cfg,
+                    training_cfg=training_cfg,
+                    run_dir=run_dir,
+                )
 
             summary_csv_path = output_base_dir / selected_model / "summary.csv"
             run_info = {

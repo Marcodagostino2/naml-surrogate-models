@@ -3,26 +3,37 @@
 # ============================================================================
 # Joint training settings for the end-to-end MLP+Kriging hybrid model.
 #
-# The model is trained by maximizing the Exact Marginal Log-Likelihood,
-# where the MLP hyperparameters are jointly optimized with the GP.
+# The model can use:
+# - objective: "concentrated" (profile out trend and tau^2 when feasible)
+# - objective: "exact_mll" (fallback / standard objective)
+#
+# MLP and GP kernel parameters are optimized jointly.
 
-# Optimizer: "adam", "sgd", "adamw"
+# Optimizer: "adam", "sgd", "adamw", "lbfgs"
 optimizer: "adam"
+
+# Objective: "concentrated" or "exact_mll"
+objective: "concentrated"
 
 # Learning rates (can be different for MLP and GP components)
 mlp_learning_rate: 0.001
 gp_learning_rate: 0.01
 
 # Number of joint training steps
-n_training_steps: 300
+n_training_steps: 2000
+
+# Maximum inner iterations per LBFGS step
+lbfgs_max_iter: 20
 
 # Convergence criteria
 abs_tol: 1e-5
 rel_tol: 1e-3
 
-# Early stopping
-early_stopping_patience: 30
-early_stopping_min_delta: 1e-5
+# Convergence check frequency
+convergence_check_interval: 10
+
+# Numerical jitter used for Cholesky stabilization.
+concentrated_cholesky_jitter: 1e-6
 
 # Device: "cuda", "cpu", "auto"
 device: "auto"

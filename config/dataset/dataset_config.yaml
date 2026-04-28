@@ -32,6 +32,6 @@ normalize_inputs: true
 normalize_targets: true
 
 # DataLoader settings
-batch_size: 128
+batch_size: 32
 num_workers: 0
 pin_memory: false

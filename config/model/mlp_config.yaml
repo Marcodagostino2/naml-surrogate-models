@@ -16,7 +16,7 @@
 architecture:
   - layers: [128, 128, 64]
     activation: "tanh"
-  - layers: [32]
+  - layers: [32, 32, 32]
     activation: "relu"
 
 # Dropout probability (0.0 to disable)
