@@ -20,10 +20,7 @@ mlp_learning_rate: 0.001
 gp_learning_rate: 0.05
 
 # Number of joint training steps
-n_training_steps: 500
-
-# Maximum inner iterations per LBFGS step
-lbfgs_max_iter: 20
+n_training_steps: 200
 
 # Convergence criteria
 abs_tol: 1e-5

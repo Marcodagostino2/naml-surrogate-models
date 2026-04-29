@@ -11,17 +11,14 @@
 #   - theta
 #   - power_exponent
 #   - nugget
-#   - tau2
 #
 # The likelihood noise is fixed to a minimal value (1e-6) to satisfy
 # GPyTorch internal requirements, while all regularization comes from the nugget.
 
 feature_extractor:
   architecture:
-  - layers: [128, 128, 64]
+  - layers: [16, 16, 16]
     activation: "tanh"
-  - layers: [32, 32]
-    activation: "relu"
   dropout: 0.0
   batch_norm: false
   output_activation: "softplus"
@@ -34,7 +31,6 @@ kernel:
   theta: 1.0
   power_exponent: 2.0
   nugget: 0.01
-  tau2: 0.01
   likelihood_noise: 1e-6
 
 trend_degree: 1

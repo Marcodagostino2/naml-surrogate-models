@@ -13,7 +13,7 @@ global_seed: 21
 precision: "float32"
 
 # Model selection: "mlp", "gp", "mlpgp", or "all"
-model_to_train: "mlpgp"
+model_to_train: "all"
 
 # Execution mode: "training", "test", or "training+test"
 run_mode: "training"

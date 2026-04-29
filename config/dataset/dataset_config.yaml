@@ -5,30 +5,71 @@
 # Works for all three models (MLP, GP, MLP+GP).
 
 # Data source
-# csv_path: "data/HYDDB_v2_output.csv"
-csv_path: "data/airfoil_self_noise.csv"
+csv_path: "data/HYDDB_v2_output.csv"
+# csv_path: "data/airfoil_self_noise.csv"
+# csv_path: "data/concrete_compressive_strength.csv"
+# csv_path: "data/qsar_aquatic_toxicity.csv"
+# csv_path: "data/yacht_hydrodynamics.csv"
+
 
 # Input features to use
-# input_columns:
-#   - sim_machNumberValue
-#   - sim_aoaValue
-#   - sim_phiValue
-#   - sim_altitudeValue
-#   - geom_abk_openingPercentage
-
 input_columns:
-  - frequency
-  - attack-angle
-  - chord-length
-  - free-stream-velocity
-  - suction-side-displacement-thickness
+  - sim_machNumberValue
+  - sim_aoaValue
+  - sim_phiValue
+  - sim_altitudeValue
+  - geom_abk_openingPercentage
+
+# input_columns:
+#   - frequency
+#   - attack-angle
+#   - chord-length
+#   - free-stream-velocity
+#   - suction-side-displacement-thickness
+
+# input_columns:
+#   - Cement
+#   - Blast Furnace Slag
+#   - Fly Ash
+#   - Water
+#   - Superplasticizer
+#   - Coarse Aggregate
+#   - Fine Aggregate
+#   - Age
+
+# input_columns:
+#   - TPSA
+#   - SAcc
+#   - H-050 
+#   - MLOGP 
+#   - RDCHI 
+#   - GATS1p 
+#   - nN 
+#   - C-040
+
+# input_columns:
+#   - longitudinal_center_of_buoyancy
+#   - prismatic_coefficient
+#   - length_displacement_ratio
+#   - beam_draught_ratio
+#   - length_beam_ratio
+#   - froude_number
 
 # Target output columns
-# target_columns:
-#   - cfd_cfx_mean
-
 target_columns:
-  - scaled-sound-pressure
+  - cfd_cfx_mean
+
+# target_columns:
+#   - scaled-sound-pressure
+
+# target_columns:
+#   - Concrete compressive strength
+
+# target_columns:
+#   - LC50
+
+# target_columns:
+#   - residuary_resistance
 
 # Data cleaning
 dropna: true

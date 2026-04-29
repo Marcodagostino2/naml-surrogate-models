@@ -16,7 +16,7 @@ objective: "concentrated"
 learning_rate: 0.05
 
 # Number of optimization steps
-n_training_steps: 500
+n_training_steps: 100
 
 # Maximum inner iterations per LBFGS step
 lbfgs_max_iter: 20

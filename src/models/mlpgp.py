@@ -8,7 +8,7 @@ input-dependent local kernel parameters.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import gpytorch
 import torch
@@ -41,13 +41,6 @@ class MLPGPFeatureExtractor(torch.nn.Module):
         self.sigma_floor = float(feature_cfg.get("sigma_floor", 1e-8))
         self.lengthscale_floor = float(feature_cfg.get("lengthscale_floor", 1e-8))
         self.output_lengthscale_dim = int(output_lengthscale_dim)
-
-        mlp_cfg: Dict[str, object] = {
-            "architecture": list(_require_config_value(feature_cfg, "architecture", "MLPGP feature_extractor config")),
-            "dropout": float(feature_cfg.get("dropout", 0.0)),
-            "batch_norm": bool(feature_cfg.get("batch_norm", False)),
-            "output_activation": str(feature_cfg.get("output_activation", "softplus")),
-        }
 
         # Output head predicts [sigma(x), l_1(x), ..., l_d(x)] and positivity
         # is enforced by the configured output activation (Softplus by default).
@@ -210,7 +203,9 @@ class MLPGPModel(ExactGP):
         initial_theta = _require_config_value(kernel_cfg, "theta", "MLPGP kernel config")
         initial_p = _require_config_value(kernel_cfg, "power_exponent", "MLPGP kernel config")
         initial_nugget = float(_require_config_value(kernel_cfg, "nugget", "MLPGP kernel config"))
-        initial_tau2 = float(_require_config_value(kernel_cfg, "tau2", "MLPGP kernel config"))
+
+        # Fix likelihood noise to minimal constant; all regularization comes from nugget
+        self.likelihood.noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "MLPGP kernel config"))
         
         base_kernel = ExponentialKernel(
             input_dim=input_dim,
@@ -227,24 +222,19 @@ class MLPGPModel(ExactGP):
         nonstationary_kernel.set_parameterizer(self._predict_local_parameters)
 
         self.covar_module = ScaleKernel(nonstationary_kernel)
-        self.covar_module.outputscale = initial_tau2
 
-        # Fix likelihood noise to minimal constant; all regularization comes from nugget
-        self.likelihood.noise = 1e-6
         self.likelihood.raw_noise.requires_grad_(False)
 
         logger.info(
             "MLPGPModel initialized: "
             f"lengthscale_mode={lengthscale_mode}, "
             f"trend_degree={trend_degree}, "
-            f"tau2={float(self.covar_module.outputscale.item()):.6f}, "
-            f"likelihood_noise=1e-6 (frozen)"
         )
 
     def _predict_local_parameters(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         sigma_x, lengthscale_x = self.feature_extractor(x)
         if lengthscale_x.shape[-1] == 1 and x.shape[-1] > 1:
-            lengthscale_x = lengthscale_x.expand(-1, x.shape[-1])
+            raise ValueError("Scalar lengthscale output is not compatible with multi-dimensional input.")
         return sigma_x, lengthscale_x
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:

@@ -13,7 +13,7 @@ learning_rate: 0.001
 batch_size: 64
 
 # Number of epochs
-n_epochs: 500
+n_epochs: 1000
 
 # Early stopping
 early_stopping_patience: 30

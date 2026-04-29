@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import argparse
 import csv
-import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Tuple
+import yaml
 
 import torch
 
@@ -63,45 +63,73 @@ def create_run_directory(base_output_dir: Path, model_name: str) -> Path:
     return run_dir
 
 
-def save_run_configs(run_dir: Path, configs: Dict[str, Dict[str, Any]], source_config_dir: Path | None = None) -> None:
+def save_run_configs(
+    run_dir: Path,
+    selected_model: str,
+    main_cfg: Dict[str, Any],
+    dataset_cfg: Dict[str, Any],
+    model_cfg: Dict[str, Any],
+    training_cfg: Dict[str, Any],
+    viz_cfg: Dict[str, Any],
+) -> None:
     """
-    Archive config files used for this run (for reproducibility).
+    Persist all run configurations inside ``run_dir/config/``, mirroring the
+    canonical source layout.  ``main_config.yaml`` is patched so that
+    ``model_to_train`` always reflects the model actually trained in this run
+    (never ``"all"``).
 
-    This function:
-    1. Copies the entire config directory to the run directory for full reproducibility
-    2. Also saves individual config dicts as YAML files for easy inspection
+    Output layout
+    -------------
+    run_dir/
+    └── config/
+        ├── main_config.yaml
+        ├── dataset/
+        │   └── dataset_config.yaml
+        ├── model/
+        │   └── {selected_model}_config.yaml
+        ├── training/
+        │   └── training_{selected_model}_config.yaml
+        └── visualization/
+            └── visualization_config.yaml
 
     Parameters
     ----------
     run_dir : Path
-        Run directory.
-    configs : Dict[str, Dict[str, Any]]
-        Dictionary of config name -> config dict.
-    source_config_dir : Path, optional
-        Source config directory to copy. If provided, the entire directory
-        is copied to run_dir/config. If None, only individual configs are saved.
+        Root directory of the current run.
+    selected_model : str
+        Model identifier (``"mlp"``, ``"gp"``, or ``"mlpgp"``).
+    main_cfg : Dict[str, Any]
+        Loaded main configuration.
+    dataset_cfg : Dict[str, Any]
+        Loaded dataset configuration.
+    model_cfg : Dict[str, Any]
+        Loaded model configuration for ``selected_model``.
+    training_cfg : Dict[str, Any]
+        Loaded training configuration for ``selected_model``.
+    viz_cfg : Dict[str, Any]
+        Loaded visualization configuration.
     """
-    config_dir = run_dir / "config"
-    config_dir.mkdir(exist_ok=True)
+    config_out = run_dir / "config"
 
-    # Copy entire config directory for full reproducibility
-    if source_config_dir is not None and source_config_dir.exists():
-        try:
-            # Remove existing config_dir if it exists (from create_run_directory)
-            if config_dir.exists():
-                shutil.rmtree(config_dir)
-            
-            # Copy entire config directory structure
-            shutil.copytree(source_config_dir, config_dir)
-            logger.info(f"Archived entire config directory to {config_dir}")
-        except Exception as exc:
-            logger.warning(f"Failed to archive config directory: {exc}. Falling back to individual file saves.")
+    # Subdirectory map: subdir → (filename, content)
+    entries: List[Tuple[Path, str, Dict[str, Any]]] = [
+        (config_out,               "main_config.yaml",                          None),
+        (config_out / "dataset",   "dataset_config.yaml",                       dataset_cfg),
+        (config_out / "model",     f"{selected_model}_config.yaml",             model_cfg),
+        (config_out / "training",  f"training_{selected_model}_config.yaml",    training_cfg),
+        (config_out / "visualization", "visualization_config.yaml",             viz_cfg),
+    ]
 
-    # Also save individual configs for easy access
-    for config_name, config_dict in configs.items():
-        config_path = config_dir / f"{config_name}.yaml"
-        save_yaml(config_dict, config_path)
-        logger.info(f"Saved config: {config_path}")
+    # Patch main_cfg: model_to_train must always be the specific model, never "all"
+    patched_main_cfg = {**main_cfg, "model_to_train": selected_model}
+
+    for subdir, filename, content in entries:
+        subdir.mkdir(parents=True, exist_ok=True)
+        payload = patched_main_cfg if filename == "main_config.yaml" else content
+        with open(subdir / filename, "w", encoding="utf-8") as fh:
+            yaml.dump(payload, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    logger.debug(f"Run configs saved to {config_out}")
 
 
 def save_summary_row(
@@ -488,12 +516,6 @@ def main() -> None:
         description="Train aerodynamic surrogate models (MLP, GP, or Hybrid MLP+GP)."
     )
     parser.add_argument(
-        "--main-config",
-        type=str,
-        default="config/main_config.yaml",
-        help="Path to main configuration file.",
-    )
-    parser.add_argument(
         "--config-dir",
         type=str,
         default="config",
@@ -508,8 +530,8 @@ def main() -> None:
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
-    main_config_path = project_root / args.main_config
     config_base_dir = project_root / args.config_dir
+    main_config_path = config_base_dir / "main_config.yaml" 
     output_base_dir = project_root / args.output_dir
 
     # ==================== Config Loading ====================
@@ -574,23 +596,24 @@ def main() -> None:
             elif selected_model == "gp":
                 model_cfg = load_yaml(config_base_dir / "model" / "gp_config.yaml")
                 training_cfg = load_yaml(config_base_dir / "training" / "training_gp_config.yaml")
-            else:
+            elif selected_model == "mlpgp":
                 model_cfg = load_yaml(config_base_dir / "model" / "mlpgp_config.yaml")
                 training_cfg = load_yaml(config_base_dir / "training" / "training_mlpgp_config.yaml")
+            else:
+                raise ValueError(f"Unknown model: {selected_model}")
+            
 
             run_dir = create_run_directory(output_base_dir, selected_model)
             logger.info(f"Run directory created: {run_dir}")
 
             save_run_configs(
-                run_dir,
-                {
-                    "main_config": main_cfg,
-                    "dataset_config": dataset_cfg,
-                    "model_config": model_cfg,
-                    "training_config": training_cfg,
-                    "visualization_config": viz_cfg,
-                },
-                source_config_dir=config_base_dir,
+                run_dir=run_dir,
+                selected_model=selected_model,
+                main_cfg=main_cfg,
+                dataset_cfg=dataset_cfg,
+                model_cfg=model_cfg,
+                training_cfg=training_cfg,
+                viz_cfg=viz_cfg,
             )
 
             if selected_model == "mlp":

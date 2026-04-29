@@ -467,7 +467,6 @@ class GPTrainer:
         }
 
 
-
 class MLPGPTrainer:
     """Trainer for end-to-end MLPGP models."""
 
@@ -492,7 +491,6 @@ class MLPGPTrainer:
         self.mlp_learning_rate = float(training_cfg.get("mlp_learning_rate", training_cfg.get("learning_rate", 1e-3)))
         self.gp_learning_rate = float(training_cfg.get("gp_learning_rate", training_cfg.get("learning_rate", 1e-2)))
         self.n_training_steps = int(training_cfg.get("n_training_steps", 300))
-        self.lbfgs_max_iter = int(training_cfg.get("lbfgs_max_iter", 20))
         self.abs_tol = float(training_cfg.get("abs_tol", 1e-5))
         self.rel_tol = float(training_cfg.get("rel_tol", 1e-3))
         self.convergence_check_interval = int(training_cfg.get("convergence_check_interval", 10))
@@ -518,7 +516,6 @@ class MLPGPTrainer:
 
         if self.objective_name == "concentrated":
             self.model.mean_module.coefficients.requires_grad_(False)
-            self.model.covar_module.raw_outputscale.requires_grad_(False)
             self.model.likelihood.raw_noise.requires_grad_(False)
 
         self.optimizer, _ = self._build_optimizer()
@@ -529,7 +526,7 @@ class MLPGPTrainer:
         self.last_profiled_mean: Optional[torch.Tensor] = None
 
         # Best-validation tracking
-        self.best_val_loss = float("inf")
+        self.best_loss = float("inf")
         self._best_model_state: Optional[Dict[str, torch.Tensor]] = None
 
         logger.info(f"MLPGPTrainer initialized on device: {self.device}, objective={self.objective_name}")
@@ -578,38 +575,44 @@ class MLPGPTrainer:
         if self.optimizer_name == "sgd":
             return torch.optim.SGD(parameter_groups), self.optimizer_name
         raise ValueError(f"Unknown optimizer: {self.optimizer_name}")
-
-    def _compute_concentrated_loss(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        y = self.y_train.reshape(-1, 1)
+    
+    def _compute_loss_nonstationary(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        y = self.y_train.reshape(-1, 1)                        
         F = self.model.mean_module._design_matrix(self.X_train)
-        base_kernel = self.model.covar_module.base_kernel
 
-        R = base_kernel(self.X_train, self.X_train).evaluate()
+        sigma, length_scale = self.model._predict_local_parameters(self.X_train)
 
-        chol = torch.linalg.cholesky(R)
-        R_inv_F = torch.cholesky_solve(F, chol)
-        R_inv_y = torch.cholesky_solve(y, chol)
+        X_scaled = self.X_train / length_scale                
 
-        term1 = F.transpose(0, 1) @ R_inv_F
-        term2 = F.transpose(0, 1) @ R_inv_y
-        mean_coefficients = torch.linalg.solve(term1, term2)
+        R0 = self.model.covar_module.base_kernel(X_scaled, X_scaled).evaluate()         
 
-        residual = y - F @ mean_coefficients
-        R_inv_residual = torch.cholesky_solve(residual, chol)
-        sigma2 = (residual.transpose(0, 1) @ R_inv_residual) / residual.shape[0]
-        sigma2 = sigma2.squeeze()
+        sigma_outer = torch.outer(sigma.flatten(), sigma.flatten())  
+        K = sigma_outer * R0                                   
 
-        # Profiled negative log-likelihood (up to additive constants).
-        loss = 0.5 * (residual.shape[0] * torch.log(sigma2) + 2.0 * torch.sum(torch.log(torch.diag(chol))))
-        return loss, sigma2, mean_coefficients.squeeze(-1)
+        chol    = torch.linalg.cholesky(K)                  
+        K_inv_F = torch.cholesky_solve(F, chol)            
+        K_inv_y = torch.cholesky_solve(y, chol)                
+
+        mean_coefficients = torch.linalg.solve(
+            F.mT @ K_inv_F,   
+            F.mT @ K_inv_y,   
+        )                                                       
+
+        residual = y - F @ mean_coefficients                    
+        K_inv_r  = torch.cholesky_solve(residual, chol)        
+
+        data_fit = torch.sum(residual * K_inv_r)               
+
+        log_det  = torch.diagonal(chol, dim1=-2, dim2=-1).log().sum().mul(2) 
+
+        nll = 0.5 * (data_fit + log_det)                      
+        return nll, mean_coefficients.squeeze(-1)
 
     def _compute_exact_mll_loss(self) -> torch.Tensor:
         output = self.model(self.X_train)
         return -self.mll(output, self.y_train)
 
     def _apply_profiled_parameters(self) -> None:
-        if self.last_profiled_sigma2 is not None:
-            self.model.covar_module.outputscale = self.last_profiled_sigma2.detach().clamp_min(1e-10)
         if self.last_profiled_mean is not None:
             self.model.mean_module.coefficients.data.copy_(self.last_profiled_mean.detach())
 
@@ -618,8 +621,7 @@ class MLPGPTrainer:
 
         if self.objective_name == "concentrated":
             try:
-                loss, sigma2, mean_coefficients = self._compute_concentrated_loss()
-                self.last_profiled_sigma2 = sigma2
+                loss, mean_coefficients = self._compute_loss_nonstationary()
                 self.last_profiled_mean = mean_coefficients
             except RuntimeError as exc:
                 logger.warning(f"Concentrated objective failed ({exc}). Falling back to exact_mll.")
@@ -636,11 +638,8 @@ class MLPGPTrainer:
         start_time = time.time()
 
         for step in range(1, self.n_training_steps + 1):
-            if self.optimizer_name == "lbfgs":
-                loss = self.optimizer.step(self._closure)
-            else:
-                loss = self._closure()
-                self.optimizer.step()
+            loss = self._closure()
+            self.optimizer.step()
 
             if self.objective_name == "concentrated":
                 self._apply_profiled_parameters()
@@ -662,32 +661,25 @@ class MLPGPTrainer:
 
             # Validation check and best-state save (if validation provided)
             if self.X_val is not None and self.y_val is not None and step % self.convergence_check_interval == 0:
-                try:
-                    self.model.eval()
-                    with torch.no_grad():
-                        out = self.model(self.X_val)
-                        mean = out.mean
-                        y_val_reshaped = self.y_val.view_as(mean)
-                        val_loss = torch.nn.functional.mse_loss(mean, y_val_reshaped).item()
-
-                        self.best_val_loss = val_loss
-                        try:
-                            self._best_model_state = copy.deepcopy(self.model.state_dict())
-                        except Exception:
-                            self._best_model_state = None
-                except Exception:
-                    logger.debug("Validation evaluation failed during MLPGP training step")
+                self.model.eval()
+                with torch.no_grad():
+                    if loss_value < self.best_loss:
+                        self.best_loss = loss_value
+                    try:
+                        self._best_model_state = copy.deepcopy(self.model.state_dict())
+                    except Exception:
+                        self._best_model_state = None
 
         if self.objective_name == "concentrated":
             self._apply_profiled_parameters()
 
         elapsed = time.time() - start_time
         logger.info(f"MLPGP optimization completed in {elapsed:.2f} seconds")
-        # Restore best validation state if available
+        # Restore best state if available
         if self._best_model_state is not None:
             try:
                 self.model.load_state_dict(self._best_model_state)
-                logger.info("Restored MLPGP model to best validation state")
+                logger.info("Restored MLPGP model to best state")
             except Exception:
                 logger.warning("Failed to restore best MLPGP model state_dict")
 
