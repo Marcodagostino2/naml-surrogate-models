@@ -12,15 +12,16 @@
 #   - power_exponent: exponent per input dimension
 #   - nugget: relative diagonal nugget inside the kernel
 #
-# likelihood_noise is the observation noise used by the GP likelihood.
+# The likelihood noise is fixed to a minimal value (1e-6) to satisfy
+# GPyTorch internal requirements, while all regularization comes from the nugget.
 
 kernel:
   type: "exponential"
-  theta: [1.0, 1.0, 1.0, 1.0, 1.0]
-  power_exponent: [2.0, 2.0, 2.0, 2.0, 2.0]
+  theta: 1.0
+  power_exponent: 2.0
   nugget: 0.01
   tau2: 1.0
-  likelihood_noise: 1e-8
+  likelihood_noise: 1e-7
 
 # Polynomial trend degree (0 = constant, 1 = linear, 2 = quadratic)
 trend_degree: 1

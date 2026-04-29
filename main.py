@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -30,6 +31,7 @@ from src.utils import (
     save_yaml,
     set_global_seed,
     setup_logger,
+    setup_torch_dtype,
 )
 
 logger = setup_logger(__name__)
@@ -61,9 +63,13 @@ def create_run_directory(base_output_dir: Path, model_name: str) -> Path:
     return run_dir
 
 
-def save_run_configs(run_dir: Path, configs: Dict[str, Dict[str, Any]]) -> None:
+def save_run_configs(run_dir: Path, configs: Dict[str, Dict[str, Any]], source_config_dir: Path | None = None) -> None:
     """
-    Save config files used for this run (for reproducibility).
+    Archive config files used for this run (for reproducibility).
+
+    This function:
+    1. Copies the entire config directory to the run directory for full reproducibility
+    2. Also saves individual config dicts as YAML files for easy inspection
 
     Parameters
     ----------
@@ -71,10 +77,27 @@ def save_run_configs(run_dir: Path, configs: Dict[str, Dict[str, Any]]) -> None:
         Run directory.
     configs : Dict[str, Dict[str, Any]]
         Dictionary of config name -> config dict.
+    source_config_dir : Path, optional
+        Source config directory to copy. If provided, the entire directory
+        is copied to run_dir/config. If None, only individual configs are saved.
     """
     config_dir = run_dir / "config"
     config_dir.mkdir(exist_ok=True)
 
+    # Copy entire config directory for full reproducibility
+    if source_config_dir is not None and source_config_dir.exists():
+        try:
+            # Remove existing config_dir if it exists (from create_run_directory)
+            if config_dir.exists():
+                shutil.rmtree(config_dir)
+            
+            # Copy entire config directory structure
+            shutil.copytree(source_config_dir, config_dir)
+            logger.info(f"Archived entire config directory to {config_dir}")
+        except Exception as exc:
+            logger.warning(f"Failed to archive config directory: {exc}. Falling back to individual file saves.")
+
+    # Also save individual configs for easy access
     for config_name, config_dict in configs.items():
         config_path = config_dir / f"{config_name}.yaml"
         save_yaml(config_dict, config_path)
@@ -259,8 +282,8 @@ def train_gp(
     device = device or resolve_device(training_cfg.get("device", "auto"))
 
     # Convert training data to tensors
-    X_train_t = torch.from_numpy(data_bundle.X_train).float()
-    y_train_t = torch.from_numpy(data_bundle.y_train).float()
+    X_train_t = torch.from_numpy(data_bundle.X_train)
+    y_train_t = torch.from_numpy(data_bundle.y_train)
 
     # Squeeze if single output
     if y_train_t.ndim == 2 and y_train_t.shape[1] == 1:
@@ -277,8 +300,8 @@ def train_gp(
 
     # Train
     # Validation tensors
-    X_val_t = torch.from_numpy(data_bundle.X_val).float()
-    y_val_t = torch.from_numpy(data_bundle.y_val).float()
+    X_val_t = torch.from_numpy(data_bundle.X_val)
+    y_val_t = torch.from_numpy(data_bundle.y_val)
 
     trainer = GPTrainer(
         model=model,
@@ -379,8 +402,8 @@ def train_mlpgp(
 
     device = device or resolve_device(training_cfg.get("device", "auto"))
 
-    X_train_t = torch.from_numpy(data_bundle.X_train).float()
-    y_train_t = torch.from_numpy(data_bundle.y_train).float()
+    X_train_t = torch.from_numpy(data_bundle.X_train)
+    y_train_t = torch.from_numpy(data_bundle.y_train)
 
     if y_train_t.ndim == 2 and y_train_t.shape[1] == 1:
         y_train_t = y_train_t.squeeze(-1)
@@ -393,8 +416,8 @@ def train_mlpgp(
         likelihood=likelihood,
     )
 
-    X_val_t = torch.from_numpy(data_bundle.X_val).float()
-    y_val_t = torch.from_numpy(data_bundle.y_val).float()
+    X_val_t = torch.from_numpy(data_bundle.X_val)
+    y_val_t = torch.from_numpy(data_bundle.y_val)
 
     trainer = MLPGPTrainer(
         model=model,
@@ -471,6 +494,12 @@ def main() -> None:
         help="Path to main configuration file.",
     )
     parser.add_argument(
+        "--config-dir",
+        type=str,
+        default="config",
+        help="Path to config directory. All configurations are loaded from this directory.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default="outputs",
@@ -480,6 +509,7 @@ def main() -> None:
 
     project_root = Path(__file__).resolve().parent
     main_config_path = project_root / args.main_config
+    config_base_dir = project_root / args.config_dir
     output_base_dir = project_root / args.output_dir
 
     # ==================== Config Loading ====================
@@ -489,17 +519,21 @@ def main() -> None:
     global_seed = int(main_cfg.get("global_seed", 42))
     model_to_train = str(main_cfg.get("model_to_train", "mlp")).lower()
     run_mode = str(main_cfg.get("run_mode", "training")).lower()
+    precision = str(main_cfg.get("precision", "float32")).lower()
 
     set_global_seed(global_seed)
     logger.info(f"Global seed set to {global_seed}")
 
+    setup_torch_dtype(precision)
+    logger.info(f"PyTorch default dtype set to {torch.get_default_dtype()}")
+
     # Load dataset config
-    dataset_cfg = load_yaml(project_root / "config/dataset/dataset_config.yaml")
+    dataset_cfg = load_yaml(config_base_dir / "dataset" / "dataset_config.yaml")
 
     if model_to_train not in {"mlp", "gp", "mlpgp", "all"}:
         raise ValueError(f"Unknown model_to_train: {model_to_train}")
 
-    viz_cfg = load_yaml(project_root / "config/visualization/visualization_config.yaml")
+    viz_cfg = load_yaml(config_base_dir / "visualization" / "visualization_config.yaml")
 
     logger.info(f"Model to train: {model_to_train.upper()}")
     logger.info(f"Run mode: {run_mode.upper()}")
@@ -519,6 +553,7 @@ def main() -> None:
         val_ratio=float(dataset_cfg.get("val_ratio", 0.15)),
         test_ratio=float(dataset_cfg.get("test_ratio", 0.15)),
         random_seed=global_seed,
+        default_type=precision,
     )
 
     logger.info(
@@ -534,14 +569,14 @@ def main() -> None:
     if "training" in run_mode:
         for selected_model in selected_models:
             if selected_model == "mlp":
-                model_cfg = load_yaml(project_root / "config/model/mlp_config.yaml")
-                training_cfg = load_yaml(project_root / "config/training/training_mlp_config.yaml")
+                model_cfg = load_yaml(config_base_dir / "model" / "mlp_config.yaml")
+                training_cfg = load_yaml(config_base_dir / "training" / "training_mlp_config.yaml")
             elif selected_model == "gp":
-                model_cfg = load_yaml(project_root / "config/model/gp_config.yaml")
-                training_cfg = load_yaml(project_root / "config/training/training_gp_config.yaml")
+                model_cfg = load_yaml(config_base_dir / "model" / "gp_config.yaml")
+                training_cfg = load_yaml(config_base_dir / "training" / "training_gp_config.yaml")
             else:
-                model_cfg = load_yaml(project_root / "config/model/mlpgp_config.yaml")
-                training_cfg = load_yaml(project_root / "config/training/training_mlpgp_config.yaml")
+                model_cfg = load_yaml(config_base_dir / "model" / "mlpgp_config.yaml")
+                training_cfg = load_yaml(config_base_dir / "training" / "training_mlpgp_config.yaml")
 
             run_dir = create_run_directory(output_base_dir, selected_model)
             logger.info(f"Run directory created: {run_dir}")
@@ -555,6 +590,7 @@ def main() -> None:
                     "training_config": training_cfg,
                     "visualization_config": viz_cfg,
                 },
+                source_config_dir=config_base_dir,
             )
 
             if selected_model == "mlp":

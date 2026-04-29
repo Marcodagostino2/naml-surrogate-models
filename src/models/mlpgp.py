@@ -8,7 +8,6 @@ input-dependent local kernel parameters.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gpytorch
@@ -31,67 +30,23 @@ def _require_config_value(config: Dict[str, Any], key: str, context: str) -> Any
     return config[key]
 
 
-@dataclass(slots=True)
-class MLPGPModelConfig:
-    """Typed config for MLPGP model hyperparameters."""
-
-    mlp_architecture: List[Any]
-    mlp_dropout: float
-    mlp_batch_norm: bool
-    mlp_output_activation: str
-    sigma_floor: float
-    lengthscale_floor: float
-    lengthscale_mode: str
-    kernel_type: str
-    kernel_theta: float | Sequence[float]
-    kernel_power_exponent: float | Sequence[float]
-    kernel_nugget: float
-    kernel_tau2: float
-    kernel_likelihood_noise: float
-    trend_degree: int
-
-    @classmethod
-    def from_dict(cls, model_cfg: Dict[str, Any]) -> "MLPGPModelConfig":
-        feature_cfg = model_cfg.get("feature_extractor", model_cfg)
-        kernel_cfg = model_cfg.get("kernel", model_cfg)
-        cfg = cls(
-            mlp_architecture=list(_require_config_value(feature_cfg, "architecture", "MLPGP feature_extractor config")),
-            mlp_dropout=float(feature_cfg.get("dropout", 0.0)),
-            mlp_batch_norm=bool(feature_cfg.get("batch_norm", False)),
-            mlp_output_activation=str(feature_cfg.get("output_activation", "softplus")),
-            sigma_floor=float(feature_cfg.get("sigma_floor", 1e-8)),
-            lengthscale_floor=float(feature_cfg.get("lengthscale_floor", 1e-8)),
-            lengthscale_mode=str(feature_cfg.get("lengthscale_mode", "per_dimension")).lower(),
-            kernel_type=str(kernel_cfg.get("type", kernel_cfg.get("kernel_type", "exponential"))).lower(),
-            kernel_theta=_require_config_value(kernel_cfg, "theta", "MLPGP kernel config"),
-            kernel_power_exponent=_require_config_value(kernel_cfg, "power_exponent", "MLPGP kernel config"),
-            kernel_nugget=float(_require_config_value(kernel_cfg, "nugget", "MLPGP kernel config")),
-            kernel_tau2=float(_require_config_value(kernel_cfg, "tau2", "MLPGP kernel config")),
-            kernel_likelihood_noise=float(_require_config_value(kernel_cfg, "likelihood_noise", "MLPGP kernel config")),
-            trend_degree=int(_require_config_value(model_cfg, "trend_degree", "MLPGP model config")),
-        )
-        if cfg.kernel_type != "exponential":
-            raise ValueError("Only the exponential kernel is supported in this MLPGP implementation.")
-        if cfg.lengthscale_mode not in {"scalar", "per_dimension"}:
-            raise ValueError("lengthscale_mode must be either 'scalar' or 'per_dimension'.")
-        return cfg
-
-
 class MLPGPFeatureExtractor(torch.nn.Module):
     """MLP feature extractor producing positive local sigma(x) and l(x)."""
 
-    def __init__(self, input_dim: int, output_lengthscale_dim: int, model_cfg: MLPGPModelConfig) -> None:
+    def __init__(self, input_dim: int, output_lengthscale_dim: int, model_cfg: Dict[str, Any]) -> None:
         super().__init__()
 
-        self.sigma_floor = float(model_cfg.sigma_floor)
-        self.lengthscale_floor = float(model_cfg.lengthscale_floor)
+        feature_cfg = model_cfg.get("feature_extractor", model_cfg)
+        
+        self.sigma_floor = float(feature_cfg.get("sigma_floor", 1e-8))
+        self.lengthscale_floor = float(feature_cfg.get("lengthscale_floor", 1e-8))
         self.output_lengthscale_dim = int(output_lengthscale_dim)
 
-        feature_cfg: Dict[str, object] = {
-            "architecture": model_cfg.mlp_architecture,
-            "dropout": model_cfg.mlp_dropout,
-            "batch_norm": model_cfg.mlp_batch_norm,
-            "output_activation": model_cfg.mlp_output_activation,
+        mlp_cfg: Dict[str, object] = {
+            "architecture": list(_require_config_value(feature_cfg, "architecture", "MLPGP feature_extractor config")),
+            "dropout": float(feature_cfg.get("dropout", 0.0)),
+            "batch_norm": bool(feature_cfg.get("batch_norm", False)),
+            "output_activation": str(feature_cfg.get("output_activation", "softplus")),
         }
 
         # Output head predicts [sigma(x), l_1(x), ..., l_d(x)] and positivity
@@ -223,49 +178,67 @@ class MLPGPModel(ExactGP):
         model_cfg: Dict,
         likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
     ) -> None:
-        model_config = MLPGPModelConfig.from_dict(model_cfg)
-
         if likelihood is None:
             likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=GreaterThan(1e-10))
 
         super().__init__(X_train, y_train, likelihood)
 
         input_dim = int(X_train.shape[-1])
-        local_lengthscale_dim = 1 if model_config.lengthscale_mode == "scalar" else input_dim
+        
+        # Extract configuration values
+        feature_cfg = model_cfg.get("feature_extractor", model_cfg)
+        kernel_cfg = model_cfg.get("kernel", model_cfg)
+        
+        lengthscale_mode = str(feature_cfg.get("lengthscale_mode", "per_dimension")).lower()
+        if lengthscale_mode not in {"scalar", "per_dimension"}:
+            raise ValueError("lengthscale_mode must be either 'scalar' or 'per_dimension'.")
+        
+        trend_degree = int(_require_config_value(model_cfg, "trend_degree", "MLPGP model config"))
+        kernel_type = str(kernel_cfg.get("type", kernel_cfg.get("kernel_type", "exponential"))).lower()
+        if kernel_type != "exponential":
+            raise ValueError("Only the exponential kernel is supported in this MLPGP implementation.")
+        
+        local_lengthscale_dim = 1 if lengthscale_mode == "scalar" else input_dim
 
         self.feature_extractor = MLPGPFeatureExtractor(
             input_dim=input_dim,
             output_lengthscale_dim=local_lengthscale_dim,
-            model_cfg=model_config,
+            model_cfg=model_cfg,
         )
-        self.mean_module = PolynomialTrendMean(input_dim=input_dim, degree=model_config.trend_degree)
+        self.mean_module = PolynomialTrendMean(input_dim=input_dim, degree=trend_degree)
 
+        initial_theta = _require_config_value(kernel_cfg, "theta", "MLPGP kernel config")
+        initial_p = _require_config_value(kernel_cfg, "power_exponent", "MLPGP kernel config")
+        initial_nugget = float(_require_config_value(kernel_cfg, "nugget", "MLPGP kernel config"))
+        initial_tau2 = float(_require_config_value(kernel_cfg, "tau2", "MLPGP kernel config"))
+        
         base_kernel = ExponentialKernel(
             input_dim=input_dim,
-            initial_theta=model_config.kernel_theta,
-            initial_power_exponent=model_config.kernel_power_exponent,
-            initial_nugget=model_config.kernel_nugget,
+            initial_theta=initial_theta,
+            initial_power_exponent=initial_p,
+            initial_nugget=initial_nugget,
         )
 
         nonstationary_kernel = NonstationaryExponentialKernel(
             base_kernel=base_kernel,
-            min_lengthscale=model_config.lengthscale_floor,
-            min_sigma=model_config.sigma_floor,
+            min_lengthscale=float(feature_cfg.get("lengthscale_floor", 1e-8)),
+            min_sigma=float(feature_cfg.get("sigma_floor", 1e-8)),
         )
         nonstationary_kernel.set_parameterizer(self._predict_local_parameters)
 
         self.covar_module = ScaleKernel(nonstationary_kernel)
-        self.covar_module.outputscale = float(model_config.kernel_tau2)
+        self.covar_module.outputscale = initial_tau2
 
-        self.likelihood.noise = float(model_config.kernel_likelihood_noise)
+        # Fix likelihood noise to minimal constant; all regularization comes from nugget
+        self.likelihood.noise = 1e-6
         self.likelihood.raw_noise.requires_grad_(False)
 
         logger.info(
             "MLPGPModel initialized: "
-            f"lengthscale_mode={model_config.lengthscale_mode}, "
-            f"trend_degree={model_config.trend_degree}, "
+            f"lengthscale_mode={lengthscale_mode}, "
+            f"trend_degree={trend_degree}, "
             f"tau2={float(self.covar_module.outputscale.item()):.6f}, "
-            f"noise={float(self.likelihood.noise.item()):.6e}"
+            f"likelihood_noise=1e-6 (frozen)"
         )
 
     def _predict_local_parameters(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

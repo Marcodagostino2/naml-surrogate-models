@@ -121,6 +121,41 @@ def resolve_device(device_str: str | None = None) -> torch.device:
         raise ValueError(f"Unknown device: {device_str}")
 
 
+def setup_torch_dtype(precision: str | None = None) -> torch.dtype:
+    """
+    Set PyTorch's default dtype globally based on precision specification.
+
+    Parameters
+    ----------
+    precision : str or None, optional
+        Precision specification: "float32", "float64", or None.
+        - "float32": sets torch.float32 (default)
+        - "float64": sets torch.float64 (double precision)
+        - None: defaults to "float32"
+
+    Returns
+    -------
+    torch.dtype
+        The dtype that was set as default.
+
+    Raises
+    ------
+    ValueError
+        If precision is not recognized.
+    """
+    if precision is None or precision.lower() == "float32":
+        torch.set_default_dtype(torch.float32)
+        return torch.float32
+    elif precision.lower() == "float64":
+        torch.set_default_dtype(torch.float64)
+        return torch.float64
+    else:
+        raise ValueError(
+            f"Unknown precision: {precision}. "
+            f"Supported values: 'float32', 'float64', or None."
+        )
+
+
 def setup_logger(name: str, log_file: Path | str | None = None, level=logging.INFO) -> logging.Logger:
     """
     Configure a logger with console and optional file output.

@@ -9,7 +9,7 @@
 #
 # MLP and GP kernel parameters are optimized jointly.
 
-# Optimizer: "adam", "sgd", "adamw", "lbfgs"
+# Optimizer: "adam", "sgd", "adamw"
 optimizer: "adam"
 
 # Objective: "concentrated" or "exact_mll"
@@ -17,7 +17,7 @@ objective: "concentrated"
 
 # Learning rates (can be different for MLP and GP components)
 mlp_learning_rate: 0.001
-gp_learning_rate: 0.01
+gp_learning_rate: 0.05
 
 # Number of joint training steps
 n_training_steps: 500
@@ -31,9 +31,6 @@ rel_tol: 1e-3
 
 # Convergence check frequency
 convergence_check_interval: 10
-
-# Numerical jitter used for Cholesky stabilization.
-concentrated_cholesky_jitter: 1e-6
 
 # Device: "cuda", "cpu", "auto"
 device: "auto"

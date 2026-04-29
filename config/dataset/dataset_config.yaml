@@ -5,19 +5,30 @@
 # Works for all three models (MLP, GP, MLP+GP).
 
 # Data source
-csv_path: "data/HYDDB_v2_output.csv"
+# csv_path: "data/HYDDB_v2_output.csv"
+csv_path: "data/airfoil_self_noise.csv"
 
 # Input features to use
+# input_columns:
+#   - sim_machNumberValue
+#   - sim_aoaValue
+#   - sim_phiValue
+#   - sim_altitudeValue
+#   - geom_abk_openingPercentage
+
 input_columns:
-  - sim_machNumberValue
-  - sim_aoaValue
-  - sim_phiValue
-  - sim_altitudeValue
-  - geom_abk_openingPercentage
+  - frequency
+  - attack-angle
+  - chord-length
+  - free-stream-velocity
+  - suction-side-displacement-thickness
 
 # Target output columns
+# target_columns:
+#   - cfd_cfx_mean
+
 target_columns:
-  - cfd_cfx_mean
+  - scaled-sound-pressure
 
 # Data cleaning
 dropna: true
@@ -32,6 +43,6 @@ normalize_inputs: true
 normalize_targets: true
 
 # DataLoader settings
-batch_size: 32
+batch_size: 128
 num_workers: 0
 pin_memory: false

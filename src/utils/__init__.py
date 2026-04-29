@@ -12,6 +12,7 @@ from src.utils.config import (
     save_yaml,
     set_global_seed,
     setup_logger,
+    setup_torch_dtype,
 )
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "save_pickle",
     "set_global_seed",
     "resolve_device",
+    "setup_torch_dtype",
     "setup_logger",
 ]

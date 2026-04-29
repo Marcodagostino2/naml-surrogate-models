@@ -7,10 +7,10 @@
 # profiling out the mean coefficients and tau^2 analytically.
 
 # Optimizer: "adam", "sgd", "lbfgs"
-optimizer: "lbfgs"
+optimizer: "adam"
 
 # Objective: "concentrated" or "exact_mll"
-objective: "exact_mll"
+objective: "concentrated"
 
 # Learning rate for EMLL optimization
 learning_rate: 0.05
@@ -30,9 +30,6 @@ convergence_check_interval: 10
 
 # Device: "cuda", "cpu", "auto"
 device: "auto"
-
-# Numerical jitter used only for Cholesky stabilization.
-concentrated_cholesky_jitter: 1e-8
 
 # Checkpointing
 save_checkpoint_every_n_steps: 20

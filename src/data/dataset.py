@@ -104,22 +104,22 @@ class DataBundle:
 
     def get_train_loader(self, batch_size: int = 32, num_workers: int = 0, pin_memory: bool = False) -> DataLoader:
         """Create a DataLoader for training data."""
-        X_train_t = torch.from_numpy(self.X_train).float()
-        y_train_t = torch.from_numpy(self.y_train).float()
+        X_train_t = torch.from_numpy(self.X_train).to(torch.get_default_dtype())
+        y_train_t = torch.from_numpy(self.y_train).to(torch.get_default_dtype())
         dataset = TensorDataset(X_train_t, y_train_t)
         return DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
 
     def get_val_loader(self, batch_size: int = 32, num_workers: int = 0, pin_memory: bool = False) -> DataLoader:
         """Create a DataLoader for validation data."""
-        X_val_t = torch.from_numpy(self.X_val).float()
-        y_val_t = torch.from_numpy(self.y_val).float()
+        X_val_t = torch.from_numpy(self.X_val).to(torch.get_default_dtype())
+        y_val_t = torch.from_numpy(self.y_val).to(torch.get_default_dtype())
         dataset = TensorDataset(X_val_t, y_val_t)
         return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
     def get_test_loader(self, batch_size: int = 32, num_workers: int = 0, pin_memory: bool = False) -> DataLoader:
         """Create a DataLoader for test data."""
-        X_test_t = torch.from_numpy(self.X_test).float()
-        y_test_t = torch.from_numpy(self.y_test).float()
+        X_test_t = torch.from_numpy(self.X_test).to(torch.get_default_dtype())
+        y_test_t = torch.from_numpy(self.y_test).to(torch.get_default_dtype())
         dataset = TensorDataset(X_test_t, y_test_t)
         return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
 
@@ -145,6 +145,7 @@ def load_and_preprocess_data(
     val_ratio: float = 0.15,
     test_ratio: float = 0.15,
     random_seed: int = 42,
+    default_type: str = "float32",
 ) -> DataBundle:
     """
     Load data from CSV, preprocess, normalize, and split into train/val/test.
@@ -198,8 +199,8 @@ def load_and_preprocess_data(
         raise ValueError(f"Missing columns: inputs={missing_inputs}, targets={missing_targets}")
 
     # Extract features and targets
-    X = df[input_columns].values.astype(np.float32)
-    y = df[target_columns].values.astype(np.float32)
+    X = df[input_columns].to_numpy(default_type)
+    y = df[target_columns].to_numpy(default_type)
 
     logger.info(f"Loaded data shape: X={X.shape}, y={y.shape}")
 

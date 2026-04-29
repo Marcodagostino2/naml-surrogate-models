@@ -98,7 +98,7 @@ class ExponentialKernel(gpytorch.kernels.Kernel):
         )
         self.register_parameter(
             "raw_nugget",
-            torch.nn.Parameter(torch.tensor(float(initial_nugget))),
+            torch.nn.Parameter(torch.as_tensor(initial_nugget, dtype=torch.get_default_dtype()).flatten()),
         )
         self.register_constraint("raw_theta", GreaterThan(1e-10))
         self.register_constraint("raw_power_exponent", Interval(1.5, 2.0))
@@ -172,7 +172,10 @@ class GPRegressionModel(ExactGP):
         initial_p = _require_config_value(kernel_cfg, "power_exponent", "GP kernel config")
         initial_nugget = float(_require_config_value(kernel_cfg, "nugget", "GP kernel config"))
         initial_tau2 = float(_require_config_value(kernel_cfg, "tau2", "GP kernel config"))
-        likelihood_noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "GP kernel config"))
+
+        # Fix likelihood noise to minimal constant; all regularization comes from nugget
+        self.likelihood.noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "GP kernel config"))
+        
 
         base_kernel = ExponentialKernel(
             input_dim=X_train.shape[-1],
@@ -183,7 +186,7 @@ class GPRegressionModel(ExactGP):
 
         self.covar_module = ScaleKernel(base_kernel)
         self.covar_module.outputscale = initial_tau2
-        self.likelihood.noise = likelihood_noise
+        
         self.likelihood.raw_noise.requires_grad_(False)
 
         logger.info(
@@ -191,7 +194,7 @@ class GPRegressionModel(ExactGP):
             f"trend_degree={trend_degree}, theta={base_kernel.theta.flatten().detach().cpu().tolist()}, "
             f"power_exponent={base_kernel.power_exponent.flatten().detach().cpu().tolist()}, "
             f"nugget={float(base_kernel.nugget.item()):.6f}, "
-            f"tau2={float(self.covar_module.outputscale.item()):.6f}, noise={likelihood_noise}"
+            f"tau2={float(self.covar_module.outputscale.item()):.6f}, "
         )
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:

@@ -77,7 +77,7 @@ class Predictor:
         np.ndarray
             Predictions (n, n_outputs).
         """
-        X_t = torch.from_numpy(X).float().to(self.device)
+        X_t = torch.from_numpy(X).to(self.device).to(torch.get_default_dtype())
 
         with torch.no_grad():
             y_pred_normalized = self.model(X_t).cpu().numpy()
@@ -109,7 +109,7 @@ class Predictor:
         Tuple[np.ndarray, np.ndarray]
             (mean, std) of predictions. Both shape (n, n_outputs).
         """
-        X_t = torch.from_numpy(X).float().to(self.device)
+        X_t = torch.from_numpy(X).to(self.device).to(torch.get_default_dtype())
 
         with torch.no_grad(), warnings.catch_warnings():
             warnings.simplefilter("ignore", GPInputWarning)
