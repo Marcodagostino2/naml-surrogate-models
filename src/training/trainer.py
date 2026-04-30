@@ -563,9 +563,9 @@ class MLPGPTrainer:
         base_kernel = self.model.covar_module.base_kernel
 
         gp_params: List[torch.nn.Parameter] = [
-            base_kernel.base_kernel.raw_theta,
-            base_kernel.base_kernel.raw_power_exponent,
-            base_kernel.base_kernel.raw_nugget,
+            base_kernel.raw_theta,
+            base_kernel.raw_power_exponent,
+            base_kernel.raw_nugget,
         ]
 
         if self.objective_name == "exact_mll":
@@ -594,35 +594,60 @@ class MLPGPTrainer:
         raise ValueError(f"Unknown optimizer: {self.optimizer_name}")
     
     def _compute_loss_nonstationary(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        y = self.y_train.reshape(-1, 1)                        
+        """
+        Compute full negative log-likelihood for Gibbs non-stationary GP.
+
+        Implements the analytical profiling of trend coefficients via GLS,
+        while estimating all other parameters (theta, p, local sigmas/lengthscales).
+
+        Formula:
+            beta_hat = (F^T K^{-1} F)^{-1} F^T K^{-1} y    [profiled GLS]
+            r = y - F @ beta_hat
+            NLL = 0.5 * ( log|K| + r^T K^{-1} r )
+                = 0.5 * ( 2 * sum(log(diag(chol_K))) + r^T K^{-1} r )
+
+        Parameters
+        ----------
+        None (uses self.X_train, self.y_train, self.model)
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor]
+            - loss: scalar NLL
+            - beta_hat: profiled mean coefficients (num_features,)
+        """
+        y = self.y_train.reshape(-1, 1)
         F = self.model.mean_module._design_matrix(self.X_train)
 
-        sigma, length_scale = self.model._predict_local_parameters(self.X_train)
+        # Get full non-stationary kernel (no base_kernel access)
+        # covar_module is now NonstationaryExponentialKernel directly
+        K = self.model.covar_module(self.X_train, self.X_train).evaluate()
 
-        X_scaled = self.X_train / length_scale                
+        # Cholesky decomposition
+        chol = torch.linalg.cholesky(K)
 
-        R0 = self.model.covar_module.base_kernel(X_scaled, X_scaled).evaluate()         
-
-        sigma_outer = torch.outer(sigma.flatten(), sigma.flatten())  
-        K = sigma_outer * R0                                   
-
-        chol    = torch.linalg.cholesky(K)                  
-        K_inv_F = torch.cholesky_solve(F, chol)            
-        K_inv_y = torch.cholesky_solve(y, chol)                
+        # Solve for beta_hat via GLS (profiled)
+        K_inv_F = torch.cholesky_solve(F, chol)
+        K_inv_y = torch.cholesky_solve(y, chol)
 
         mean_coefficients = torch.linalg.solve(
-            F.mT @ K_inv_F,   
-            F.mT @ K_inv_y,   
-        )                                                       
+            F.mT @ K_inv_F,
+            F.mT @ K_inv_y,
+        )
 
-        residual = y - F @ mean_coefficients                    
-        K_inv_r  = torch.cholesky_solve(residual, chol)        
+        # Residuals
+        residual = y - F @ mean_coefficients
+        K_inv_r = torch.cholesky_solve(residual, chol)
 
-        data_fit = torch.sum(residual * K_inv_r)               
+        # Data fit term: r^T K^{-1} r
+        data_fit = torch.sum(residual * K_inv_r)
 
-        log_det  = torch.diagonal(chol, dim1=-2, dim2=-1).log().sum().mul(2) 
+        # Log determinant: log|K| = 2 * sum(log(diag(chol)))
+        log_det = 2.0 * torch.sum(torch.log(torch.diagonal(chol)))
 
-        nll = 0.5 * (data_fit + log_det)                      
+        # Full NLL
+        nll = 0.5 * (data_fit + log_det)
+
         return nll, mean_coefficients.squeeze(-1)
 
     def _compute_exact_mll_loss(self) -> torch.Tensor:

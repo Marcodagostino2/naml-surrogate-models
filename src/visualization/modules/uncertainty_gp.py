@@ -8,7 +8,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import gaussian_kde, norm
 
+from src.utils import setup_logger
 from ..utils import FIG_STYLE, PALETTE, apply_style, finalize_figure, predict_mean_std
+
+logger = setup_logger(__name__)
 
 if TYPE_CHECKING:
     from ..config import VisualizationConfig
@@ -37,7 +40,17 @@ def _plot_calibration(sigma: np.ndarray, error: np.ndarray, model_name: str, con
         slope = 0.0
     ref_limit = float(max(sigma.max(), error.max())) if sigma.size and error.size else 1.0
     ax.plot([0.0, ref_limit], [0.0, ref_limit], linestyle="--", linewidth=1.0, color=PALETTE["ref"], label="y = x")
-    correlation = float(np.corrcoef(sigma, error)[0, 1]) if sigma.size > 1 else 0.0
+    
+    # Compute correlation safely with guard against degenerate data
+    correlation = 0.0
+    if sigma.size > 1 and error.size > 1:
+        sigma_std = np.std(sigma)
+        error_std = np.std(error)
+        if sigma_std > 1e-10 and error_std > 1e-10:
+            correlation = float(np.corrcoef(sigma, error)[0, 1])
+            if not np.isfinite(correlation):
+                correlation = 0.0
+    
     ax.text(0.02, 0.98, f"Pearson r = {correlation:.3f}\nslope = {slope:.3f}", transform=ax.transAxes, va="top", ha="left", fontsize=int(FIG_STYLE["annotation_size"]), bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.7})
     apply_style(ax, f"Calibration — {model_name}", "Predicted σ", "Absolute error")
     ax.legend()
@@ -58,15 +71,59 @@ def _plot_reliability(sigma: np.ndarray, error: np.ndarray, model_name: str, con
 
 
 def _plot_sigma_vs_error_dist(sigma: np.ndarray, error: np.ndarray, model_name: str, config: "VisualizationConfig", mode: str) -> None:
+    """
+    Plot 2D joint distribution of sigma and error with KDE.
+    
+    Skips KDE and falls back to scatter if data has near-zero variance,
+    which is common early in training when the MLP outputs uniform sigma.
+    """
     fig, ax = plt.subplots(figsize=(float(FIG_STYLE["figure_width"]), float(FIG_STYLE["figure_height"])))
-    for values, label, color in ((sigma, "σ", PALETTE["train"]), (error, "|error|", PALETTE["test"])):
-        bins = max(10, int(np.sqrt(values.size)))
-        ax.hist(values, bins=bins, density=True, alpha=float(FIG_STYLE["hist_alpha"]), color=color, label=f"{label} hist")
-        if values.size > 1 and np.std(values) > 0:
-            kde = gaussian_kde(values)
-            x_grid = np.linspace(float(values.min()), float(values.max()), 200)
-            ax.plot(x_grid, kde(x_grid), color=color, linewidth=1.5, label=f"{label} KDE")
-    apply_style(ax, f"Uncertainty vs Error Distribution — {model_name}", "Value", "Density")
+    
+    # Stack data for KDE: (2, n)
+    values = np.stack([sigma, error], axis=0)
+    
+    # Check variance of each dimension
+    row_stds = np.std(values, axis=1)
+    has_degenerate_data = np.any(row_stds < 1e-10) or np.any(~np.isfinite(row_stds))
+    
+    if has_degenerate_data:
+        logger.warning(
+            "Skipping sigma-vs-error KDE plot: data has near-zero or invalid variance "
+            f"(stds: sigma={row_stds[0]:.2e}, error={row_stds[1]:.2e}). "
+            "This is expected if the MLP outputs uniform sigma values."
+        )
+        # Fallback: plot scatter without KDE
+        ax.scatter(sigma, error, alpha=0.5, color=PALETTE["test"], s=float(FIG_STYLE["marker_size"]))
+        apply_style(ax, f"Σ vs Error Distribution — {model_name}", "Predicted σ", "Absolute error")
+        finalize_figure(fig, f"uncertainty_distributions_{model_name}.png", config, mode)
+        return
+    
+    # Sufficient variance: use 2D KDE
+    try:
+        kde = gaussian_kde(values)
+        
+        # Create grid for KDE evaluation
+        sigma_grid = np.linspace(float(sigma.min()), float(sigma.max()), 100)
+        error_grid = np.linspace(float(error.min()), float(error.max()), 100)
+        sigma_mesh, error_mesh = np.meshgrid(sigma_grid, error_grid)
+        
+        # Evaluate KDE on grid
+        grid_points = np.vstack([sigma_mesh.ravel(), error_mesh.ravel()])
+        kde_values = kde(grid_points).reshape(sigma_mesh.shape)
+        
+        # Plot density contours and scatter
+        contour = ax.contourf(sigma_mesh, error_mesh, kde_values, levels=15, cmap="Blues", alpha=0.7)
+        ax.contour(sigma_mesh, error_mesh, kde_values, levels=5, colors="black", alpha=0.3, linewidths=0.5)
+        ax.scatter(sigma, error, alpha=0.3, color=PALETTE["test"], s=float(FIG_STYLE["marker_size"]), label="data")
+        plt.colorbar(contour, ax=ax, label="Density")
+        
+    except Exception as e:
+        logger.warning(
+            f"Failed to compute 2D KDE for {model_name}: {e}. Falling back to scatter plot."
+        )
+        ax.scatter(sigma, error, alpha=0.5, color=PALETTE["test"], s=float(FIG_STYLE["marker_size"]))
+    
+    apply_style(ax, f"Σ vs Error Distribution — {model_name}", "Predicted σ", "Absolute error")
     ax.legend()
     finalize_figure(fig, f"uncertainty_distributions_{model_name}.png", config, mode)
 

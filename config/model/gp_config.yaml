@@ -20,7 +20,7 @@ kernel:
   theta: 1.0
   power_exponent: 2.0
   nugget: 0.01
-  tau2: 1.0
+  tau2: 0.01
   likelihood_noise: 1e-7
 
 # Polynomial trend degree (0 = constant, 1 = linear, 2 = quadratic)

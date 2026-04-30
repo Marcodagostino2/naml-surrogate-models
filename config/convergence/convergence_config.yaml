@@ -1,0 +1,8 @@
+# User-friendly config for convergence_analysis.py
+# split_percentages accepts either fractions [0,1] or percentages [0,100].
+
+global_seed: 20
+
+# Train split grid. For each value:
+# val_split = test_split = (1 - train_split) / 2
+split_percentages: [0.10, 0.20, 0.40, 0.70]

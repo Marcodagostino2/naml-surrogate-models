@@ -9,6 +9,9 @@ optimizer: "adam"
 # Learning rate
 learning_rate: 0.001
 
+# Weight decay
+weight_decay: 1e-4
+
 # Batch size for training
 batch_size: 64
 

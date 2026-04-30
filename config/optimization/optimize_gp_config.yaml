@@ -1,8 +1,8 @@
 study:
-  n_trials: 30
+  n_trials: 2
   timeout: 7200
   direction: minimize
-  metric: val_nll
+  metric: val_rmse
   sampler: gp
   pruner: null
   n_startup_trials: 5
@@ -15,18 +15,18 @@ search_space:
   model:
     outputscale_init:
       type: float
-      low: 0.1
-      high: 10.0
+      low: 0.01
+      high: 0.01
       log: true
     lengthscale_init:
       type: float
       low: 0.01
-      high: 10.0
+      high: 0.01
       log: true
     noise_var:
       type: float
       low: 1.0e-5
-      high: 1.0e-1
+      high: 1.0e-5
       log: true
   training:
     learning_rate:

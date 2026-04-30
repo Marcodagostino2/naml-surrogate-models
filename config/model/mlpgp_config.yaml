@@ -17,9 +17,9 @@
 
 feature_extractor:
   architecture:
-  - layers: [16, 16, 16]
-    activation: "tanh"
-  dropout: 0.0
+    - layers: [32, 32, 32, 32]
+      activation: "relu"
+  dropout: 0.1
   batch_norm: false
   output_activation: "softplus"
   sigma_floor: 1e-8

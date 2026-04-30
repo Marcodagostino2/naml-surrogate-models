@@ -10,7 +10,6 @@ This module centralizes the common training flow used by main.py and optimize.py
 from __future__ import annotations
 
 import csv
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -20,9 +19,9 @@ import yaml
 from src.data import DataBundle
 from src.inference import Predictor
 from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
-from src.plot import generate_diagnostics
+from src.visualization.diagnostics import generate_diagnostics
 from src.training import GPTrainer, MLPTrainer, MLPGPTrainer, compute_all_metrics
-from src.utils import resolve_device, setup_logger
+from src.utils import OutputPathResolver, resolve_device, setup_logger
 
 logger = setup_logger(__name__)
 
@@ -37,18 +36,17 @@ _MODEL_REGISTRY: Dict[str, Tuple[type, type, bool]] = {
 }
 
 
-def create_run_directory(base_output_dir: Path, model_name: str) -> Path:
-    """Create a timestamped run directory for outputs."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = base_output_dir / model_name / f"run_{timestamp}"
+def create_run_directory(output_resolver: OutputPathResolver) -> Path:
+    """Create the output directory structure for a single model run."""
+    run_dir = output_resolver.root
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "config").mkdir(exist_ok=True)
-    (run_dir / "plot").mkdir(exist_ok=True)
+    output_resolver.config_dir.mkdir(parents=True, exist_ok=True)
+    output_resolver.plots_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
 
 def save_run_configs(
-    run_dir: Path,
+    output_resolver: OutputPathResolver,
     selected_model: str,
     main_cfg: Dict[str, Any],
     dataset_cfg: Dict[str, Any],
@@ -57,7 +55,7 @@ def save_run_configs(
     viz_cfg: Dict[str, Any],
 ) -> None:
     """Persist the run configuration set under run_dir/config/."""
-    config_out = run_dir / "config"
+    config_out = output_resolver.config_dir
     entries: List[Tuple[Path, str, Dict[str, Any]]] = [
         (config_out, "main_config.yaml", None),
         (config_out / "dataset", "dataset_config.yaml", dataset_cfg),
@@ -163,7 +161,7 @@ def train_model(
     dataset_cfg: Dict[str, Any],
     model_cfg: Dict[str, Any],
     training_cfg: Dict[str, Any],
-    run_dir: Path,
+    output_resolver: OutputPathResolver,
     device: Optional[torch.device] = None,
     trial: Optional["optuna.Trial"] = None,
 ) -> Dict[str, Any]:
@@ -221,10 +219,10 @@ def train_model(
         val_losses=history.get("val_losses"),
         y_val_std=uncertainties["val"],
         y_test_std=uncertainties["test"],
-        output_dir=run_dir / "plot",
+        output_dir=output_resolver.plots_dir,
     )
 
-    checkpoint_path = run_dir / "checkpoint.pt"
+    checkpoint_path = output_resolver.checkpoint
     torch.save(model.state_dict(), checkpoint_path)
     logger.debug(f"Model checkpoint saved to {checkpoint_path}")
 

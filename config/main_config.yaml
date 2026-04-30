@@ -13,7 +13,7 @@ global_seed: 21
 precision: "float32"
 
 # Active dataset key from config/dataset/dataset_config.yaml
-dataset: "HYDDB_v2"
+dataset: "AEDB_v1"
 
 # Model selection: "mlp", "gp", "mlpgp", or "all"
 model_to_train: "all"

@@ -26,7 +26,15 @@ from src.optimization_support import (
     save_optimization_results,
 )
 from src.pipeline import save_summary_row
-from src.utils import load_run_configs, resolve_device, set_global_seed, setup_logger, setup_torch_dtype
+from src.utils import (
+    OutputPathResolver,
+    RunType,
+    load_run_configs,
+    resolve_device,
+    set_global_seed,
+    setup_logger,
+    setup_torch_dtype,
+)
 
 logger = setup_logger(__name__)
 
@@ -114,25 +122,31 @@ def run_optimization(
         f"HPO complete | best={study.best_value:.6f} | params={study.best_params} | duration={duration:.0f}s"
     )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = output_dir / "optimize" / model_name / f"run_{timestamp}"
+    output_resolver = OutputPathResolver(
+        dataset_name=dataset_name,
+        run_type=RunType.OPTIMIZATION,
+        model_name=model_name,
+        output_base_dir=output_dir,
+    )
+    run_dir = output_resolver.root
     run_dir.mkdir(parents=True, exist_ok=True)
 
     save_optimization_results(
         study=study,
-        run_dir=run_dir,
+        output_resolver=output_resolver,
         opt_cfg=opt_cfg,
         base_model_cfg=base_model_cfg,
         base_training_cfg=base_training_cfg,
         model_name=model_name,
     )
 
-    generate_optimization_plots(study, run_dir / "plots")
+    generate_optimization_plots(study, output_resolver.plots_dir)
 
     save_summary_row(
-        output_dir / "optimize" / model_name / "summary.csv",
+        output_resolver.summary_csv,
         {
-            "timestamp": timestamp,
+            "timestamp": datetime.now().isoformat(),
+            "dataset": dataset_name,
             "run_dir": str(run_dir),
             "model": model_name,
             "n_trials_completed": len(study.trials),
@@ -165,8 +179,8 @@ def main() -> None:
     if not config_dir.exists():
         logger.error(f"Config directory not found: {config_dir}")
         return
-    if not (config_dir / "optimize_config").exists():
-        logger.error(f"Optimize config directory not found: {config_dir / 'optimize_config'}")
+    if not (config_dir / "optimization").exists() and not (config_dir / "optimize_config").exists():
+        logger.error(f"Optimization config directory not found in: {config_dir}")
         return
 
     main_cfg = load_run_configs(config_dir, "mlp", include_optimize=False)["main_cfg"]

@@ -65,7 +65,8 @@ def load_run_configs(
     }
 
     if include_optimize:
-        result["opt_cfg"] = load_yaml(config_dir / "optimize_config" / f"optimize_{model_name}_config.yaml")
+        optimize_cfg_path = config_dir / "optimization" / f"optimize_{model_name}_config.yaml"
+        result["opt_cfg"] = load_yaml(optimize_cfg_path)
 
     return result
 

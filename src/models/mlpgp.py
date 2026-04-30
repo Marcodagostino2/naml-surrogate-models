@@ -14,7 +14,6 @@ import gpytorch
 import torch
 from gpytorch.constraints import GreaterThan
 from gpytorch.distributions import MultivariateNormal
-from gpytorch.kernels import ScaleKernel
 from gpytorch.models import ExactGP
 
 from src.models.gp import ExponentialKernel, PolynomialTrendMean
@@ -130,6 +129,35 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
         lengthscale_x2: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
+        """
+        Compute Gibbs (Paciorek & Schervish 2006) non-stationary kernel.
+
+        Implementation of:
+            K(x_i, x_j) = sigma_i * sigma_j
+                          * prod_d [ sqrt( 2 * ell_i_d * ell_j_d / (ell_i_d^2 + ell_j_d^2) ) ]
+                          * R0( delta(x_i, x_j) )
+
+        where delta_d(x_i, x_j) = theta_d * ( |x_i_d - x_j_d| / sqrt( (ell_i_d^2 + ell_j_d^2) / 2 ) )^p
+
+        Parameters
+        ----------
+        x1 : Tensor (n, d)
+            First set of input points.
+        x2 : Tensor (m, d)
+            Second set of input points.
+        diag : bool
+            If True, only return diagonal of kernel matrix (n,).
+        sigma_x1, sigma_x2 : Optional[Tensor]
+            Pre-computed local standard deviations. If None, computed from parameterizer.
+        lengthscale_x1, lengthscale_x2 : Optional[Tensor]
+            Pre-computed local length scales. If None, computed from parameterizer.
+
+        Returns
+        -------
+        Tensor
+            If diag=True: (n,) diagonal elements
+            If diag=False: (n, m) full kernel matrix
+        """
         sigma_x1, sigma_x2, lengthscale_x1, lengthscale_x2 = self._resolve_local_parameters(
             x1=x1,
             x2=x2,
@@ -140,19 +168,63 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
         )
 
         if diag:
+            # For diagonal: diff=0 so dist=0 and R0_diag=1.
+            # norm_factor_diag = prod_d(sqrt(2*L^2 / 2L^2)) = 1.
+            # So diag output = sigma1^2 + nugget
             base_diag = sigma_x1.pow(2)
             return base_diag + self.nugget
 
-        # Reuse the existing stationary kernel by evaluating it on warped inputs.
-        z1 = x1 / lengthscale_x1
-        z2 = x2 / lengthscale_x2
+        # Compute lengthscale squared (n, d) and (m, d)
+        L1_sq = lengthscale_x1.pow(2)
+        L2_sq = lengthscale_x2.pow(2)
 
-        distance = self.base_kernel._anisotropic_distance(z1, z2)
-        stationary_part = torch.exp(-distance)
+        # Unsqueeze for broadcasting: (n, 1, d) and (1, m, d) -> (n, m, d)
+        L1_sq_broad = L1_sq.unsqueeze(-2)  # (n, 1, d)
+        L2_sq_broad = L2_sq.unsqueeze(-3)  # (1, m, d)
 
+        # Compute norm_factor (n, m):
+        # prod_d [ sqrt( 2 * L1_d * L2_d / (L1_sq_d + L2_sq_d) ) ]
+        L1_broad = lengthscale_x1.unsqueeze(-2)  # (n, 1, d)
+        L2_broad = lengthscale_x2.unsqueeze(-3)  # (1, m, d)
+
+        per_dim_factor = torch.sqrt(2.0 * L1_broad * L2_broad / (L1_sq_broad + L2_sq_broad))
+        # Shape: (n, m, d)
+        norm_factor = torch.prod(per_dim_factor, dim=-1)  # (n, m)
+
+        # Debug assertion: norm_factor should be in (0, 1]
+        # (only in debug mode to avoid runtime cost)
+        if False:  # Set to True for debugging
+            assert (norm_factor > 0).all() and (norm_factor <= 1.0 + 1e-5).all(), \
+                f"norm_factor out of bounds: min={norm_factor.min()}, max={norm_factor.max()}"
+
+        # Compute harmonic mean squared length scale: (n, m, d)
+        ell_harm_sq = (L1_sq_broad + L2_sq_broad) / 2.0
+
+        # Compute differences: (n, m, d)
+        diff = (x1.unsqueeze(-2) - x2.unsqueeze(-3)).abs()  # (n, 1, d) - (1, m, d)
+
+        # Get theta and p from base kernel
+        theta = self.base_kernel.theta  # (d,)
+        p = self.base_kernel.power_exponent  # scalar or (d,)
+
+        # Compute scaled difference fed into R0:
+        # delta_d = theta_d * ( diff_d / sqrt(ell_harm_sq_d) )^p
+        ell_harm_std = torch.sqrt(ell_harm_sq)  # (n, m, d)
+        scaled_diff = theta * (diff / ell_harm_std).pow(p)  # (n, m, d)
+
+        # Sum across dimensions to get distance
+        dist = torch.sum(scaled_diff, dim=-1)  # (n, m)
+
+        # Evaluate base kernel on the scaled distance
+        R0 = torch.exp(-dist)  # (n, m)
+
+        # Compute sigma_outer: (n, 1) * (1, m) -> (n, m)
         sigma_outer = sigma_x1.unsqueeze(-1) * sigma_x2.unsqueeze(-2)
-        covariance = sigma_outer * stationary_part
 
+        # Full Gibbs kernel: sigma_outer * norm_factor * R0
+        covariance = sigma_outer * norm_factor * R0
+
+        # Add nugget only when evaluating at same points (x1 is x2)
         same_inputs = x1.shape == x2.shape and torch.equal(x1, x2)
         if same_inputs:
             eye = torch.eye(x1.shape[-2], device=x1.device, dtype=x1.dtype)
@@ -203,7 +275,6 @@ class MLPGPModel(ExactGP):
         initial_theta = _require_config_value(kernel_cfg, "theta", "MLPGP kernel config")
         initial_p = _require_config_value(kernel_cfg, "power_exponent", "MLPGP kernel config")
         initial_nugget = float(_require_config_value(kernel_cfg, "nugget", "MLPGP kernel config"))
-        initial_tau2 = float(kernel_cfg.get("tau2", 1.0))
 
         # Fix likelihood noise to minimal constant; all regularization comes from nugget
         self.likelihood.noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "MLPGP kernel config"))
@@ -222,8 +293,9 @@ class MLPGPModel(ExactGP):
         )
         nonstationary_kernel.set_parameterizer(self._predict_local_parameters)
 
-        self.covar_module = ScaleKernel(nonstationary_kernel)
-        self.covar_module.outputscale = initial_tau2
+        # No ScaleKernel wrapping — use nonstationary kernel directly
+        # All variance scaling is handled internally by sigma(x)
+        self.covar_module = nonstationary_kernel
 
         self.likelihood.raw_noise.requires_grad_(False)
 

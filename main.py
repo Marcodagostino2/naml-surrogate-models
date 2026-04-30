@@ -23,6 +23,8 @@ import torch
 from src.data import load_data_from_config
 from src.pipeline import create_run_directory, save_run_configs, save_summary_row, train_model
 from src.utils import (
+    OutputPathResolver,
+    RunType,
     load_run_configs,
     set_global_seed,
     setup_logger,
@@ -111,11 +113,18 @@ def main() -> None:
             training_cfg = model_configs["training_cfg"]
             
 
-            run_dir = create_run_directory(output_base_dir, selected_model)
+            output_resolver = OutputPathResolver(
+                dataset_name=dataset_name,
+                run_type=RunType.SINGLE_RUN,
+                model_name=selected_model,
+                output_base_dir=output_base_dir,
+            )
+
+            run_dir = create_run_directory(output_resolver)
             logger.debug(f"Run directory created: {run_dir}")
 
             save_run_configs(
-                run_dir=run_dir,
+                output_resolver=output_resolver,
                 selected_model=selected_model,
                 main_cfg=main_cfg,
                 dataset_cfg=dataset_cfg,
@@ -130,11 +139,11 @@ def main() -> None:
                 dataset_cfg=dataset_cfg,
                 model_cfg=model_cfg,
                 training_cfg=training_cfg,
-                run_dir=run_dir,
+                output_resolver=output_resolver,
             )
             trained_models[selected_model] = results["model"]
 
-            summary_csv_path = output_base_dir / selected_model / "summary.csv"
+            summary_csv_path = output_resolver.summary_csv
             run_info = {
                 "timestamp": datetime.now().isoformat(),
                 "run_dir": str(run_dir),
@@ -147,10 +156,10 @@ def main() -> None:
             }
             save_summary_row(summary_csv_path, run_info)
 
-            from visualization import run_visualization
-            from visualization.config import VisualizationConfig
+            from src.visualization import run_visualization
+            from src.visualization.config import VisualizationConfig
 
-            viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(run_dir / "plot"))
+            viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(output_resolver.plots_dir))
             run_visualization(
                 models={selected_model: results["model"]},
                 data={
@@ -174,33 +183,43 @@ def main() -> None:
             logger.info(f"Training completed. Results saved to {run_dir}")
 
         if len(trained_models) == len(selected_models):
-            from visualization import run_visualization
-            from visualization.config import VisualizationConfig
+            from src.visualization import run_visualization
+            from src.visualization.config import VisualizationConfig
 
-            table_viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(output_base_dir / "visualization" / dataset_name))
-            table_viz_config.parity.enabled = False
-            table_viz_config.surface.enabled = False
-            table_viz_config.uncertainty_gp.enabled = False
-            table_viz_config.table.enabled = True
-            run_visualization(
-                models=trained_models,
-                data={
-                    "X_train": data_bundle.X_train * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
-                    "y_train": data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
-                    "X_val": data_bundle.X_val * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
-                    "y_val": data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
-                    "X_test": data_bundle.X_test * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
-                    "y_test": data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
-                    "feature_names": data_bundle.feature_names,
-                    "output_name": ", ".join(data_bundle.target_names),
-                    "input_scaler_mean": data_bundle.input_scaler_mean,
-                    "input_scaler_std": data_bundle.input_scaler_std,
-                    "target_scaler_mean": data_bundle.target_scaler_mean,
-                    "target_scaler_std": data_bundle.target_scaler_std,
-                },
-                config=table_viz_config,
-                mode="train",
-            )
+            for selected_model in selected_models:
+                table_resolver = OutputPathResolver(
+                    dataset_name=dataset_name,
+                    run_type=RunType.SINGLE_RUN,
+                    model_name=selected_model,
+                    output_base_dir=output_base_dir,
+                )
+                table_viz_config = VisualizationConfig.from_mapping(
+                    viz_cfg,
+                    output_dir=str(table_resolver.plots_dir),
+                )
+                table_viz_config.parity.enabled = False
+                table_viz_config.surface.enabled = False
+                table_viz_config.uncertainty_gp.enabled = False
+                table_viz_config.table.enabled = True
+                run_visualization(
+                    models=trained_models,
+                    data={
+                        "X_train": data_bundle.X_train * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+                        "y_train": data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+                        "X_val": data_bundle.X_val * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+                        "y_val": data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+                        "X_test": data_bundle.X_test * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+                        "y_test": data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+                        "feature_names": data_bundle.feature_names,
+                        "output_name": ", ".join(data_bundle.target_names),
+                        "input_scaler_mean": data_bundle.input_scaler_mean,
+                        "input_scaler_std": data_bundle.input_scaler_std,
+                        "target_scaler_mean": data_bundle.target_scaler_mean,
+                        "target_scaler_std": data_bundle.target_scaler_std,
+                    },
+                    config=table_viz_config,
+                    mode="train",
+                )
 
     logger.info("=" * 60)
     logger.info("Pipeline Execution Completed Successfully!")

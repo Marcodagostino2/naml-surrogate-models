@@ -11,7 +11,6 @@ import csv
 import json
 import re
 import tempfile
-import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -24,8 +23,8 @@ import yaml
 from optuna.pruners import BasePruner, HyperbandPruner, MedianPruner, NopPruner
 from optuna.samplers import BaseSampler, CmaEsSampler, RandomSampler, TPESampler
 
-from main import train_model
-from src.utils import setup_logger
+from src.pipeline import train_model
+from src.utils import OutputPathResolver, setup_logger
 
 logger = setup_logger(__name__)
 
@@ -49,6 +48,7 @@ _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("gp", "lengthscale_init"): "kernel",
     ("gp", "noise_var"): "kernel",
     ("mlpgp", "hidden_layers"): "feature_extractor",
+    ("mlpgp", "hidden_layers_list"): "feature_extractor",
     ("mlpgp", "hidden_size"): "feature_extractor",
     ("mlpgp", "activation"): "feature_extractor",
     ("mlpgp", "dropout"): "feature_extractor",
@@ -307,7 +307,12 @@ def make_objective(
                     dataset_cfg=dataset_cfg,
                     model_cfg=model_cfg,
                     training_cfg=training_cfg,
-                    run_dir=run_dir,
+                    output_resolver=OutputPathResolver(
+                        dataset_name="tmp",
+                        run_type="single_run",
+                        model_name=model_name,
+                        output_base_dir=run_dir,
+                    ),
                     device=device,
                     trial=trial,
                 )
@@ -316,6 +321,14 @@ def make_objective(
                 metric_value = _extract_metric(results, metric_name, data_bundle, results["model"])
                 trial.set_user_attr("objective_metric", metric_name)
                 trial.set_user_attr("objective_value", float(metric_value))
+                trial.set_user_attr(
+                    "val_metrics",
+                    {key: float(value) for key, value in results.get("val_metrics", {}).items()},
+                )
+                trial.set_user_attr(
+                    "test_metrics",
+                    {key: float(value) for key, value in results.get("test_metrics", {}).items()},
+                )
 
                 for metric_key, metric_val in results.get("val_metrics", {}).items():
                     trial.set_user_attr(f"val_{metric_key}", float(metric_val))
@@ -347,13 +360,14 @@ def _extract_best_params(best_params: Dict[str, Any], search_space: Dict[str, An
 
 def save_optimization_results(
     study: optuna.Study,
-    run_dir: Path,
+    output_resolver: OutputPathResolver,
     opt_cfg: Dict[str, Any],
     base_model_cfg: Dict[str, Any],
     base_training_cfg: Dict[str, Any],
     model_name: str,
 ) -> None:
     """Persist trials, best params and the optimized configs."""
+    run_dir = output_resolver.root
     run_dir.mkdir(parents=True, exist_ok=True)
 
     trials_data = []
@@ -368,7 +382,7 @@ def save_optimization_results(
             }
         )
 
-    trials_csv = run_dir / "trials.csv"
+    trials_csv = output_resolver.all_trials_csv
     if trials_data:
         fieldnames = sorted({key for row in trials_data for key in row.keys()})
         with open(trials_csv, "w", newline="") as f:
@@ -378,9 +392,9 @@ def save_optimization_results(
         logger.debug(f"Trials saved to {trials_csv}")
 
     if study.best_trial is not None:
-        best_params_file = run_dir / "best_params.yaml"
+        best_params_file = output_resolver.best_params
         with open(best_params_file, "w", encoding="utf-8") as f:
-            yaml.dump(study.best_params, f, default_flow_style=False, allow_unicode=True)
+            json.dump(study.best_params, f, indent=2)
         logger.debug(f"Best params saved to {best_params_file}")
 
         model_params = _extract_best_params(study.best_params, opt_cfg["search_space"], "model")
@@ -388,7 +402,7 @@ def save_optimization_results(
         best_model_cfg = overlay(base_model_cfg, _apply_hp(model_name, "model", model_params))
         best_training_cfg = overlay(overlay(base_training_cfg, _apply_hp(model_name, "training", training_params)), opt_cfg.get("training_overrides", {}))
 
-        config_dir = run_dir / "config"
+        config_dir = output_resolver.config_dir
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "model").mkdir(exist_ok=True)
         (config_dir / "training").mkdir(exist_ok=True)
