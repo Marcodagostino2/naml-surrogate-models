@@ -6,6 +6,7 @@ from src.utils.config import (
     load_json,
     load_pickle,
     load_yaml,
+    load_run_configs,
     resolve_device,
     save_json,
     save_pickle,
@@ -17,6 +18,7 @@ from src.utils.config import (
 
 __all__ = [
     "load_yaml",
+    "load_run_configs",
     "save_yaml",
     "load_json",
     "save_json",

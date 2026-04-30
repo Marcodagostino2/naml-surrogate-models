@@ -15,20 +15,15 @@ import argparse
 import csv
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict
 import yaml
 
 import torch
 
-from src.data import load_and_preprocess_data
-from src.inference import Predictor
-from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
-from src.plot import generate_diagnostics
-from src.training import GPTrainer, MLPTrainer, MLPGPTrainer, compute_all_metrics
+from src.data import load_data_from_config
+from src.pipeline import create_run_directory, save_run_configs, save_summary_row, train_model
 from src.utils import (
-    load_yaml,
-    resolve_device,
-    save_yaml,
+    load_run_configs,
     set_global_seed,
     setup_logger,
     setup_torch_dtype,
@@ -36,476 +31,8 @@ from src.utils import (
 
 logger = setup_logger(__name__)
 
-
-def create_run_directory(base_output_dir: Path, model_name: str) -> Path:
-    """
-    Create a timestamped run directory for outputs.
-
-    Parameters
-    ----------
-    base_output_dir : Path
-        Base output directory (e.g., "outputs/mlp").
-    model_name : str
-        Model name (e.g., "mlp", "gp").
-
-    Returns
-    -------
-    Path
-        Timestamped run directory.
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = base_output_dir / model_name / f"run_{timestamp}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    (run_dir / "config").mkdir(exist_ok=True)
-    (run_dir / "plot").mkdir(exist_ok=True)
-
-    return run_dir
-
-
-def save_run_configs(
-    run_dir: Path,
-    selected_model: str,
-    main_cfg: Dict[str, Any],
-    dataset_cfg: Dict[str, Any],
-    model_cfg: Dict[str, Any],
-    training_cfg: Dict[str, Any],
-    viz_cfg: Dict[str, Any],
-) -> None:
-    """
-    Persist all run configurations inside ``run_dir/config/``, mirroring the
-    canonical source layout.  ``main_config.yaml`` is patched so that
-    ``model_to_train`` always reflects the model actually trained in this run
-    (never ``"all"``).
-
-    Output layout
-    -------------
-    run_dir/
-    └── config/
-        ├── main_config.yaml
-        ├── dataset/
-        │   └── dataset_config.yaml
-        ├── model/
-        │   └── {selected_model}_config.yaml
-        ├── training/
-        │   └── training_{selected_model}_config.yaml
-        └── visualization/
-            └── visualization_config.yaml
-
-    Parameters
-    ----------
-    run_dir : Path
-        Root directory of the current run.
-    selected_model : str
-        Model identifier (``"mlp"``, ``"gp"``, or ``"mlpgp"``).
-    main_cfg : Dict[str, Any]
-        Loaded main configuration.
-    dataset_cfg : Dict[str, Any]
-        Loaded dataset configuration.
-    model_cfg : Dict[str, Any]
-        Loaded model configuration for ``selected_model``.
-    training_cfg : Dict[str, Any]
-        Loaded training configuration for ``selected_model``.
-    viz_cfg : Dict[str, Any]
-        Loaded visualization configuration.
-    """
-    config_out = run_dir / "config"
-
-    # Subdirectory map: subdir → (filename, content)
-    entries: List[Tuple[Path, str, Dict[str, Any]]] = [
-        (config_out,               "main_config.yaml",                          None),
-        (config_out / "dataset",   "dataset_config.yaml",                       dataset_cfg),
-        (config_out / "model",     f"{selected_model}_config.yaml",             model_cfg),
-        (config_out / "training",  f"training_{selected_model}_config.yaml",    training_cfg),
-        (config_out / "visualization", "visualization_config.yaml",             viz_cfg),
-    ]
-
-    # Patch main_cfg: model_to_train must always be the specific model, never "all"
-    patched_main_cfg = {**main_cfg, "model_to_train": selected_model}
-
-    for subdir, filename, content in entries:
-        subdir.mkdir(parents=True, exist_ok=True)
-        payload = patched_main_cfg if filename == "main_config.yaml" else content
-        with open(subdir / filename, "w", encoding="utf-8") as fh:
-            yaml.dump(payload, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
-    logger.debug(f"Run configs saved to {config_out}")
-
-
-def save_summary_row(
-    summary_csv_path: Path,
-    run_info: Dict[str, Any],
-) -> None:
-    """
-    Append a row to the summary CSV file.
-
-    Parameters
-    ----------
-    summary_csv_path : Path
-        Path to summary.csv.
-    run_info : Dict[str, Any]
-        Dictionary of metrics and info for this run.
-    """
-    summary_csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Check if file exists to determine if we need headers
-    file_exists = summary_csv_path.exists()
-
-    with open(summary_csv_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=sorted(run_info.keys()))
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerow(run_info)
-
-    logger.info(f"Summary row appended to {summary_csv_path}")
-
-
-def train_mlp(
-    data_bundle,
-    dataset_cfg: Dict,
-    model_cfg: Dict,
-    training_cfg: Dict,
-    run_dir: Path,
-    device: Optional[torch.device] = None,
-) -> Dict[str, Any]:
-    """
-    Train standalone MLP model.
-
-    Parameters
-    ----------
-    data_bundle
-        DataBundle object.
-    dataset_cfg : Dict
-        Dataset configuration.
-    model_cfg : Dict
-        MLP model configuration.
-    training_cfg : Dict
-        MLP training configuration.
-    run_dir : Path
-        Run output directory.
-    device : torch.device, optional
-        Device to use.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Results including metrics and model.
-    """
-    logger.info("=" * 60)
-    logger.info("Training MLP Model")
-    logger.info("=" * 60)
-
-    device = device or resolve_device(training_cfg.get("device", "auto"))
-
-    # Create model
-    model = MLPRegressor(
-        input_dim=data_bundle.n_inputs,
-        output_dim=data_bundle.n_outputs,
-        model_cfg=model_cfg,
-    )
-
-    # Create dataloaders
-    batch_size = int(dataset_cfg.get("batch_size", 128))
-    train_loader = data_bundle.get_train_loader(batch_size=batch_size)
-    val_loader = data_bundle.get_val_loader(batch_size=batch_size)
-
-    # Train
-    trainer = MLPTrainer(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        training_cfg=training_cfg,
-        device=device,
-    )
-
-    history = trainer.train()
-
-    # Evaluate
-    logger.info("Evaluating MLP on test set...")
-
-    predictor = Predictor(
-        model=model,
-        target_scaler_mean=data_bundle.target_scaler_mean,
-        target_scaler_std=data_bundle.target_scaler_std,
-        device=device,
-    )
-
-    y_train_pred = predictor.predict(data_bundle.X_train)
-    y_val_pred = predictor.predict(data_bundle.X_val)
-    y_test_pred = predictor.predict(data_bundle.X_test)
-
-    # Denormalize for metrics
-    y_train = data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
-    y_val = data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
-    y_test = data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
-
-    train_metrics = compute_all_metrics(y_train, y_train_pred)
-    val_metrics = compute_all_metrics(y_val, y_val_pred)
-    test_metrics = compute_all_metrics(y_test, y_test_pred)
-
-    logger.info(f"Test R²: {test_metrics['r2']:.6f}, Test RMSE: {test_metrics['rmse']:.6f}")
-
-    # Plots
-    generate_diagnostics(
-        y_train_true=y_train,
-        y_train_pred=y_train_pred,
-        y_val_true=y_val,
-        y_val_pred=y_val_pred,
-        y_test_true=y_test,
-        y_test_pred=y_test_pred,
-        train_losses=history["train_losses"],
-        val_losses=history["val_losses"],
-        output_dir=run_dir / "plot",
-    )
-
-    # Save model
-    checkpoint_path = run_dir / "checkpoint.pt"
-    torch.save(model.state_dict(), checkpoint_path)
-    logger.info(f"Model checkpoint saved to {checkpoint_path}")
-
-    return {
-        "model": model,
-        "predictor": predictor,
-        "train_metrics": train_metrics,
-        "val_metrics": val_metrics,
-        "test_metrics": test_metrics,
-        "history": history,
-    }
-
-
-def train_gp(
-    data_bundle,
-    model_cfg: Dict,
-    training_cfg: Dict,
-    run_dir: Path,
-    device: Optional[torch.device] = None,
-) -> Dict[str, Any]:
-    """
-    Train standalone GP (Kriging) model.
-
-    Parameters
-    ----------
-    data_bundle
-        DataBundle object.
-    model_cfg : Dict
-        GP model configuration.
-    training_cfg : Dict
-        GP training configuration.
-    run_dir : Path
-        Run output directory.
-    device : torch.device, optional
-        Device to use.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Results including metrics and model.
-    """
-    logger.info("=" * 60)
-    logger.info("Training GP (Kriging) Model")
-    logger.info("=" * 60)
-
-    device = device or resolve_device(training_cfg.get("device", "auto"))
-
-    # Convert training data to tensors
-    X_train_t = torch.from_numpy(data_bundle.X_train)
-    y_train_t = torch.from_numpy(data_bundle.y_train)
-
-    # Squeeze if single output
-    if y_train_t.ndim == 2 and y_train_t.shape[1] == 1:
-        y_train_t = y_train_t.squeeze(-1)
-
-    # Create model
-    likelihood = None  # Let GPRegressionModel create default
-    model = GPRegressionModel(
-        X_train=X_train_t,
-        y_train=y_train_t,
-        model_cfg=model_cfg,
-        likelihood=likelihood,
-    )
-
-    # Train
-    # Validation tensors
-    X_val_t = torch.from_numpy(data_bundle.X_val)
-    y_val_t = torch.from_numpy(data_bundle.y_val)
-
-    trainer = GPTrainer(
-        model=model,
-        X_train=X_train_t,
-        y_train=y_train_t,
-        X_val=X_val_t,
-        y_val=y_val_t,
-        training_cfg=training_cfg,
-        device=device,
-    )
-
-    history = trainer.train()
-
-    # Evaluate
-    logger.info("Evaluating GP on test set...")
-
-    predictor = Predictor(
-        model=model,
-        target_scaler_mean=data_bundle.target_scaler_mean,
-        target_scaler_std=data_bundle.target_scaler_std,
-        device=device,
-    )
-
-    y_train_pred, y_train_std = predictor.predict(data_bundle.X_train, return_uncertainty=True)
-    y_val_pred, y_val_std = predictor.predict(data_bundle.X_val, return_uncertainty=True)
-    y_test_pred, y_test_std = predictor.predict(data_bundle.X_test, return_uncertainty=True)
-
-    # Denormalize for metrics
-    y_train = data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
-    y_val = data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
-    y_test = data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
-
-    train_metrics = compute_all_metrics(y_train, y_train_pred)
-    val_metrics = compute_all_metrics(y_val, y_val_pred)
-    test_metrics = compute_all_metrics(y_test, y_test_pred)
-
-    logger.info(f"Test R²: {test_metrics['r2']:.6f}, Test RMSE: {test_metrics['rmse']:.6f}")
-
-    # Plots
-    generate_diagnostics(
-        y_train_true=y_train,
-        y_train_pred=y_train_pred,
-        y_val_true=y_val,
-        y_val_pred=y_val_pred,
-        y_test_true=y_test,
-        y_test_pred=y_test_pred,
-        y_val_std=y_val_std,
-        y_test_std=y_test_std,
-        output_dir=run_dir / "plot",
-    )
-
-    # Save model
-    checkpoint_path = run_dir / "checkpoint.pt"
-    torch.save(model.state_dict(), checkpoint_path)
-    logger.info(f"Model checkpoint saved to {checkpoint_path}")
-
-    return {
-        "model": model,
-        "predictor": predictor,
-        "train_metrics": train_metrics,
-        "val_metrics": val_metrics,
-        "test_metrics": test_metrics,
-        "history": history,
-    }
-
-
-def train_mlpgp(
-    data_bundle,
-    model_cfg: Dict,
-    training_cfg: Dict,
-    run_dir: Path,
-    device: Optional[torch.device] = None,
-) -> Dict[str, Any]:
-    """
-    Train end-to-end MLPGP model.
-
-    Parameters
-    ----------
-    data_bundle
-        DataBundle object.
-    model_cfg : Dict
-        MLPGP model configuration.
-    training_cfg : Dict
-        MLPGP training configuration.
-    run_dir : Path
-        Run output directory.
-    device : torch.device, optional
-        Device to use.
-
-    Returns
-    -------
-    Dict[str, Any]
-        Results including metrics and model.
-    """
-    logger.info("=" * 60)
-    logger.info("Training MLPGP Model")
-    logger.info("=" * 60)
-
-    device = device or resolve_device(training_cfg.get("device", "auto"))
-
-    X_train_t = torch.from_numpy(data_bundle.X_train)
-    y_train_t = torch.from_numpy(data_bundle.y_train)
-
-    if y_train_t.ndim == 2 and y_train_t.shape[1] == 1:
-        y_train_t = y_train_t.squeeze(-1)
-
-    likelihood = None
-    model = MLPGPModel(
-        X_train=X_train_t,
-        y_train=y_train_t,
-        model_cfg=model_cfg,
-        likelihood=likelihood,
-    )
-
-    X_val_t = torch.from_numpy(data_bundle.X_val)
-    y_val_t = torch.from_numpy(data_bundle.y_val)
-
-    trainer = MLPGPTrainer(
-        model=model,
-        X_train=X_train_t,
-        y_train=y_train_t,
-        X_val=X_val_t,
-        y_val=y_val_t,
-        training_cfg=training_cfg,
-        device=device,
-    )
-
-    history = trainer.train()
-
-    logger.info("Evaluating MLPGP on test set...")
-
-    predictor = Predictor(
-        model=model,
-        target_scaler_mean=data_bundle.target_scaler_mean,
-        target_scaler_std=data_bundle.target_scaler_std,
-        device=device,
-    )
-
-    y_train_pred, y_train_std = predictor.predict(data_bundle.X_train, return_uncertainty=True)
-    y_val_pred, y_val_std = predictor.predict(data_bundle.X_val, return_uncertainty=True)
-    y_test_pred, y_test_std = predictor.predict(data_bundle.X_test, return_uncertainty=True)
-
-    y_train = data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
-    y_val = data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
-    y_test = data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean
-
-    train_metrics = compute_all_metrics(y_train, y_train_pred)
-    val_metrics = compute_all_metrics(y_val, y_val_pred)
-    test_metrics = compute_all_metrics(y_test, y_test_pred)
-
-    logger.info(f"Test R²: {test_metrics['r2']:.6f}, Test RMSE: {test_metrics['rmse']:.6f}")
-
-    generate_diagnostics(
-        y_train_true=y_train,
-        y_train_pred=y_train_pred,
-        y_val_true=y_val,
-        y_val_pred=y_val_pred,
-        y_test_true=y_test,
-        y_test_pred=y_test_pred,
-        y_val_std=y_val_std,
-        y_test_std=y_test_std,
-        output_dir=run_dir / "plot",
-    )
-
-    checkpoint_path = run_dir / "checkpoint.pt"
-    torch.save(model.state_dict(), checkpoint_path)
-    logger.info(f"Model checkpoint saved to {checkpoint_path}")
-
-    return {
-        "model": model,
-        "predictor": predictor,
-        "train_metrics": train_metrics,
-        "val_metrics": val_metrics,
-        "test_metrics": test_metrics,
-        "history": history,
-    }
+if TYPE_CHECKING:
+    import optuna
 
 
 def main() -> None:
@@ -531,13 +58,13 @@ def main() -> None:
 
     project_root = Path(__file__).resolve().parent
     config_base_dir = project_root / args.config_dir
-    main_config_path = config_base_dir / "main_config.yaml" 
     output_base_dir = project_root / args.output_dir
 
     # ==================== Config Loading ====================
     logger.info("Loading configurations...")
 
-    main_cfg = load_yaml(main_config_path)
+    loaded_configs = load_run_configs(config_base_dir, "mlp", include_optimize=False)
+    main_cfg = loaded_configs["main_cfg"]
     global_seed = int(main_cfg.get("global_seed", 42))
     model_to_train = str(main_cfg.get("model_to_train", "mlp")).lower()
     run_mode = str(main_cfg.get("run_mode", "training")).lower()
@@ -549,13 +76,14 @@ def main() -> None:
     setup_torch_dtype(precision)
     logger.info(f"PyTorch default dtype set to {torch.get_default_dtype()}")
 
-    # Load dataset config
-    dataset_cfg = load_yaml(config_base_dir / "dataset" / "dataset_config.yaml")
+    dataset_cfg = loaded_configs["dataset_cfg"]
+    dataset_name = loaded_configs["dataset_name"]
+    logger.info(f"Dataset: {dataset_name} - {dataset_cfg.get('description', '')}")
 
     if model_to_train not in {"mlp", "gp", "mlpgp", "all"}:
         raise ValueError(f"Unknown model_to_train: {model_to_train}")
 
-    viz_cfg = load_yaml(config_base_dir / "visualization" / "visualization_config.yaml")
+    viz_cfg = loaded_configs["viz_cfg"]
 
     logger.info(f"Model to train: {model_to_train.upper()}")
     logger.info(f"Run mode: {run_mode.upper()}")
@@ -563,22 +91,9 @@ def main() -> None:
     # ==================== Data Loading ====================
     logger.info("Loading and preprocessing data...")
 
-    csv_path = project_root / dataset_cfg["csv_path"]
-    data_bundle = load_and_preprocess_data(
-        csv_path=csv_path,
-        input_columns=dataset_cfg["input_columns"],
-        target_columns=dataset_cfg["target_columns"],
-        dropna=bool(dataset_cfg.get("dropna", True)),
-        normalize_inputs=bool(dataset_cfg.get("normalize_inputs", True)),
-        normalize_targets=bool(dataset_cfg.get("normalize_targets", True)),
-        train_ratio=float(dataset_cfg.get("train_ratio", 0.70)),
-        val_ratio=float(dataset_cfg.get("val_ratio", 0.15)),
-        test_ratio=float(dataset_cfg.get("test_ratio", 0.15)),
-        random_seed=global_seed,
-        default_type=precision,
-    )
+    data_bundle = load_data_from_config(project_root, dataset_cfg, global_seed, precision)
 
-    logger.info(
+    logger.debug(
         f"Data shapes: "
         f"X_train={data_bundle.X_train.shape}, "
         f"X_val={data_bundle.X_val.shape}, "
@@ -586,25 +101,18 @@ def main() -> None:
     )
 
     selected_models = ["mlp", "gp", "mlpgp"] if model_to_train == "all" else [model_to_train]
+    trained_models: Dict[str, Any] = {}
 
     # ==================== Training Phase ====================
     if "training" in run_mode:
         for selected_model in selected_models:
-            if selected_model == "mlp":
-                model_cfg = load_yaml(config_base_dir / "model" / "mlp_config.yaml")
-                training_cfg = load_yaml(config_base_dir / "training" / "training_mlp_config.yaml")
-            elif selected_model == "gp":
-                model_cfg = load_yaml(config_base_dir / "model" / "gp_config.yaml")
-                training_cfg = load_yaml(config_base_dir / "training" / "training_gp_config.yaml")
-            elif selected_model == "mlpgp":
-                model_cfg = load_yaml(config_base_dir / "model" / "mlpgp_config.yaml")
-                training_cfg = load_yaml(config_base_dir / "training" / "training_mlpgp_config.yaml")
-            else:
-                raise ValueError(f"Unknown model: {selected_model}")
+            model_configs = load_run_configs(config_base_dir, selected_model, include_optimize=False)
+            model_cfg = model_configs["model_cfg"]
+            training_cfg = model_configs["training_cfg"]
             
 
             run_dir = create_run_directory(output_base_dir, selected_model)
-            logger.info(f"Run directory created: {run_dir}")
+            logger.debug(f"Run directory created: {run_dir}")
 
             save_run_configs(
                 run_dir=run_dir,
@@ -616,28 +124,15 @@ def main() -> None:
                 viz_cfg=viz_cfg,
             )
 
-            if selected_model == "mlp":
-                results = train_mlp(
-                    data_bundle=data_bundle,
-                    dataset_cfg=dataset_cfg,
-                    model_cfg=model_cfg,
-                    training_cfg=training_cfg,
-                    run_dir=run_dir,
-                )
-            elif selected_model == "gp":
-                results = train_gp(
-                    data_bundle=data_bundle,
-                    model_cfg=model_cfg,
-                    training_cfg=training_cfg,
-                    run_dir=run_dir,
-                )
-            else:
-                results = train_mlpgp(
-                    data_bundle=data_bundle,
-                    model_cfg=model_cfg,
-                    training_cfg=training_cfg,
-                    run_dir=run_dir,
-                )
+            results = train_model(
+                model_name=selected_model,
+                data_bundle=data_bundle,
+                dataset_cfg=dataset_cfg,
+                model_cfg=model_cfg,
+                training_cfg=training_cfg,
+                run_dir=run_dir,
+            )
+            trained_models[selected_model] = results["model"]
 
             summary_csv_path = output_base_dir / selected_model / "summary.csv"
             run_info = {
@@ -652,7 +147,60 @@ def main() -> None:
             }
             save_summary_row(summary_csv_path, run_info)
 
+            from visualization import run_visualization
+            from visualization.config import VisualizationConfig
+
+            viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(run_dir / "plot"))
+            run_visualization(
+                models={selected_model: results["model"]},
+                data={
+                    "X_train": data_bundle.X_train * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+                    "y_train": data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+                    "X_val": data_bundle.X_val * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+                    "y_val": data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+                    "X_test": data_bundle.X_test * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+                    "y_test": data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+                    "feature_names": data_bundle.feature_names,
+                    "output_name": ", ".join(data_bundle.target_names),
+                    "input_scaler_mean": data_bundle.input_scaler_mean,
+                    "input_scaler_std": data_bundle.input_scaler_std,
+                    "target_scaler_mean": data_bundle.target_scaler_mean,
+                    "target_scaler_std": data_bundle.target_scaler_std,
+                },
+                config=viz_config,
+                mode="train",
+            )
+
             logger.info(f"Training completed. Results saved to {run_dir}")
+
+        if len(trained_models) == len(selected_models):
+            from visualization import run_visualization
+            from visualization.config import VisualizationConfig
+
+            table_viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(output_base_dir / "visualization" / dataset_name))
+            table_viz_config.parity.enabled = False
+            table_viz_config.surface.enabled = False
+            table_viz_config.uncertainty_gp.enabled = False
+            table_viz_config.table.enabled = True
+            run_visualization(
+                models=trained_models,
+                data={
+                    "X_train": data_bundle.X_train * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+                    "y_train": data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+                    "X_val": data_bundle.X_val * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+                    "y_val": data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+                    "X_test": data_bundle.X_test * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+                    "y_test": data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+                    "feature_names": data_bundle.feature_names,
+                    "output_name": ", ".join(data_bundle.target_names),
+                    "input_scaler_mean": data_bundle.input_scaler_mean,
+                    "input_scaler_std": data_bundle.input_scaler_std,
+                    "target_scaler_mean": data_bundle.target_scaler_mean,
+                    "target_scaler_std": data_bundle.target_scaler_std,
+                },
+                config=table_viz_config,
+                mode="train",
+            )
 
     logger.info("=" * 60)
     logger.info("Pipeline Execution Completed Successfully!")

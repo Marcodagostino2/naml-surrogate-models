@@ -22,6 +22,54 @@ import torch
 import yaml
 
 
+def load_run_configs(
+    config_dir: Path,
+    model_name: str,
+    include_optimize: bool = False,
+) -> Dict[str, Any]:
+    """
+    Load the configuration set for a model run.
+
+    Parameters
+    ----------
+    config_dir : Path
+        Base configuration directory.
+    model_name : str
+        Model identifier (``"mlp"``, ``"gp"``, or ``"mlpgp"``).
+    include_optimize : bool, optional
+        Whether to include the optimization config. Default: ``False``.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Loaded configs. Keys: ``main_cfg``, ``dataset_cfg``, ``dataset_name``,
+        ``model_cfg``, ``training_cfg``, ``viz_cfg`` and optionally ``opt_cfg``.
+    """
+    main_cfg = load_yaml(config_dir / "main_config.yaml")
+    all_datasets = load_yaml(config_dir / "dataset" / "dataset_config.yaml")
+    dataset_name = str(main_cfg.get("dataset", "airfoil_self_noise"))
+    datasets = all_datasets.get("datasets", {})
+
+    if dataset_name not in datasets:
+        raise ValueError(
+            f"Dataset '{dataset_name}' not found. Available: {list(datasets.keys())}"
+        )
+
+    result: Dict[str, Any] = {
+        "main_cfg": main_cfg,
+        "dataset_cfg": datasets[dataset_name],
+        "dataset_name": dataset_name,
+        "model_cfg": load_yaml(config_dir / "model" / f"{model_name}_config.yaml"),
+        "training_cfg": load_yaml(config_dir / "training" / f"training_{model_name}_config.yaml"),
+        "viz_cfg": load_yaml(config_dir / "visualization" / "visualization_config.yaml"),
+    }
+
+    if include_optimize:
+        result["opt_cfg"] = load_yaml(config_dir / "optimize_config" / f"optimize_{model_name}_config.yaml")
+
+    return result
+
+
 def load_yaml(config_path: Path | str) -> Dict[str, Any]:
     """
     Load a YAML configuration file.

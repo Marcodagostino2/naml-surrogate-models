@@ -203,6 +203,7 @@ class MLPGPModel(ExactGP):
         initial_theta = _require_config_value(kernel_cfg, "theta", "MLPGP kernel config")
         initial_p = _require_config_value(kernel_cfg, "power_exponent", "MLPGP kernel config")
         initial_nugget = float(_require_config_value(kernel_cfg, "nugget", "MLPGP kernel config"))
+        initial_tau2 = float(kernel_cfg.get("tau2", 1.0))
 
         # Fix likelihood noise to minimal constant; all regularization comes from nugget
         self.likelihood.noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "MLPGP kernel config"))
@@ -222,6 +223,7 @@ class MLPGPModel(ExactGP):
         nonstationary_kernel.set_parameterizer(self._predict_local_parameters)
 
         self.covar_module = ScaleKernel(nonstationary_kernel)
+        self.covar_module.outputscale = initial_tau2
 
         self.likelihood.raw_noise.requires_grad_(False)
 

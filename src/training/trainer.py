@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 import copy
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import gpytorch
 import numpy as np
@@ -25,6 +25,9 @@ from src.training.metrics import compute_all_metrics
 from src.utils import resolve_device, setup_logger
 
 logger = setup_logger(__name__)
+
+if TYPE_CHECKING:
+    import optuna
 
 
 class MLPTrainer:
@@ -45,6 +48,7 @@ class MLPTrainer:
         val_loader: DataLoader,
         training_cfg: Dict[str, Any],
         device: Optional[torch.device] = None,
+        trial: Optional["optuna.Trial"] = None,
     ) -> None:
         """
         Initialize MLPTrainer.
@@ -68,6 +72,7 @@ class MLPTrainer:
         self.val_loader = val_loader
         self.training_cfg = training_cfg
         self.device = device or resolve_device(training_cfg.get("device", "auto"))
+        self.trial = trial
 
         self.model.to(self.device)
 
@@ -213,6 +218,14 @@ class MLPTrainer:
                     f"Val Loss: {val_loss:.6f}, Val R²: {val_metrics['r2']:.4f}"
                 )
 
+            # fix: wire Optuna pruning signal into MLP epoch loop.
+            if self.trial is not None:
+                self.trial.report(val_loss, step=epoch)
+                if self.trial.should_prune():
+                    logger.info(f"Trial pruned at epoch {epoch}")
+                    import optuna
+                    raise optuna.TrialPruned()
+
             if self.patience_counter >= self.early_stopping_patience:
                 logger.info(f"Early stopping at epoch {epoch}")
                 break
@@ -252,6 +265,7 @@ class GPTrainer:
         X_val: Optional[torch.Tensor] = None,
         y_val: Optional[torch.Tensor] = None,
         device: Optional[torch.device] = None,
+        trial: Optional["optuna.Trial"] = None,
     ) -> None:
         """
         Initialize GPTrainer.
@@ -301,6 +315,7 @@ class GPTrainer:
         elif optimizer_name == "sgd":
             self.optimizer = torch.optim.SGD(optimizable_parameters, lr=lr)
         elif optimizer_name == "lbfgs":
+            # fix: for LBFGS this lr acts as the line-search step-size scale, not a fixed SGD-like LR.
             self.optimizer = torch.optim.LBFGS(
                 optimizable_parameters,
                 lr=lr,
@@ -479,11 +494,13 @@ class MLPGPTrainer:
         X_val: Optional[torch.Tensor] = None,
         y_val: Optional[torch.Tensor] = None,
         device: Optional[torch.device] = None,
+        trial: Optional["optuna.Trial"] = None,
     ) -> None:
         self.model = model
         self.X_train = X_train
         self.y_train = y_train
         self.training_cfg = training_cfg
+        self.trial = trial
         
         # Extract config values
         self.optimizer_name = str(training_cfg.get("optimizer", "adam")).lower()
@@ -633,6 +650,18 @@ class MLPGPTrainer:
         loss.backward()
         return loss
 
+    def _compute_validation_loss(self) -> Optional[float]:
+        """Compute validation MSE for pruning if validation tensors are available."""
+        if self.X_val is None or self.y_val is None:
+            return None
+
+        self.model.eval()
+        with torch.no_grad():
+            prediction = self.model(self.X_val)
+            mean = prediction.mean
+            y_val_reshaped = self.y_val.view_as(mean)
+            return float(torch.nn.functional.mse_loss(mean, y_val_reshaped).item())
+
     def train(self) -> Dict[str, Any]:
         logger.info(f"Starting MLPGP optimization for {self.n_training_steps} steps")
         start_time = time.time()
@@ -658,6 +687,16 @@ class MLPGPTrainer:
                 if rel_change < self.rel_tol and abs(mll_curr - mll_prev) < self.abs_tol:
                     logger.info(f"Converged at step {step} (rel_change={rel_change:.6f})")
                     break
+
+            # fix: wire Optuna pruning signal into MLPGP optimization loop.
+            if self.trial is not None:
+                val_loss = self._compute_validation_loss()
+                reported_loss = val_loss if val_loss is not None else loss_value
+                self.trial.report(reported_loss, step=step)
+                if self.trial.should_prune():
+                    logger.info(f"Trial pruned at step {step}")
+                    import optuna
+                    raise optuna.TrialPruned()
 
             # Validation check and best-state save (if validation provided)
             if self.X_val is not None and self.y_val is not None and step % self.convergence_check_interval == 0:

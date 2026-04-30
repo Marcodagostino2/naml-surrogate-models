@@ -1,89 +1,68 @@
-# ============================================================================
-# Dataset Configuration
-# ============================================================================
-# Shared configuration for data loading, preprocessing, and splitting.
-# Works for all three models (MLP, GP, MLP+GP).
+# Registry of all available datasets.
+# The active dataset is selected in config/main_config.yaml via the key "dataset".
 
-# Data source
-csv_path: "data/HYDDB_v2_output.csv"
-# csv_path: "data/airfoil_self_noise.csv"
-# csv_path: "data/concrete_compressive_strength.csv"
-# csv_path: "data/qsar_aquatic_toxicity.csv"
-# csv_path: "data/yacht_hydrodynamics.csv"
+datasets:
+  airfoil_self_noise:
+    csv_path: data/airfoil_self_noise.csv
+    input_columns: [frequency, attack-angle, chord-length, free-stream-velocity, suction-side-displacement-thickness]
+    target_columns: [scaled-sound-pressure]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 64
+    description: "NASA airfoil self-noise dataset (1503 samples, 5 inputs, 1 output)"
 
+  concrete_compressive_strength:
+    csv_path: data/concrete_compressive_strength.csv
+    input_columns: [Cement, Blast Furnace Slag, Fly Ash, Water, Superplasticizer, Coarse Aggregate, Fine Aggregate, Age]
+    target_columns: [Concrete compressive strength]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 64
+    description: "Concrete compressive strength (1030 samples, 8 inputs, 1 output)"
 
-# Input features to use
-input_columns:
-  - sim_machNumberValue
-  - sim_aoaValue
-  - sim_phiValue
-  - sim_altitudeValue
-  - geom_abk_openingPercentage
+  HYDDB_v2:
+    csv_path: data/HYDDB_v2_output.csv
+    input_columns: [sim_machNumberValue, sim_aoaValue, sim_phiValue, sim_altitudeValue, geom_abk_openingPercentage]
+    target_columns: [cfd_cfx_mean]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 128
+    description: "Hydrodynamics DB v2"
 
-# input_columns:
-#   - frequency
-#   - attack-angle
-#   - chord-length
-#   - free-stream-velocity
-#   - suction-side-displacement-thickness
+  yacht_hydrodynamics:
+    csv_path: data/yacht_hydrodynamics.csv
+    input_columns: [longitudinal_center_of_buoyancy, prismatic_coefficient, length_displacement_ratio, beam_draught_ratio, length_beam_ratio, froude_number]
+    target_columns: [residuary_resistance]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 32
+    description: "Yacht hydrodynamics (308 samples, 6 inputs, 1 output)"
 
-# input_columns:
-#   - Cement
-#   - Blast Furnace Slag
-#   - Fly Ash
-#   - Water
-#   - Superplasticizer
-#   - Coarse Aggregate
-#   - Fine Aggregate
-#   - Age
-
-# input_columns:
-#   - TPSA
-#   - SAcc
-#   - H-050 
-#   - MLOGP 
-#   - RDCHI 
-#   - GATS1p 
-#   - nN 
-#   - C-040
-
-# input_columns:
-#   - longitudinal_center_of_buoyancy
-#   - prismatic_coefficient
-#   - length_displacement_ratio
-#   - beam_draught_ratio
-#   - length_beam_ratio
-#   - froude_number
-
-# Target output columns
-target_columns:
-  - cfd_cfx_mean
-
-# target_columns:
-#   - scaled-sound-pressure
-
-# target_columns:
-#   - Concrete compressive strength
-
-# target_columns:
-#   - LC50
-
-# target_columns:
-#   - residuary_resistance
-
-# Data cleaning
-dropna: true
-
-# Data splitting proportions
-train_ratio: 0.70
-val_ratio: 0.15
-test_ratio: 0.15
-
-# Normalization
-normalize_inputs: true
-normalize_targets: true
-
-# DataLoader settings
-batch_size: 128
-num_workers: 0
-pin_memory: false
+  qsar_aquatic_toxicity:
+    csv_path: data/qsar_aquatic_toxicity.csv
+    input_columns: [TPSA, SAcc, H-050, MLOGP, RDCHI, GATS1p, nN, C-040]
+    target_columns: [LC50]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 32
+    description: "QSAR aquatic toxicity"
