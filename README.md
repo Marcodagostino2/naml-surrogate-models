@@ -11,7 +11,7 @@ A unified, production-ready Python framework for training and comparing three di
 - **Modular Architecture**: Clean separation of concerns across data, models, training, inference, and plotting modules.
 - **Dynamic Configuration**: YAML-based, hierarchical configuration system for easy experimentation.
 - **MLP Model**: Block-based architecture with flexible layer definitions, batch normalization, dropout, and multiple activation functions.
-- **GP/Kriging Model**: GPyTorch-based exact GP with learnable hyperparameters (lengthscale, power exponent, nugget).
+- **GP/Kriging Model**: GPyTorch-based exact GP with learnable hyperparameters (lengthscale, power exponent).
 - **Uncertainty Quantification**: GP provides predictive uncertainty (±2σ confidence bands).
 - **Comprehensive Diagnostics**: Parity plots, residual analysis, training curves, uncertainty visualization.
 - **Reproducibility**: Config snapshots, random seed management, deterministic training.
@@ -145,7 +145,6 @@ Kernel configuration and optimization:
 ```yaml
 kernel_type: "matern"
 initial_lengthscale: 1.0
-initial_nugget: 0.01
 likelihood_noise: 1e-4
 ```
 

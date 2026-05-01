@@ -65,7 +65,6 @@ _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
 _KERNEL_PARAM_MAP: Dict[str, str] = {
     "outputscale_init": "tau2",
     "lengthscale_init": "theta",
-    "noise_var":        "nugget",
 }
 
 
@@ -454,14 +453,18 @@ def save_optimization_results(
 def _generate_summary_dashboard(study: optuna.Study, plots_dir: Path) -> None:
     """Generate a 2x3 dashboard with optimization and multi-metric diagnostics."""
     completed_trials = [
-        t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE and t.value is not None
+        t for t in study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE
+        and t.value is not None
+        and np.isfinite(float(t.value))  
     ]
     if not completed_trials:
-        logger.warning("Skipping summary dashboard: no completed trials.")
+        logger.warning("Skipping summary dashboard: no completed trials with finite objective.")
         return
 
-    trial_numbers = np.asarray([t.number for t in completed_trials], dtype=int)
+    trial_numbers    = np.asarray([t.number    for t in completed_trials], dtype=int)
     objective_values = np.asarray([float(t.value) for t in completed_trials], dtype=float)
+    # objective_values è già garantito finito, accumulate è sicuro
     best_so_far = np.minimum.accumulate(objective_values)
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
@@ -475,20 +478,36 @@ def _generate_summary_dashboard(study: optuna.Study, plots_dir: Path) -> None:
     ax_convergence.set_ylabel("Objective")
     ax_convergence.grid(alpha=0.3)
 
-    metric_specs = [("val_rmse", "tab:red", "RMSE"), ("val_mae", "tab:orange", "MAE"), ("val_mape", "tab:green", "MAPE")]
-    metric_r2 = np.asarray([float(t.user_attrs.get("val_r2", np.nan)) for t in completed_trials], dtype=float)
+    metric_specs = [
+        ("val_rmse", "tab:red",    "RMSE"),
+        ("val_mae",  "tab:orange", "MAE"),
+        ("val_mape", "tab:green",  "MAPE"),
+    ]
+    metric_r2 = np.asarray(
+        [float(t.user_attrs.get("val_r2", np.nan)) for t in completed_trials], dtype=float
+    )
 
     has_primary = False
     for key, color, label in metric_specs:
-        vals = np.asarray([float(t.user_attrs.get(key, np.nan)) for t in completed_trials], dtype=float)
-        if np.isfinite(vals).any():
+        vals = np.asarray(
+            [float(t.user_attrs.get(key, np.nan)) for t in completed_trials], dtype=float
+        )
+        finite_mask = np.isfinite(vals)  
+        if finite_mask.any():
             has_primary = True
-            ax_metrics.plot(trial_numbers, vals, marker="o", linewidth=1.5, color=color, label=label)
+            ax_metrics.plot(
+                trial_numbers[finite_mask], vals[finite_mask],
+                marker="o", linewidth=1.5, color=color, label=label,
+            )
 
     ax_metrics_r2 = ax_metrics.twinx()
-    has_r2 = np.isfinite(metric_r2).any()
+    r2_mask = np.isfinite(metric_r2)
+    has_r2 = r2_mask.any()
     if has_r2:
-        ax_metrics_r2.plot(trial_numbers, metric_r2, marker="x", linewidth=1.4, color="tab:purple", label="R2")
+        ax_metrics_r2.plot(
+            trial_numbers[r2_mask], metric_r2[r2_mask],
+            marker="x", linewidth=1.4, color="tab:purple", label="R2",
+        )
         ax_metrics_r2.set_ylabel("R2")
 
     ax_metrics.set_title("Val metrics over trials")
@@ -500,10 +519,13 @@ def _generate_summary_dashboard(study: optuna.Study, plots_dir: Path) -> None:
         handles_2, labels_2 = ax_metrics_r2.get_legend_handles_labels()
         ax_metrics.legend(handles_1 + handles_2, labels_1 + labels_2, loc="best", fontsize=8)
     else:
-        ax_metrics.text(0.5, 0.5, "No val_* user attrs", ha="center", va="center", transform=ax_metrics.transAxes)
+        ax_metrics.text(0.5, 0.5, "No val_* user attrs", ha="center", va="center",
+                        transform=ax_metrics.transAxes)
 
-    ax_hist.hist(objective_values, bins=min(20, len(objective_values)), color="tab:cyan", edgecolor="black")
-    ax_hist.axvline(float(study.best_value), color="tab:red", linestyle="--", linewidth=2)
+    ax_hist.hist(objective_values, bins=min(20, len(objective_values)),
+                 color="tab:cyan", edgecolor="black")
+    best_finite = float(np.min(objective_values))
+    ax_hist.axvline(best_finite, color="tab:red", linestyle="--", linewidth=2)
     ax_hist.set_title("Distribution of values")
     ax_hist.set_xlabel("Objective")
     ax_hist.set_ylabel("Count")
@@ -519,31 +541,50 @@ def _generate_summary_dashboard(study: optuna.Study, plots_dir: Path) -> None:
 
     top_trials = sorted(completed_trials, key=lambda t: float(t.value))[:10]
     table_rows = [
-        [str(t.number), f"{float(t.value):.5f}", f"{float(t.user_attrs.get('val_rmse', np.nan)):.4f}", f"{float(t.user_attrs.get('val_r2', np.nan)):.4f}"]
+        [
+            str(t.number),
+            f"{float(t.value):.5f}",
+            f"{float(t.user_attrs.get('val_rmse', np.nan)):.4f}",
+            f"{float(t.user_attrs.get('val_r2',   np.nan)):.4f}",
+        ]
         for t in top_trials
     ]
     ax_top10.axis("off")
     ax_top10.set_title("Top-10 trials")
-    table = ax_top10.table(cellText=table_rows, colLabels=["Trial", "Objective", "Val RMSE", "Val R2"], loc="center", cellLoc="center")
+    table = ax_top10.table(
+        cellText=table_rows,
+        colLabels=["Trial", "Objective", "Val RMSE", "Val R2"],
+        loc="center", cellLoc="center",
+    )
     table.auto_set_font_size(False)
     table.set_fontsize(8)
     table.scale(1.0, 1.2)
 
-    best_trial = study.best_trial if study.best_trial is not None else None
-    train_losses = best_trial.user_attrs.get("train_losses") if best_trial is not None else None
-    val_losses = best_trial.user_attrs.get("val_losses") if best_trial is not None else None
+    best_trial    = study.best_trial if study.best_trial is not None else None
+    train_losses  = best_trial.user_attrs.get("train_losses") if best_trial is not None else None
+    val_losses    = best_trial.user_attrs.get("val_losses")   if best_trial is not None else None
+
     if isinstance(train_losses, list) and len(train_losses) > 0:
-        epochs = np.arange(1, len(train_losses) + 1)
-        ax_losses.plot(epochs, train_losses, color="tab:blue", linewidth=1.8, label="Train")
+        train_arr = np.asarray(train_losses, dtype=float)
+        train_finite = np.isfinite(train_arr)
+        epochs = np.arange(1, len(train_arr) + 1)
+        ax_losses.plot(epochs[train_finite], train_arr[train_finite],
+                       color="tab:blue", linewidth=1.8, label="Train")
         if isinstance(val_losses, list) and len(val_losses) > 0:
-            ax_losses.plot(np.arange(1, len(val_losses) + 1), val_losses, color="tab:orange", linewidth=1.8, label="Val")
+            val_arr    = np.asarray(val_losses, dtype=float)
+            val_finite = np.isfinite(val_arr)
+            ax_losses.plot(
+                np.arange(1, len(val_arr) + 1)[val_finite], val_arr[val_finite],
+                color="tab:orange", linewidth=1.8, label="Val",
+            )
         ax_losses.set_title("Train vs Val loss (best trial)")
         ax_losses.set_xlabel("Epoch")
         ax_losses.set_ylabel("Loss")
         ax_losses.grid(alpha=0.3)
         ax_losses.legend(loc="best", fontsize=8)
     else:
-        ax_losses.text(0.5, 0.5, "No train/val loss history available", ha="center", va="center", transform=ax_losses.transAxes)
+        ax_losses.text(0.5, 0.5, "No train/val loss history available",
+                       ha="center", va="center", transform=ax_losses.transAxes)
         ax_losses.set_title("Train vs Val loss (best trial)")
         ax_losses.set_xticks([])
         ax_losses.set_yticks([])

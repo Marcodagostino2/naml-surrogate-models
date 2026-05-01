@@ -4,7 +4,7 @@ Gaussian Process (Kriging) model for aerodynamic coefficient prediction.
 Implemented using GPyTorch with:
 - Exact inference (ExactGP)
 - Polynomial trend mean
-- Exponential covariance kernel with learnable theta, p, and nugget
+- Exponential covariance kernel with learnable theta, power exponent
 - Global variance scale tau^2 via ScaleKernel
 """
 
@@ -24,6 +24,12 @@ from gpytorch.models import ExactGP
 from src.utils import setup_logger
 
 logger = setup_logger(__name__)
+
+
+def _build_gaussian_likelihood(initial_noise: float) -> gpytorch.likelihoods.GaussianLikelihood:
+    likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=GreaterThan(1e-10))
+    likelihood.initialize(noise=float(initial_noise))
+    return likelihood
 
 
 def _require_config_value(config: Dict, key: str, context: str):
@@ -69,7 +75,7 @@ class PolynomialTrendMean(Mean):
 
 
 class ExponentialKernel(gpytorch.kernels.Kernel):
-    """Anisotropic generalized exponential covariance with learnable theta, p, and nugget."""
+    """Anisotropic generalized exponential covariance with learnable theta, and power exponent."""
 
     is_stationary = True
     has_lengthscale = False
@@ -79,7 +85,6 @@ class ExponentialKernel(gpytorch.kernels.Kernel):
         input_dim: int,
         initial_theta: float | Sequence[float],
         initial_power_exponent: float | Sequence[float],
-        initial_nugget: float,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -96,13 +101,8 @@ class ExponentialKernel(gpytorch.kernels.Kernel):
             "raw_power_exponent",
             torch.nn.Parameter(initial_power_tensor.clone()),
         )
-        self.register_parameter(
-            "raw_nugget",
-            torch.nn.Parameter(torch.as_tensor(initial_nugget, dtype=torch.get_default_dtype()).flatten()),
-        )
         self.register_constraint("raw_theta", GreaterThan(1e-5))
         self.register_constraint("raw_power_exponent", Interval(1.5, 2.0))
-        self.register_constraint("raw_nugget", GreaterThan(1e-8))
 
     def _coerce_vector(self, value: float | Sequence[float], name: str) -> torch.Tensor:
         tensor = torch.as_tensor(value, dtype=torch.get_default_dtype()).flatten()
@@ -120,10 +120,6 @@ class ExponentialKernel(gpytorch.kernels.Kernel):
     def power_exponent(self) -> torch.Tensor:
         return self.raw_power_exponent_constraint.transform(self.raw_power_exponent)
 
-    @property
-    def nugget(self) -> torch.Tensor:
-        return self.raw_nugget_constraint.transform(self.raw_nugget)
-
     def _anisotropic_distance(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
         diff = (x1.unsqueeze(-2) - x2.unsqueeze(-3)).abs()
         scaled = self.theta * diff.pow(self.power_exponent)
@@ -132,15 +128,10 @@ class ExponentialKernel(gpytorch.kernels.Kernel):
     def forward(self, x1: torch.Tensor, x2: torch.Tensor, diag: bool = False, **kwargs) -> torch.Tensor:
         if diag:
             base_diag = torch.ones(x1.shape[:-1], device=x1.device, dtype=x1.dtype)
-            return base_diag + self.nugget
+            return base_diag
 
         distance = self._anisotropic_distance(x1, x2)
         covariance = torch.exp(-distance)
-
-        same_inputs = x1.shape == x2.shape and torch.equal(x1, x2)
-        if same_inputs:
-            eye = torch.eye(x1.shape[-2], device=x1.device, dtype=x1.dtype)
-            covariance = covariance + self.nugget * eye
 
         return covariance
 
@@ -155,8 +146,11 @@ class GPRegressionModel(ExactGP):
         model_cfg: Dict,
         likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
     ) -> None:
+        kernel_cfg = model_cfg.get("kernel", model_cfg)
+        initial_likelihood_noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "GP kernel config"))
+
         if likelihood is None:
-            likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=GreaterThan(1e-10))
+            likelihood = _build_gaussian_likelihood(initial_likelihood_noise)
 
         super().__init__(X_train, y_train, likelihood)
 
@@ -170,30 +164,26 @@ class GPRegressionModel(ExactGP):
 
         initial_theta = _require_config_value(kernel_cfg, "theta", "GP kernel config")
         initial_p = _require_config_value(kernel_cfg, "power_exponent", "GP kernel config")
-        initial_nugget = float(_require_config_value(kernel_cfg, "nugget", "GP kernel config"))
         initial_tau2 = float(_require_config_value(kernel_cfg, "tau2", "GP kernel config"))
 
-        # Fix likelihood noise to minimal constant; all regularization comes from nugget
-        self.likelihood.noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "GP kernel config"))
+        self.likelihood.initialize(noise=initial_likelihood_noise)
 
         base_kernel = ExponentialKernel(
             input_dim=X_train.shape[-1],
             initial_power_exponent=initial_p,
             initial_theta=initial_theta,
-            initial_nugget=initial_nugget,
         )
 
         self.covar_module = ScaleKernel(base_kernel)
         self.covar_module.outputscale = initial_tau2
-        
-        self.likelihood.raw_noise.requires_grad_(False)
+    
 
         logger.info(
             "GPRegressionModel initialized: "
             f"trend_degree={trend_degree}, theta={base_kernel.theta.flatten().detach().cpu().tolist()}, "
             f"power_exponent={base_kernel.power_exponent.flatten().detach().cpu().tolist()}, "
-            f"nugget={float(base_kernel.nugget.item()):.6f}, "
             f"tau2={float(self.covar_module.outputscale.item()):.6f}, "
+            f"likelihood_noise={float(self.likelihood.noise.item()):.6e}"
         )
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:

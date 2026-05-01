@@ -26,6 +26,16 @@ from src.utils import resolve_device, setup_logger
 
 logger = setup_logger(__name__)
 
+
+def _current_likelihood_noise(model: Any) -> float:
+    return float(model.likelihood.noise.detach().cpu().item())
+
+
+def _add_likelihood_noise(covariance: torch.Tensor, likelihood: Any) -> torch.Tensor:
+    noise = likelihood.noise
+    identity = torch.eye(covariance.shape[-1], device=covariance.device, dtype=covariance.dtype)
+    return covariance + noise * identity
+
 if TYPE_CHECKING:
     import optuna
 
@@ -296,15 +306,7 @@ class GPTrainer:
         self.y_train = self.y_train.to(self.device)
         self.X_val = X_val.to(self.device) if X_val is not None else None
         self.y_val = y_val.to(self.device) if y_val is not None else None
-        self.objective_name = str(training_cfg.get("objective", "concentrated")).lower()
-
-        if self.objective_name not in {"exact_mll", "concentrated"}:
-            raise ValueError(f"Unknown GP objective: {self.objective_name}")
-
-        if self.objective_name == "concentrated":
-            self.model.mean_module.coefficients.requires_grad_(False)
-            self.model.covar_module.raw_outputscale.requires_grad_(False)
-            self.model.likelihood.raw_noise.requires_grad_(False)
+        # Trainer always uses GPyTorch ExactMarginalLogLikelihood
 
         # Setup optimizer
         optimizer_name = training_cfg.get("optimizer", "lbfgs").lower()
@@ -335,10 +337,10 @@ class GPTrainer:
         # History
         self.mll_history = []
         self.hyperparams_history = []
-        self.last_profiled_sigma2: Optional[torch.Tensor] = None
-        self.last_profiled_mean: Optional[torch.Tensor] = None
+        self.likelihood_noise_history = []
 
         logger.info(f"GPTrainer initialized on device: {self.device}")
+        logger.info(f"Initial GP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
 
         # Best-validation tracking
         self.best_val_loss = float("inf")
@@ -348,9 +350,6 @@ class GPTrainer:
         self._setup_cholesky_jitter(training_cfg)
 
     def _optimizable_parameters(self):
-        if self.objective_name == "concentrated":
-            base_kernel = self.model.covar_module.base_kernel
-            return [base_kernel.raw_theta, base_kernel.raw_power_exponent, base_kernel.raw_nugget]
         return list(self.model.parameters())
 
     def _setup_cholesky_jitter(self, training_cfg: Dict[str, Any]) -> None:
@@ -415,34 +414,7 @@ class GPTrainer:
             f"float64={prev_state['float64']:.2e}"
         )
 
-    def _compute_concentrated_loss(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        base_kernel = self.model.covar_module.base_kernel
-        y = self.y_train.reshape(-1, 1)
-        F = self.model.mean_module._design_matrix(self.X_train)
-
-        R = base_kernel(self.X_train, self.X_train).evaluate()
-
-        chol = torch.linalg.cholesky(R)
-        R_inv_F = torch.cholesky_solve(F, chol)
-        R_inv_y = torch.cholesky_solve(y, chol)
-
-        term1 = F.transpose(0, 1) @ R_inv_F
-        term2 = F.transpose(0, 1) @ R_inv_y
-        mean_coefficients = torch.linalg.solve(term1, term2)
-
-        residual = y - F @ mean_coefficients
-        R_inv_residual = torch.cholesky_solve(residual, chol)
-        sigma2 = (residual.transpose(0, 1) @ R_inv_residual) / residual.shape[0]
-        sigma2 = sigma2.squeeze()
-
-        loss = 0.5 * (residual.shape[0] * torch.log(sigma2) + 2.0 * torch.sum(torch.log(torch.diag(chol))))
-        return loss, sigma2, mean_coefficients.squeeze(-1)
-
-    def _apply_profiled_parameters(self) -> None:
-        if self.last_profiled_sigma2 is not None:
-            self.model.covar_module.outputscale = self.last_profiled_sigma2.detach().clamp_min(1e-10)
-        if self.last_profiled_mean is not None:
-            self.model.mean_module.coefficients.data.copy_(self.last_profiled_mean.detach())
+    # All loss computations use ExactMarginalLogLikelihood (mll)
 
     def train(self) -> Dict[str, Any]:
         """
@@ -469,36 +441,23 @@ class GPTrainer:
                 def closure() -> torch.Tensor:
                     self.optimizer.zero_grad()
                     self.model.train()
-                    if self.objective_name == "concentrated":
-                        loss, sigma2, mean_coefficients = self._compute_concentrated_loss()
-                        self.last_profiled_sigma2 = sigma2
-                        self.last_profiled_mean = mean_coefficients
-                    else:
-                        output = self.model(self.X_train)
-                        loss = -self.mll(output, self.y_train)
+                    output = self.model(self.X_train)
+                    loss = -self.mll(output, self.y_train)
                     loss.backward()
                     return loss
 
                 loss = self.optimizer.step(closure)
             else:
                 self.optimizer.zero_grad()
-
-                if self.objective_name == "concentrated":
-                    loss, sigma2, mean_coefficients = self._compute_concentrated_loss()
-                    self.last_profiled_sigma2 = sigma2
-                    self.last_profiled_mean = mean_coefficients
-                else:
-                    output = self.model(self.X_train)
-                    loss = -self.mll(output, self.y_train)
-
+                output = self.model(self.X_train)
+                loss = -self.mll(output, self.y_train)
                 loss.backward()
                 self.optimizer.step()
 
             loss_value = float(loss.item()) if torch.is_tensor(loss) else float(loss)
             self.mll_history.append(-loss_value)
-
-            if self.objective_name == "concentrated":
-                self._apply_profiled_parameters()
+            current_noise = _current_likelihood_noise(self.model)
+            self.likelihood_noise_history.append(current_noise)
 
             mll_value = -loss_value
             val_loss: Optional[float] = None
@@ -525,7 +484,8 @@ class GPTrainer:
             if step % 10 == 0:
                 val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
                 logger.info(
-                    f"Step {step}/{n_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}"
+                    f"Step {step}/{n_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}, "
+                    f"Likelihood Noise: {current_noise:.6e}"
                 )
 
             if self.trial is not None and val_loss is not None:
@@ -548,9 +508,6 @@ class GPTrainer:
 
         elapsed = time.time() - start_time
 
-        if self.objective_name == "concentrated":
-            self._apply_profiled_parameters()
-
         logger.info(f"GP optimization completed in {elapsed:.2f} seconds")
 
         # Restore best validation state if available
@@ -565,7 +522,7 @@ class GPTrainer:
             "mll_history": self.mll_history,
             "val_losses": val_losses,
             "elapsed_time": elapsed,
-            "objective_used": self.objective_name,
+            "likelihood_noise_history": self.likelihood_noise_history,
         }
 
 
@@ -591,7 +548,6 @@ class MLPGPTrainer:
         
         # Extract config values
         self.optimizer_name = str(training_cfg.get("optimizer", "adam")).lower()
-        self.objective_name = str(training_cfg.get("objective", "concentrated")).lower()
         self.mlp_learning_rate = float(training_cfg.get("mlp_learning_rate", training_cfg.get("learning_rate", 1e-3)))
         self.gp_learning_rate = float(training_cfg.get("gp_learning_rate", training_cfg.get("learning_rate", 1e-2)))
         self.mlp_weight_decay = float(training_cfg.get("mlp_weight_decay", 1e-4))
@@ -601,9 +557,6 @@ class MLPGPTrainer:
         self.convergence_check_interval = int(training_cfg.get("convergence_check_interval", 10))
         device_str = str(training_cfg.get("device", "auto"))
         
-        if self.objective_name not in {"concentrated", "exact_mll"}:
-            raise ValueError("MLPGP objective must be 'concentrated' or 'exact_mll'.")
-        
         self.device = device or resolve_device(device_str)
 
         self.model.to(self.device)
@@ -612,43 +565,23 @@ class MLPGPTrainer:
         self.X_val = X_val.to(self.device) if X_val is not None else None
         self.y_val = y_val.to(self.device) if y_val is not None else None
 
-        if self.objective_name == "concentrated" and not self._supports_concentrated_objective():
-            logger.warning(
-                "Concentrated objective requested but model structure is not compatible. "
-                "Falling back to exact_mll."
-            )
-            self.objective_name = "exact_mll"
-
-        if self.objective_name == "concentrated":
-            self.model.mean_module.coefficients.requires_grad_(False)
-            self.model.likelihood.raw_noise.requires_grad_(False)
-
         self.optimizer, _ = self._build_optimizer()
         self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.model.likelihood, self.model)
 
         self.mll_history: List[float] = []
-        self.last_profiled_sigma2: Optional[torch.Tensor] = None
-        self.last_profiled_mean: Optional[torch.Tensor] = None
+        self.likelihood_noise_history: List[float] = []
 
         # Best-validation tracking
         self.best_loss = float("inf")
         self._best_model_state: Optional[Dict[str, torch.Tensor]] = None
 
-        logger.info(f"MLPGPTrainer initialized on device: {self.device}, objective={self.objective_name}")
+        logger.info(f"MLPGPTrainer initialized on device: {self.device}")
+        logger.info(f"Initial MLPGP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
 
         # Setup Cholesky jitter for numerical stability
         self._setup_cholesky_jitter(training_cfg)
 
-    def _supports_concentrated_objective(self) -> bool:
-        """
-        Concentrated likelihood remains valid when covariance is tau^2 * R(psi)
-        and trend is linear in coefficients. Here R(psi) includes MLP-dependent
-        sigma(x) and l(x).
-        """
-        has_mean_design = hasattr(self.model.mean_module, "_design_matrix")
-        has_mean_coeff = hasattr(self.model.mean_module, "coefficients")
-        has_base_kernel = hasattr(self.model.covar_module, "base_kernel")
-        return bool(has_mean_design and has_mean_coeff and has_base_kernel)
+    # Trainer uses ExactMarginalLogLikelihood for loss computation
 
     def _setup_cholesky_jitter(self, training_cfg: Dict[str, Any]) -> None:
         """
@@ -714,11 +647,9 @@ class MLPGPTrainer:
         gp_params: List[torch.nn.Parameter] = [
             base_kernel.raw_theta,
             base_kernel.raw_power_exponent,
-            base_kernel.raw_nugget,
         ]
-
-        if self.objective_name == "exact_mll":
-            gp_params.append(self.model.covar_module.raw_outputscale)
+        
+        gp_params.extend(list(self.model.likelihood.parameters()))
 
         return [
             {
@@ -744,87 +675,7 @@ class MLPGPTrainer:
             return torch.optim.SGD(parameter_groups), self.optimizer_name
         raise ValueError(f"Unknown optimizer: {self.optimizer_name}")
     
-    def _compute_loss_nonstationary(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Compute full negative log-likelihood for Gibbs non-stationary GP.
-
-        Implements the analytical profiling of trend coefficients via GLS,
-        while estimating all other parameters (theta, p, local sigmas/lengthscales).
-
-        Formula:
-            beta_hat = (F^T K^{-1} F)^{-1} F^T K^{-1} y    [profiled GLS]
-            r = y - F @ beta_hat
-            NLL = 0.5 * ( log|K| + r^T K^{-1} r )
-                = 0.5 * ( 2 * sum(log(diag(chol_K))) + r^T K^{-1} r )
-
-        Parameters
-        ----------
-        None (uses self.X_train, self.y_train, self.model)
-
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor]
-            - loss: scalar NLL
-            - beta_hat: profiled mean coefficients (num_features,)
-        """
-        y = self.y_train.reshape(-1, 1)
-        F = self.model.mean_module._design_matrix(self.X_train)
-
-        # Get full non-stationary kernel (no base_kernel access)
-        # covar_module is now NonstationaryExponentialKernel directly
-        K = self.model.covar_module(self.X_train, self.X_train).evaluate()
-
-        # Cholesky decomposition
-        chol = torch.linalg.cholesky(K)
-
-        # Solve for beta_hat via GLS (profiled)
-        K_inv_F = torch.cholesky_solve(F, chol)
-        K_inv_y = torch.cholesky_solve(y, chol)
-
-        mean_coefficients = torch.linalg.solve(
-            F.mT @ K_inv_F,
-            F.mT @ K_inv_y,
-        )
-
-        # Residuals
-        residual = y - F @ mean_coefficients
-        K_inv_r = torch.cholesky_solve(residual, chol)
-
-        # Data fit term: r^T K^{-1} r
-        data_fit = torch.sum(residual * K_inv_r)
-
-        # Log determinant: log|K| = 2 * sum(log(diag(chol)))
-        log_det = 2.0 * torch.sum(torch.log(torch.diagonal(chol)))
-
-        # Full NLL
-        nll = 0.5 * (data_fit + log_det)
-
-        return nll, mean_coefficients.squeeze(-1)
-
-    def _compute_exact_mll_loss(self) -> torch.Tensor:
-        output = self.model(self.X_train)
-        return -self.mll(output, self.y_train)
-
-    def _apply_profiled_parameters(self) -> None:
-        if self.last_profiled_mean is not None:
-            self.model.mean_module.coefficients.data.copy_(self.last_profiled_mean.detach())
-
-    def _closure(self) -> torch.Tensor:
-        self.optimizer.zero_grad()
-
-        if self.objective_name == "concentrated":
-            try:
-                loss, mean_coefficients = self._compute_loss_nonstationary()
-                self.last_profiled_mean = mean_coefficients
-            except RuntimeError as exc:
-                logger.warning(f"Concentrated objective failed ({exc}). Falling back to exact_mll.")
-                self.objective_name = "exact_mll"
-                loss = self._compute_exact_mll_loss()
-        else:
-            loss = self._compute_exact_mll_loss()
-
-        loss.backward()
-        return loss
+    # Loss computation uses ExactMarginalLogLikelihood (mll) via model output
 
     def _compute_validation_loss(self) -> Optional[float]:
         """Compute validation MSE for pruning if validation tensors are available."""
@@ -845,15 +696,17 @@ class MLPGPTrainer:
 
         for step in range(1, self.n_training_steps + 1):
             self.model.train()
-            loss = self._closure()
+            self.optimizer.zero_grad()
+            output = self.model(self.X_train)
+            loss = -self.mll(output, self.y_train)
+            loss.backward()
             self.optimizer.step()
-
-            if self.objective_name == "concentrated":
-                self._apply_profiled_parameters()
 
             loss_value = float(loss.item()) if torch.is_tensor(loss) else float(loss)
             mll_value = -loss_value
             self.mll_history.append(mll_value)
+            current_noise = _current_likelihood_noise(self.model)
+            self.likelihood_noise_history.append(current_noise)
 
             val_loss: Optional[float] = None
             if self.X_val is not None and self.y_val is not None:
@@ -879,7 +732,8 @@ class MLPGPTrainer:
             if step % 10 == 0:
                 val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
                 logger.info(
-                    f"Step {step}/{self.n_training_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}"
+                    f"Step {step}/{self.n_training_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}, "
+                    f"Likelihood Noise: {current_noise:.6e}"
                 )
 
             if self.trial is not None and val_loss is not None:
@@ -898,9 +752,6 @@ class MLPGPTrainer:
                     logger.info(f"Converged at step {step} (rel_change={rel_change:.6f})")
                     break
 
-        if self.objective_name == "concentrated":
-            self._apply_profiled_parameters()
-
         elapsed = time.time() - start_time
         logger.info(f"MLPGP optimization completed in {elapsed:.2f} seconds")
         # Restore best state if available
@@ -915,5 +766,5 @@ class MLPGPTrainer:
             "mll_history": self.mll_history,
             "val_losses": val_losses,
             "elapsed_time": elapsed,
-            "objective_used": self.objective_name,
+            "likelihood_noise_history": self.likelihood_noise_history,
         }

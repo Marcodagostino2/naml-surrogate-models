@@ -4,16 +4,10 @@
 # Joint training settings for the end-to-end MLP+Kriging hybrid model.
 #
 # The model can use:
-# - objective: "concentrated" (profile out trend and tau^2 when feasible)
-# - objective: "exact_mll" (fallback / standard objective)
-#
 # MLP and GP kernel parameters are optimized jointly.
 
 # Optimizer: "adam", "sgd", "adamw"
 optimizer: "adamw"
-
-# Objective: "concentrated" or "exact_mll"
-objective: "concentrated"
 
 # Learning rates (can be different for MLP and GP components)
 mlp_learning_rate: 2e-5

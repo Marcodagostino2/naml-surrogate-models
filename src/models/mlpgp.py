@@ -12,11 +12,10 @@ from typing import Any, Dict, Optional, Tuple
 
 import gpytorch
 import torch
-from gpytorch.constraints import GreaterThan
 from gpytorch.distributions import MultivariateNormal
 from gpytorch.models import ExactGP
 
-from src.models.gp import ExponentialKernel, PolynomialTrendMean
+from src.models.gp import ExponentialKernel, PolynomialTrendMean, _build_gaussian_likelihood
 from src.models.mlp import MLPRegressor
 from src.utils import setup_logger
 
@@ -85,10 +84,6 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
         self.min_lengthscale = float(min_lengthscale)
         self.min_sigma = float(min_sigma)
         self.parameterizer: Optional[torch.nn.Module] = None
-
-    @property
-    def nugget(self) -> torch.Tensor:
-        return self.base_kernel.nugget
 
     def set_parameterizer(self, parameterizer: torch.nn.Module) -> None:
         """Attach feature extractor used when external params are not provided."""
@@ -170,9 +165,9 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
         if diag:
             # For diagonal: diff=0 so dist=0 and R0_diag=1.
             # norm_factor_diag = prod_d(sqrt(2*L^2 / 2L^2)) = 1.
-            # So diag output = sigma1^2 + nugget
+            # So diag output = sigma1^2
             base_diag = sigma_x1.pow(2)
-            return base_diag + self.nugget
+            return base_diag
 
         # Compute lengthscale squared (n, d) and (m, d)
         L1_sq = lengthscale_x1.pow(2)
@@ -218,12 +213,6 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
         # Full Gibbs kernel: sigma_outer * norm_factor * R0
         covariance = sigma_outer * norm_factor * R0
 
-        # Add nugget only when evaluating at same points (x1 is x2)
-        same_inputs = x1.shape == x2.shape and torch.equal(x1, x2)
-        if same_inputs:
-            eye = torch.eye(x1.shape[-2], device=x1.device, dtype=x1.dtype)
-            covariance = covariance + self.nugget * eye
-
         return covariance
 
 
@@ -237,8 +226,11 @@ class MLPGPModel(ExactGP):
         model_cfg: Dict,
         likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
     ) -> None:
+        kernel_cfg = model_cfg.get("kernel", model_cfg)
+        initial_likelihood_noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "MLPGP kernel config"))
+
         if likelihood is None:
-            likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=GreaterThan(1e-10))
+            likelihood = _build_gaussian_likelihood(initial_likelihood_noise)
 
         super().__init__(X_train, y_train, likelihood)
 
@@ -268,16 +260,13 @@ class MLPGPModel(ExactGP):
 
         initial_theta = _require_config_value(kernel_cfg, "theta", "MLPGP kernel config")
         initial_p = _require_config_value(kernel_cfg, "power_exponent", "MLPGP kernel config")
-        initial_nugget = float(_require_config_value(kernel_cfg, "nugget", "MLPGP kernel config"))
 
-        # Fix likelihood noise to minimal constant; all regularization comes from nugget
-        self.likelihood.noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "MLPGP kernel config"))
-        
+        self.likelihood.initialize(noise=initial_likelihood_noise)
+
         base_kernel = ExponentialKernel(
             input_dim=input_dim,
             initial_theta=initial_theta,
             initial_power_exponent=initial_p,
-            initial_nugget=initial_nugget,
         )
 
         nonstationary_kernel = NonstationaryExponentialKernel(
@@ -291,12 +280,11 @@ class MLPGPModel(ExactGP):
         # All variance scaling is handled internally by sigma(x)
         self.covar_module = nonstationary_kernel
 
-        self.likelihood.raw_noise.requires_grad_(False)
-
         logger.info(
             "MLPGPModel initialized: "
             f"lengthscale_mode={lengthscale_mode}, "
             f"trend_degree={trend_degree}, "
+            f"likelihood_noise={float(self.likelihood.noise.item()):.6e}"
         )
 
     def _predict_local_parameters(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

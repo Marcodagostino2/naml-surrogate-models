@@ -1,5 +1,5 @@
 study:
-  n_trials: 40
+  n_trials: 20
   timeout: 3600        
   direction: minimize
   metric: val_rmse      # val_rmse | val_mae | val_nll
@@ -26,27 +26,27 @@ search_space:
       high: 2
     block1_hidden_size:
       type: categorical
-      choices: [512, 1024]
+      choices: [64, 128, 256]
     block1_activation:
       type: categorical
-      choices: [tanh]
+      choices: [relu, tanh]
     block2_layers:
       type: int
       low: 1
-      high: 3
+      high: 2
     block2_hidden_size:
       type: categorical
-      choices: [512, 1024]
+      choices: [64, 128, 256]
     block2_activation:
       type: categorical
-      choices: [tanh]
+      choices: [relu, tanh]
     block3_layers:
       type: int
-      low: 2
-      high: 4
+      low: 1
+      high: 2
     block3_hidden_size:
       type: categorical
-      choices: [32, 64, 128]
+      choices: [64, 128, 256]
     block3_activation:
       type: categorical
       choices: [relu, tanh]

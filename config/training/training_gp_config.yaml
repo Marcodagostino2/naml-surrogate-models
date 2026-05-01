@@ -9,9 +9,6 @@
 # Optimizer: "adam", "sgd", "lbfgs"
 optimizer: "adam"
 
-# Objective: "concentrated" or "exact_mll"
-objective: "concentrated"
-
 # Learning rate for EMLL optimization
 learning_rate: 1e-1
 
