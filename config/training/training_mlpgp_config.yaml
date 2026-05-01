@@ -10,17 +10,20 @@
 # MLP and GP kernel parameters are optimized jointly.
 
 # Optimizer: "adam", "sgd", "adamw"
-optimizer: "adam"
+optimizer: "adamw"
 
 # Objective: "concentrated" or "exact_mll"
 objective: "concentrated"
 
 # Learning rates (can be different for MLP and GP components)
-mlp_learning_rate: 0.001
+mlp_learning_rate: 2e-5
 gp_learning_rate: 0.05
 
+# Weight_decay for MLP optimizer
+mlp_weight_decay: 1e-2
+
 # Number of joint training steps
-n_training_steps: 200
+n_training_steps: 300
 
 # Convergence criteria
 abs_tol: 1e-5
@@ -31,6 +34,10 @@ convergence_check_interval: 10
 
 # Device: "cuda", "cpu", "auto"
 device: "auto"
+
+# Cholesky jitter for numerical stability (GPyTorch psd_safe_cholesky)
+cholesky_jitter_float32: 1e-6
+cholesky_jitter_float64: 1e-8
 
 # Checkpointing
 save_checkpoint_every_n_steps: 20

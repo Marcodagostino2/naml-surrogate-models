@@ -4,19 +4,16 @@
 # Training hyperparameters specific to the standalone MLP.
 
 # Optimizer: "adam", "sgd", "adamw"
-optimizer: "adam"
+optimizer: "adamw"
 
 # Learning rate
-learning_rate: 0.001
+learning_rate: 1e-5
 
-# Weight decay
-weight_decay: 1e-4
-
-# Batch size for training
-batch_size: 64
+# Weight_decay 
+weight_decay: 1e-4 
 
 # Number of epochs
-n_epochs: 1000
+n_epochs: 300
 
 # Early stopping
 early_stopping_patience: 30

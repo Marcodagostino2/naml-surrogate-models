@@ -191,12 +191,6 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
         # Shape: (n, m, d)
         norm_factor = torch.prod(per_dim_factor, dim=-1)  # (n, m)
 
-        # Debug assertion: norm_factor should be in (0, 1]
-        # (only in debug mode to avoid runtime cost)
-        if False:  # Set to True for debugging
-            assert (norm_factor > 0).all() and (norm_factor <= 1.0 + 1e-5).all(), \
-                f"norm_factor out of bounds: min={norm_factor.min()}, max={norm_factor.max()}"
-
         # Compute harmonic mean squared length scale: (n, m, d)
         ell_harm_sq = (L1_sq_broad + L2_sq_broad) / 2.0
 

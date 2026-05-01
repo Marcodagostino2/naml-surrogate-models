@@ -17,19 +17,11 @@
 
 kernel:
   type: "exponential"
-  theta: 1.0
+  theta: 0.2
   power_exponent: 2.0
-  nugget: 0.01
-  tau2: 0.01
-  likelihood_noise: 1e-7
+  nugget: 1e-4
+  tau2: 0.04
+  likelihood_noise: 1e-3
 
 # Polynomial trend degree (0 = constant, 1 = linear, 2 = quadratic)
 trend_degree: 1
-
-# Optimization settings
-n_training_steps: 100
-learning_rate: 0.1
-
-# Convergence tolerance
-abs_tol: 1e-5
-rel_tol: 1e-3

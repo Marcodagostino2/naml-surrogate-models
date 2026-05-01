@@ -100,9 +100,9 @@ class ExponentialKernel(gpytorch.kernels.Kernel):
             "raw_nugget",
             torch.nn.Parameter(torch.as_tensor(initial_nugget, dtype=torch.get_default_dtype()).flatten()),
         )
-        self.register_constraint("raw_theta", GreaterThan(1e-10))
+        self.register_constraint("raw_theta", GreaterThan(1e-5))
         self.register_constraint("raw_power_exponent", Interval(1.5, 2.0))
-        self.register_constraint("raw_nugget", GreaterThan(1e-10))
+        self.register_constraint("raw_nugget", GreaterThan(1e-8))
 
     def _coerce_vector(self, value: float | Sequence[float], name: str) -> torch.Tensor:
         tensor = torch.as_tensor(value, dtype=torch.get_default_dtype()).flatten()
@@ -175,7 +175,6 @@ class GPRegressionModel(ExactGP):
 
         # Fix likelihood noise to minimal constant; all regularization comes from nugget
         self.likelihood.noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "GP kernel config"))
-        
 
         base_kernel = ExponentialKernel(
             input_dim=X_train.shape[-1],

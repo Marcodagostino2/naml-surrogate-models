@@ -17,20 +17,24 @@
 
 feature_extractor:
   architecture:
-    - layers: [32, 32, 32, 32]
+    - layers: [256, 256, 256, 256]
       activation: "relu"
-  dropout: 0.1
+    - layers: [64, 64]
+      activation: "tanh"
+    - layers: [128, 128, 128]
+      activation: "relu"
+  dropout: 0.3
   batch_norm: false
   output_activation: "softplus"
-  sigma_floor: 1e-8
-  lengthscale_floor: 1e-8
+  sigma_floor: 1e-3
+  lengthscale_floor: 1e-6
   lengthscale_mode: "per_dimension"
 
 kernel:
   type: "exponential"
-  theta: 1.0
+  theta: 0.02
   power_exponent: 2.0
-  nugget: 0.01
+  nugget: 0.02
   likelihood_noise: 1e-6
 
 trend_degree: 1

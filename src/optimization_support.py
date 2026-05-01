@@ -12,7 +12,7 @@ import json
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, List
 
 import gpytorch
 import matplotlib.pyplot as plt
@@ -47,14 +47,25 @@ _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("gp", "outputscale_init"): "kernel",
     ("gp", "lengthscale_init"): "kernel",
     ("gp", "noise_var"): "kernel",
-    ("mlpgp", "hidden_layers"): "feature_extractor",
-    ("mlpgp", "hidden_layers_list"): "feature_extractor",
-    ("mlpgp", "hidden_size"): "feature_extractor",
-    ("mlpgp", "activation"): "feature_extractor",
+    ("mlpgp", "block1_layers"): "feature_extractor",
+    ("mlpgp", "block1_hidden_size"): "feature_extractor",
+    ("mlpgp", "block1_activation"): "feature_extractor",
+    ("mlpgp", "block2_layers"): "feature_extractor",
+    ("mlpgp", "block2_hidden_size"): "feature_extractor",
+    ("mlpgp", "block2_activation"): "feature_extractor",
+    ("mlpgp", "block3_layers"): "feature_extractor",
+    ("mlpgp", "block3_hidden_size"): "feature_extractor",
+    ("mlpgp", "block3_activation"): "feature_extractor",
     ("mlpgp", "dropout"): "feature_extractor",
     ("mlpgp", "outputscale_init"): "kernel",
     ("mlpgp", "lengthscale_init"): "kernel",
     ("mlpgp", "noise_var"): "kernel",
+}
+
+_KERNEL_PARAM_MAP: Dict[str, str] = {
+    "outputscale_init": "tau2",
+    "lengthscale_init": "theta",
+    "noise_var":        "nugget",
 }
 
 
@@ -181,74 +192,95 @@ def build_pruner(study_cfg: Dict[str, Any]) -> BasePruner:
     raise ValueError(f"Unknown pruner: {pruner_name}")
 
 
-def _apply_hp(model_name: str, scope: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Translate sampled hyperparameters into config patches via a registry."""
+def _build_block_architecture(params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Build an architecture list from blockN_layers / blockN_hidden_size /
+    blockN_activation entries in params.
+
+    Each block produces one dict: {"layers": [hidden_size] * n_layers, "activation": ...}.
+    Blocks with n_layers == 0 or missing size/activation are skipped.
+    """
+    block_indices = sorted({
+        int(m.group(1))
+        for key in params
+        if (m := re.fullmatch(r"block(\d+)_(layers|hidden_size|activation)", key))
+    })
+    architecture = []
+    for idx in block_indices:
+        n_layers    = int(params.get(f"block{idx}_layers", 0))
+        hidden_size = params.get(f"block{idx}_hidden_size")
+        activation  = params.get(f"block{idx}_activation")
+        if n_layers > 0 and hidden_size is not None and activation is not None:
+            architecture.append({
+                "layers":     [int(hidden_size)] * n_layers,
+                "activation": str(activation),
+            })
+    return architecture
+
+
+def _apply_hp(model_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Translate sampled hyperparameters into a config patch dict.
+
+    Dispatch is fully driven by ``_HP_TO_MODEL_CFG``: each (model_name, hp_name)
+    pair maps to a destination scope string, which determines how the value is
+    written into the patch.  No model-specific branching lives in this function.
+
+    Supported destination scopes:
+    - ``"architecture"``       → patch["architecture"]           (mlp)
+    - ``"dropout"``            → patch["dropout"]                (mlp)
+    - ``"feature_extractor"``  → patch["feature_extractor"]      (mlpgp)
+    - ``"kernel"``             → patch["kernel"]                 (gp, mlpgp)
+
+    Parameters
+    ----------
+    model_name : str
+        Model identifier used for registry lookup (e.g. ``"mlp"``, ``"gp"``, ``"mlpgp"``).
+    scope : str
+        Optimisation scope (``"model"`` or ``"training"``); currently unused but
+        kept for forward compatibility.
+    params : Dict[str, Any]
+        Raw hyperparameter dict as returned by the Optuna sampler.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Nested config patch ready to be merged into the model/training config.
+    """
+    scoped: Dict[str, Dict[str, Any]] = {}
+    for hp_name, hp_value in params.items():
+        dest = _HP_TO_MODEL_CFG.get((model_name, hp_name))
+        if dest is not None:
+            scoped.setdefault(dest, {})[hp_name] = hp_value
+
     patch: Dict[str, Any] = {}
 
-    if model_name == "mlp" and scope == "model":
-        architecture = []
-        block_indices = sorted(
-            {
-                int(match.group(1))
-                for key in params
-                if (match := re.fullmatch(r"block(\d+)_(layers|hidden_size|activation)", key))
-            }
-        )
-        for block_index in block_indices:
-            layers_key = f"block{block_index}_layers"
-            size_key = f"block{block_index}_hidden_size"
-            activation_key = f"block{block_index}_activation"
-            n_layers = int(params.get(layers_key, 0))
-            hidden_size = params.get(size_key)
-            activation = params.get(activation_key)
-            if n_layers > 0 and hidden_size is not None and activation is not None:
-                architecture.append({"layers": [int(hidden_size)] * n_layers, "activation": str(activation)})
-        if architecture:
-            patch["architecture"] = architecture
-        if "dropout" in params:
-            patch["dropout"] = float(params["dropout"])
-        return patch
+    if arch_params := scoped.get("architecture"):
+        arch = _build_block_architecture(arch_params)
+        if arch:
+            patch["architecture"] = arch
 
-    if model_name == "mlpgp" and scope == "model":
-        feature_extractor: Dict[str, Any] = {}
-        if {"hidden_layers", "hidden_size", "activation"} & params.keys():
-            hidden_layers = int(params.get("hidden_layers", 1))
-            hidden_size = int(params.get("hidden_size", 64))
-            activation = str(params.get("activation", "tanh"))
-            feature_extractor["architecture"] = [
-                {"layers": [hidden_size], "activation": activation} for _ in range(hidden_layers)
-            ]
-        if "dropout" in params:
-            feature_extractor["dropout"] = float(params["dropout"])
-        if feature_extractor:
-            patch["feature_extractor"] = feature_extractor
+    if dropout_params := scoped.get("dropout"):
+        patch["dropout"] = float(dropout_params["dropout"])
 
-    for hp_name, hp_value in params.items():
-        mapped_scope = _HP_TO_MODEL_CFG.get((model_name, hp_name))
-        if mapped_scope is None:
-            continue
-        if mapped_scope == "kernel":
-            kernel_cfg = patch.setdefault("kernel", {})
-            if hp_name == "outputscale_init":
-                kernel_cfg["tau2"] = float(hp_value)
-            elif hp_name == "lengthscale_init":
-                kernel_cfg["theta"] = float(hp_value)
-            elif hp_name == "noise_var":
-                kernel_cfg["nugget"] = float(hp_value)
-        elif mapped_scope == "feature_extractor" and hp_name == "dropout":
-            feature_cfg = patch.setdefault("feature_extractor", {})
-            feature_cfg["dropout"] = float(hp_value)
+    if fe_params := scoped.get("feature_extractor"):
+        fe: Dict[str, Any] = {}
+        arch = _build_block_architecture(fe_params)
+        if arch:
+            fe["architecture"] = arch
+        if "dropout" in fe_params:
+            fe["dropout"] = float(fe_params["dropout"])
+        if fe:
+            patch["feature_extractor"] = fe
 
-    if model_name == "mlpgp" and scope == "model":
-        feature_cfg = patch.get("feature_extractor", {})
-        if "architecture" not in feature_cfg:
-            hidden_layers = int(params.get("hidden_layers", 1))
-            hidden_size = int(params.get("hidden_size", 64))
-            activation = str(params.get("activation", "tanh"))
-            feature_cfg["architecture"] = [
-                {"layers": [hidden_size], "activation": activation} for _ in range(hidden_layers)
-            ]
-            patch["feature_extractor"] = feature_cfg
+    if kernel_params := scoped.get("kernel"):
+        kernel = {
+            _KERNEL_PARAM_MAP[k]: float(v)
+            for k, v in kernel_params.items()
+            if k in _KERNEL_PARAM_MAP
+        }
+        if kernel:
+            patch["kernel"] = kernel
 
     return patch
 
@@ -286,8 +318,8 @@ def make_objective(
         model_params = suggest_from_config(trial, opt_cfg["search_space"], "model")
         training_params = suggest_from_config(trial, opt_cfg["search_space"], "training")
 
-        model_cfg = overlay(base_model_cfg, _apply_hp(model_name, "model", model_params))
-        training_cfg = overlay(base_training_cfg, _apply_hp(model_name, "training", training_params))
+        model_cfg = overlay(base_model_cfg, _apply_hp(model_name, model_params))
+        training_cfg = overlay(base_training_cfg, training_params)
         training_cfg = overlay(training_cfg, opt_cfg.get("training_overrides", {}))
 
         if model_name == "gp":
@@ -399,8 +431,8 @@ def save_optimization_results(
 
         model_params = _extract_best_params(study.best_params, opt_cfg["search_space"], "model")
         training_params = _extract_best_params(study.best_params, opt_cfg["search_space"], "training")
-        best_model_cfg = overlay(base_model_cfg, _apply_hp(model_name, "model", model_params))
-        best_training_cfg = overlay(overlay(base_training_cfg, _apply_hp(model_name, "training", training_params)), opt_cfg.get("training_overrides", {}))
+        best_model_cfg = overlay(base_model_cfg, _apply_hp(model_name, model_params))
+        best_training_cfg = overlay(overlay(base_training_cfg, training_params), opt_cfg.get("training_overrides", {}))
 
         config_dir = output_resolver.config_dir
         config_dir.mkdir(parents=True, exist_ok=True)

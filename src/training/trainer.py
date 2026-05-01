@@ -79,13 +79,14 @@ class MLPTrainer:
         # Setup optimizer
         optimizer_name = training_cfg.get("optimizer", "adam").lower()
         lr = float(training_cfg.get("learning_rate", 0.001))
+        weight_decay = float(training_cfg.get("weight_decay", 0.0))
 
         if optimizer_name == "adam":
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         elif optimizer_name == "adamw":
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         elif optimizer_name == "sgd":
-            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=lr)
+            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         else:
             raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
@@ -288,6 +289,7 @@ class GPTrainer:
         self.y_train = y_train
         self.training_cfg = training_cfg
         self.device = device or resolve_device(training_cfg.get("device", "auto"))
+        self.trial  = trial
 
         self.model.to(self.device)
         self.X_train = self.X_train.to(self.device)
@@ -342,11 +344,76 @@ class GPTrainer:
         self.best_val_loss = float("inf")
         self._best_model_state: Optional[Dict[str, torch.Tensor]] = None
 
+        # Setup Cholesky jitter for numerical stability
+        self._setup_cholesky_jitter(training_cfg)
+
     def _optimizable_parameters(self):
         if self.objective_name == "concentrated":
             base_kernel = self.model.covar_module.base_kernel
             return [base_kernel.raw_theta, base_kernel.raw_power_exponent, base_kernel.raw_nugget]
         return list(self.model.parameters())
+
+    def _setup_cholesky_jitter(self, training_cfg: Dict[str, Any]) -> None:
+        """
+        Configure Cholesky jitter for numerical stability.
+
+        GPyTorch's psd_safe_cholesky adds a small εI term to matrices before
+        Cholesky decomposition. This method reads jitter values from config
+        and applies them based on the current torch dtype.
+
+        Parameters
+        ----------
+        training_cfg : Dict[str, Any]
+            Training configuration containing jitter values.
+        """
+        # Read jitter values from config with safe defaults
+        jitter_float32 = float(training_cfg.get("cholesky_jitter_float32", 1e-6))
+        jitter_float64 = float(training_cfg.get("cholesky_jitter_float64", 1e-8))
+
+        # Validate that jitter values are non-negative
+        if jitter_float32 < 0:
+            raise ValueError(f"cholesky_jitter_float32 must be non-negative, got {jitter_float32}")
+        if jitter_float64 < 0:
+            raise ValueError(f"cholesky_jitter_float64 must be non-negative, got {jitter_float64}")
+
+        # Save the previous jitter state for restoration
+        # Note: cholesky_jitter.value() is a class method that queries current settings
+        self._previous_jitter_state = {
+            "float32": gpytorch.settings.cholesky_jitter.value(torch.float32),
+            "float64": gpytorch.settings.cholesky_jitter.value(torch.float64),
+        }
+
+        # Apply new jitter values via context manager's _set_state (permanent until changed)
+        gpytorch.settings.cholesky_jitter._set_value(
+            float_value=jitter_float32,
+            double_value=jitter_float64,
+            half_value=None,  
+        )
+        
+        logger.info(
+            f"Cholesky jitter configured: float32={jitter_float32:.2e}, float64={jitter_float64:.2e}"
+        )
+
+    def restore_previous_jitter(self) -> None:
+        """
+        Restore the Cholesky jitter values to their state before trainer initialization.
+
+        Useful if other code runs GP inference outside this trainer context
+        and needs the original jitter configuration.
+        """
+        if not hasattr(self, "_previous_jitter_state"):
+            logger.warning("No previous jitter state saved; skipping restoration")
+            return
+
+        prev_state = self._previous_jitter_state
+        gpytorch.settings.cholesky_jitter._set_state(
+            float_value=prev_state["float32"],
+            double_value=prev_state["float64"],
+        )
+        logger.info(
+            f"Restored previous Cholesky jitter: float32={prev_state['float32']:.2e}, "
+            f"float64={prev_state['float64']:.2e}"
+        )
 
     def _compute_concentrated_loss(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         base_kernel = self.model.covar_module.base_kernel
@@ -394,11 +461,14 @@ class GPTrainer:
         logger.info(f"Starting GP optimization for {n_steps} steps")
 
         start_time = time.time()
+        val_losses: List[Optional[float]] = []
 
         for step in range(1, n_steps + 1):
+            self.model.train()
             if self.optimizer_name == "lbfgs":
                 def closure() -> torch.Tensor:
                     self.optimizer.zero_grad()
+                    self.model.train()
                     if self.objective_name == "concentrated":
                         loss, sigma2, mean_coefficients = self._compute_concentrated_loss()
                         self.last_profiled_sigma2 = sigma2
@@ -430,8 +500,41 @@ class GPTrainer:
             if self.objective_name == "concentrated":
                 self._apply_profiled_parameters()
 
+            mll_value = -loss_value
+            val_loss: Optional[float] = None
+            if self.X_val is not None and self.y_val is not None:
+                self.model.eval()
+                with torch.no_grad():
+                    out = self.model(self.X_val)
+                    mean = out.mean
+                    y_val_reshaped = self.y_val.view_as(mean)
+                    val_loss = float(torch.nn.functional.mse_loss(mean, y_val_reshaped).item())
+                self.model.train()
+            else:
+                logger.debug(f"Step {step}: validation skipped because X_val or y_val is None")
+
+            val_losses.append(val_loss)
+
+            if val_loss is not None and val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                try:
+                    self._best_model_state = copy.deepcopy(self.model.state_dict())
+                except Exception:
+                    self._best_model_state = None
+
             if step % 10 == 0:
-                logger.info(f"Step {step}/{n_steps} - MLL: {-loss.item():.6f}")
+                val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
+                logger.info(
+                    f"Step {step}/{n_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}"
+                )
+
+            if self.trial is not None and val_loss is not None:
+                self.trial.report(val_loss, step=step)
+                if self.trial.should_prune():
+                    logger.info(f"Trial pruned at step {step}")
+                    import optuna
+
+                    raise optuna.TrialPruned()
 
             # Convergence check
             if step % convergence_check_interval == 0 and step > convergence_check_interval:
@@ -442,24 +545,6 @@ class GPTrainer:
                 if rel_change < rel_tol and abs(mll_curr - mll_prev) < abs_tol:
                     logger.info(f"Converged at step {step} (rel_change={rel_change:.6f})")
                     break
-
-            # Validation check and best-state save (if validation provided)
-            if self.X_val is not None and self.y_val is not None:
-                try:
-                    self.model.eval()
-                    with torch.no_grad():
-                        out = self.model(self.X_val)
-                        mean = out.mean
-                        y_val_reshaped = self.y_val.view_as(mean)
-                        val_loss = torch.nn.functional.mse_loss(mean, y_val_reshaped).item()
-
-                        self.best_val_loss = val_loss
-                        try:
-                            self._best_model_state = copy.deepcopy(self.model.state_dict())
-                        except Exception:
-                            self._best_model_state = None
-                except Exception:
-                    logger.debug("Validation evaluation failed during GP training step")
 
         elapsed = time.time() - start_time
 
@@ -478,7 +563,9 @@ class GPTrainer:
 
         return {
             "mll_history": self.mll_history,
+            "val_losses": val_losses,
             "elapsed_time": elapsed,
+            "objective_used": self.objective_name,
         }
 
 
@@ -507,6 +594,7 @@ class MLPGPTrainer:
         self.objective_name = str(training_cfg.get("objective", "concentrated")).lower()
         self.mlp_learning_rate = float(training_cfg.get("mlp_learning_rate", training_cfg.get("learning_rate", 1e-3)))
         self.gp_learning_rate = float(training_cfg.get("gp_learning_rate", training_cfg.get("learning_rate", 1e-2)))
+        self.mlp_weight_decay = float(training_cfg.get("mlp_weight_decay", 1e-4))
         self.n_training_steps = int(training_cfg.get("n_training_steps", 300))
         self.abs_tol = float(training_cfg.get("abs_tol", 1e-5))
         self.rel_tol = float(training_cfg.get("rel_tol", 1e-3))
@@ -548,6 +636,9 @@ class MLPGPTrainer:
 
         logger.info(f"MLPGPTrainer initialized on device: {self.device}, objective={self.objective_name}")
 
+        # Setup Cholesky jitter for numerical stability
+        self._setup_cholesky_jitter(training_cfg)
+
     def _supports_concentrated_objective(self) -> bool:
         """
         Concentrated likelihood remains valid when covariance is tau^2 * R(psi)
@@ -558,6 +649,64 @@ class MLPGPTrainer:
         has_mean_coeff = hasattr(self.model.mean_module, "coefficients")
         has_base_kernel = hasattr(self.model.covar_module, "base_kernel")
         return bool(has_mean_design and has_mean_coeff and has_base_kernel)
+
+    def _setup_cholesky_jitter(self, training_cfg: Dict[str, Any]) -> None:
+        """
+        Configure Cholesky jitter for numerical stability.
+
+        GPyTorch's psd_safe_cholesky adds a small εI term to matrices before
+        Cholesky decomposition. This method reads jitter values from config
+        and applies them based on the current torch dtype.
+
+        Parameters
+        ----------
+        training_cfg : Dict[str, Any]
+            Training configuration containing jitter values.
+        """
+        # Read jitter values from config with safe defaults
+        jitter_float32 = float(training_cfg.get("cholesky_jitter_float32", 1e-6))
+        jitter_float64 = float(training_cfg.get("cholesky_jitter_float64", 1e-8))
+
+        # Validate that jitter values are non-negative
+        if jitter_float32 < 0:
+            raise ValueError(f"cholesky_jitter_float32 must be non-negative, got {jitter_float32}")
+        if jitter_float64 < 0:
+            raise ValueError(f"cholesky_jitter_float64 must be non-negative, got {jitter_float64}")
+
+        # Save the previous jitter state for restoration
+        # Note: cholesky_jitter.value() is a class method that queries current settings
+        self._previous_jitter_state = {
+            "float32": gpytorch.settings.cholesky_jitter.value(torch.float32),
+            "float64": gpytorch.settings.cholesky_jitter.value(torch.float64),
+        }
+
+        # Apply new jitter values via context manager's _set_state (permanent until changed)
+        gpytorch.settings.cholesky_jitter._set_value(float_value=jitter_float32, double_value=jitter_float64, half_value=None)
+
+        logger.info(
+            f"Cholesky jitter configured: float32={jitter_float32:.2e}, float64={jitter_float64:.2e}"
+        )
+
+    def restore_previous_jitter(self) -> None:
+        """
+        Restore the Cholesky jitter values to their state before trainer initialization.
+
+        Useful if other code runs GP inference outside this trainer context
+        and needs the original jitter configuration.
+        """
+        if not hasattr(self, "_previous_jitter_state"):
+            logger.warning("No previous jitter state saved; skipping restoration")
+            return
+
+        prev_state = self._previous_jitter_state
+        gpytorch.settings.cholesky_jitter._set_state(
+            float_value=prev_state["float32"],
+            double_value=prev_state["float64"],
+        )
+        logger.info(
+            f"Restored previous Cholesky jitter: float32={prev_state['float32']:.2e}, "
+            f"float64={prev_state['float64']:.2e}"
+        )
 
     def _parameter_groups(self) -> List[Dict[str, Any]]:
         base_kernel = self.model.covar_module.base_kernel
@@ -575,10 +724,12 @@ class MLPGPTrainer:
             {
                 "params": self.model.feature_extractor.parameters(),
                 "lr": self.mlp_learning_rate,
+                "weight_decay": self.mlp_weight_decay
             },
             {
                 "params": gp_params,
                 "lr": self.gp_learning_rate,
+                "weight_decay": 0.0
             },
         ]
 
@@ -690,8 +841,10 @@ class MLPGPTrainer:
     def train(self) -> Dict[str, Any]:
         logger.info(f"Starting MLPGP optimization for {self.n_training_steps} steps")
         start_time = time.time()
+        val_losses: List[Optional[float]] = []
 
         for step in range(1, self.n_training_steps + 1):
+            self.model.train()
             loss = self._closure()
             self.optimizer.step()
 
@@ -702,8 +855,40 @@ class MLPGPTrainer:
             mll_value = -loss_value
             self.mll_history.append(mll_value)
 
+            val_loss: Optional[float] = None
+            if self.X_val is not None and self.y_val is not None:
+                self.model.eval()
+                with torch.no_grad():
+                    out = self.model(self.X_val)
+                    mean = out.mean
+                    y_val_reshaped = self.y_val.view_as(mean)
+                    val_loss = float(torch.nn.functional.mse_loss(mean, y_val_reshaped).item())
+                self.model.train()
+            else:
+                logger.debug(f"Step {step}: validation skipped because X_val or y_val is None")
+
+            val_losses.append(val_loss)
+
+            if val_loss is not None and val_loss < self.best_loss:
+                self.best_loss = val_loss
+                try:
+                    self._best_model_state = copy.deepcopy(self.model.state_dict())
+                except Exception:
+                    self._best_model_state = None
+
             if step % 10 == 0:
-                logger.info(f"Step {step}/{self.n_training_steps} - MLL: {mll_value:.6f}")
+                val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
+                logger.info(
+                    f"Step {step}/{self.n_training_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}"
+                )
+
+            if self.trial is not None and val_loss is not None:
+                self.trial.report(val_loss, step=step)
+                if self.trial.should_prune():
+                    logger.info(f"Trial pruned at step {step}")
+                    import optuna
+
+                    raise optuna.TrialPruned()
 
             if step % self.convergence_check_interval == 0 and step > self.convergence_check_interval:
                 mll_prev = self.mll_history[-self.convergence_check_interval - 1]
@@ -712,27 +897,6 @@ class MLPGPTrainer:
                 if rel_change < self.rel_tol and abs(mll_curr - mll_prev) < self.abs_tol:
                     logger.info(f"Converged at step {step} (rel_change={rel_change:.6f})")
                     break
-
-            # fix: wire Optuna pruning signal into MLPGP optimization loop.
-            if self.trial is not None:
-                val_loss = self._compute_validation_loss()
-                reported_loss = val_loss if val_loss is not None else loss_value
-                self.trial.report(reported_loss, step=step)
-                if self.trial.should_prune():
-                    logger.info(f"Trial pruned at step {step}")
-                    import optuna
-                    raise optuna.TrialPruned()
-
-            # Validation check and best-state save (if validation provided)
-            if self.X_val is not None and self.y_val is not None and step % self.convergence_check_interval == 0:
-                self.model.eval()
-                with torch.no_grad():
-                    if loss_value < self.best_loss:
-                        self.best_loss = loss_value
-                    try:
-                        self._best_model_state = copy.deepcopy(self.model.state_dict())
-                    except Exception:
-                        self._best_model_state = None
 
         if self.objective_name == "concentrated":
             self._apply_profiled_parameters()
@@ -749,6 +913,7 @@ class MLPGPTrainer:
 
         return {
             "mll_history": self.mll_history,
+            "val_losses": val_losses,
             "elapsed_time": elapsed,
             "objective_used": self.objective_name,
         }

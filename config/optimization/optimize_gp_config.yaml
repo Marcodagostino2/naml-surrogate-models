@@ -1,5 +1,5 @@
 study:
-  n_trials: 2
+  n_trials: 10
   timeout: 7200
   direction: minimize
   metric: val_rmse
@@ -9,28 +9,28 @@ study:
   log_every_n_trials: 3
 
 training_overrides:
-  n_training_steps: 500
+  n_training_steps: 100
 
 search_space:
   model:
     outputscale_init:
       type: float
-      low: 0.01
-      high: 0.01
+      low: 1.0e-3
+      high: 1.0e-1
       log: true
     lengthscale_init:
       type: float
-      low: 0.01
-      high: 0.01
+      low: 1.0e-1
+      high: 1.0
       log: true
     noise_var:
       type: float
       low: 1.0e-5
-      high: 1.0e-5
+      high: 1.0e-1
       log: true
   training:
     learning_rate:
       type: float
-      low: 1.0e-3
+      low: 1.0e-5
       high: 1.0e-1
       log: true

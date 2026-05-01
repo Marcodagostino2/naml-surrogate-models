@@ -186,12 +186,13 @@ def main() -> None:
     main_cfg = load_run_configs(config_dir, "mlp", include_optimize=False)["main_cfg"]
     set_global_seed(int(main_cfg.get("global_seed", 42)))
     setup_torch_dtype(str(main_cfg.get("precision", "float32")))
+    model_to_train = str(main_cfg.get("model_to_train", "mlp")).lower()
 
-    if args.model == "all":
+    if model_to_train == "all":
         for model_name in ["mlp", "gp", "mlpgp"]:
             run_optimization(config_dir, model_name, output_dir, args.n_trials, args.timeout)
     else:
-        run_optimization(config_dir, args.model, output_dir, args.n_trials, args.timeout)
+        run_optimization(config_dir, model_to_train, output_dir, args.n_trials, args.timeout)
 
     logger.info("All optimizations completed!")
 

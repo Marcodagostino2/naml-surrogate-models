@@ -13,10 +13,10 @@ optimizer: "adam"
 objective: "concentrated"
 
 # Learning rate for EMLL optimization
-learning_rate: 0.05
+learning_rate: 1e-1
 
 # Number of optimization steps
-n_training_steps: 100
+n_training_steps: 300
 
 # Maximum inner iterations per LBFGS step
 lbfgs_max_iter: 20
@@ -30,6 +30,10 @@ convergence_check_interval: 10
 
 # Device: "cuda", "cpu", "auto"
 device: "auto"
+
+# Cholesky jitter for numerical stability (GPyTorch psd_safe_cholesky)
+cholesky_jitter_float32: 1e-6
+cholesky_jitter_float64: 1e-8
 
 # Checkpointing
 save_checkpoint_every_n_steps: 20
