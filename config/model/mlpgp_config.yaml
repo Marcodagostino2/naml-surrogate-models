@@ -30,6 +30,6 @@ kernel:
   type: "exponential"
   theta: 0.02
   power_exponent: 2.0
-  likelihood_noise: 1e-3
+  likelihood_noise: 1e-1
 
 trend_degree: 1

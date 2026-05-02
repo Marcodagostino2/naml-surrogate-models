@@ -26,6 +26,21 @@ from src.utils import setup_logger
 logger = setup_logger(__name__)
 
 
+def _format_param_block(name: str, values: Sequence[float], precision: str = ".4g") -> str:
+    """Render a vector parameter as a labelled block, one element per line.
+
+    Scalar (single-value) parameters render inline as ``name=value`` so that
+    short hyperparameters do not consume extra log lines.
+    """
+
+    seq = list(values)
+    if len(seq) == 1:
+        return f"{name}={seq[0]:{precision}}"
+    lines = [f"{name} (n_dims={len(seq)}):"]
+    lines.extend(f"    [{i}] {v:{precision}}" for i, v in enumerate(seq))
+    return "\n  ".join(lines)
+
+
 def _build_gaussian_likelihood(initial_noise: float) -> gpytorch.likelihoods.GaussianLikelihood:
     likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=GreaterThan(1e-10))
     likelihood.initialize(noise=float(initial_noise))
@@ -178,12 +193,15 @@ class GPRegressionModel(ExactGP):
         self.covar_module.outputscale = initial_tau2
     
 
+        theta_values = base_kernel.theta.flatten().detach().cpu().tolist()
+        power_values = base_kernel.power_exponent.flatten().detach().cpu().tolist()
         logger.info(
-            "GPRegressionModel initialized: "
-            f"trend_degree={trend_degree}, theta={base_kernel.theta.flatten().detach().cpu().tolist()}, "
-            f"power_exponent={base_kernel.power_exponent.flatten().detach().cpu().tolist()}, "
-            f"tau2={float(self.covar_module.outputscale.item()):.6f}, "
-            f"likelihood_noise={float(self.likelihood.noise.item()):.6e}"
+            "GPRegressionModel initialized\n"
+            f"  trend_degree={trend_degree}\n"
+            f"  tau2={float(self.covar_module.outputscale.item()):.6f}\n"
+            f"  likelihood_noise={float(self.likelihood.noise.item()):.6e}\n"
+            f"  {_format_param_block('theta', theta_values)}\n"
+            f"  {_format_param_block('power_exponent', power_values)}"
         )
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:

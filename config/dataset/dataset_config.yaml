@@ -1,15 +1,25 @@
 # Registry of all available datasets.
 # The active dataset is selected in config/main_config.yaml via the key "dataset".
+#
+# Display metadata (optional, used only for plot labelling):
+#   input_display_names : list[str], one per input_columns entry (defaults to the column name)
+#   input_units         : list[str], one per input_columns entry (empty string when unitless)
+#   output_display_name : str, friendly label for the target (defaults to first target_columns)
+#   output_unit         : str, unit for the target (empty when unitless)
 
 datasets:
   airfoil_self_noise:
     csv_path: data/airfoil_self_noise.csv
     input_columns: [frequency, attack-angle, chord-length, free-stream-velocity, suction-side-displacement-thickness]
     target_columns: [scaled-sound-pressure]
+    input_display_names: [Frequency, Angle of attack, Chord length, Free-stream velocity, Suction-side displacement thickness]
+    input_units: [Hz, deg, m, m/s, m]
+    output_display_name: Scaled sound pressure
+    output_unit: dB
     dropna: true
     normalize_inputs: true
     normalize_targets: true
-    train_ratio: 0.70
+    train_ratio: 0.7
     val_ratio: 0.15
     test_ratio: 0.15
     batch_size: 64
@@ -32,13 +42,17 @@ datasets:
     csv_path: data/HYDDB_v2_output.csv
     input_columns: [sim_machNumberValue, sim_aoaValue, sim_phiValue, sim_altitudeValue, geom_abk_openingPercentage]
     target_columns: [cfd_cfx_mean]
+    input_display_names: [Mach, Angle of attack, Aerodynamic roll angle, Altitude, Airbrakes opening percentage]
+    input_units: [\-, deg, deg, m, \%]
+    output_display_name: Axial coefficient
+    output_unit: \-
     dropna: true
     normalize_inputs: true
     normalize_targets: true
-    train_ratio: 0.70
-    val_ratio: 0.15
-    test_ratio: 0.15
-    batch_size: 128
+    train_ratio: 0.15
+    val_ratio: 0.425
+    test_ratio: 0.425
+    batch_size: 16
     description: "Hydrodynamics DB v2"
 
   AEDB_v1:
@@ -49,12 +63,19 @@ datasets:
       geom_fins_RootChord, geom_fins_FreeChord, geom_fins_Height, geom_fins_DeltaXFreeChord, geom_fins_AxialRelativeDistance, geom_fins_SemiThickness,
       geom_abk_relativePosition, geom_rocket_bezierX1, geom_rocket_bezierX2, geom_rocket_bezierY2]
     target_columns: [cfd_cfx_mean]
+    input_display_names: [Mach, Angle of attack, Aerodynamic roll angle, 
+     Boat length, Boat diameter, Airbrakes opening percentage, Nose length, Nose p parameter, Nose c parameter,
+     Total length, Fins root chord, Fins free chord, Fins height, Fins deltaX free chord, Fins axial relative distance, Fins semi-thickness, 
+     Airbrakes relative position, Rocket bezier X1 control point, Rocket bezier X2 control point, Rocket bezier Y2 control point]
+    input_units: [\-, deg, deg, mm, mm, \%, mm, \-, \-, mm, mm, mm, mm, mm, mm, mm, mm, mm, mm, mm]
+    output_display_name: Axial coefficient
+    output_unit: \-
     dropna: true
     normalize_inputs: true
     normalize_targets: true
-    train_ratio: 0.70
-    val_ratio: 0.15
-    test_ratio: 0.15
+    train_ratio: 0.1
+    val_ratio: 0.45
+    test_ratio: 0.45
     batch_size: 128
     description: "Aero-Dynamic DB v1"
 

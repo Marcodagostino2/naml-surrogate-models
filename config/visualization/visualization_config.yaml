@@ -10,6 +10,7 @@ random_seed: 42
 parity:
   enabled: true
   show_residuals: true
+  show_mape: true
 
 surface:
   enabled: true
@@ -17,6 +18,7 @@ surface:
   n_grid_points: 50
   pca_n_components: 3
   pca_n_other_samples: 50
+  pca_loadings_top_k: 3
 
 uncertainty_gp:
   enabled: true
@@ -24,3 +26,22 @@ uncertainty_gp:
 table:
   enabled: true
   split: test
+
+# Single-run plot dimension selection. Names below MUST match either the CSV
+# column names (input_columns in dataset_config.yaml) or the matching
+# input_display_names entries — both resolve to the same dimension index.
+#
+# - slice_dims        : input names plotted as 1D slices. Empty = auto (top variance).
+# - heatmap_dim_pair  : two names for the 2D heatmap. Empty = use first two slice dims.
+# - locked_values     : value used for non-plotted inputs. Missing keys fall back
+#                       to the median of the training data.
+single_run:
+  slice_dims: []
+  heatmap_dim_pair: []
+  locked_values: {}
+
+optimization:
+  enabled: true
+
+convergence:
+  enabled: true

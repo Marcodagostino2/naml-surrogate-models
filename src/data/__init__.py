@@ -45,6 +45,10 @@ def load_data_from_config(
 		test_ratio=float(dataset_cfg.get("test_ratio", 0.15)),
 		random_seed=global_seed,
 		default_type=precision,
+		input_display_names=dataset_cfg.get("input_display_names"),
+		input_units=dataset_cfg.get("input_units"),
+		output_display_name=dataset_cfg.get("output_display_name"),
+		output_unit=dataset_cfg.get("output_unit"),
 	)
 
 

@@ -17,11 +17,11 @@
 
 kernel:
   type: "exponential"
-  theta: 0.2
-  power_exponent: 2.0
+  theta: 0.02
+  power_exponent: 1.8
   nugget: 1e-4
-  tau2: 0.04
-  likelihood_noise: 1e-3
+  tau2: 0.01
+  likelihood_noise: 1e-2
 
 # Polynomial trend degree (0 = constant, 1 = linear, 2 = quadratic)
 trend_degree: 1

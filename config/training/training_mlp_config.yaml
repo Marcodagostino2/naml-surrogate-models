@@ -7,10 +7,10 @@
 optimizer: "adamw"
 
 # Learning rate
-learning_rate: 1e-5
+learning_rate: 1e-4
 
 # Weight_decay 
-weight_decay: 1e-4 
+weight_decay: 1.7e-5 
 
 # Number of epochs
 n_epochs: 300

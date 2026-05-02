@@ -48,6 +48,81 @@ FIG_STYLE: dict[str, float] = {
     "marker_size": 24.0,
 }
 
+_STYLE_APPLIED = False
+
+
+def set_plot_style() -> None:
+    """Apply LaTeX-style matplotlib defaults (serif fonts + mathtext).
+
+    Idempotent — subsequent calls re-apply rcParams without doing extra work.
+    Uses mathtext rather than `text.usetex=True` so figures render even when
+    a system LaTeX install is unavailable.
+    """
+
+    global _STYLE_APPLIED
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "font.serif": ["Computer Modern Roman", "DejaVu Serif", "Times New Roman", "serif"],
+            "mathtext.fontset": "cm",
+            "axes.titlesize": int(FIG_STYLE["title_size"]),
+            "axes.labelsize": int(FIG_STYLE["label_size"]),
+            "axes.titleweight": "bold",
+            "xtick.labelsize": int(FIG_STYLE["tick_size"]),
+            "ytick.labelsize": int(FIG_STYLE["tick_size"]),
+            "legend.fontsize": int(FIG_STYLE["annotation_size"]),
+            "figure.titlesize": int(FIG_STYLE["title_size"]),
+            "axes.grid": True,
+            "grid.alpha": 0.3,
+            "lines.linewidth": float(FIG_STYLE["line_width"]),
+            "savefig.dpi": int(FIG_STYLE["dpi"]),
+            "savefig.bbox": "tight",
+        }
+    )
+    _STYLE_APPLIED = True
+
+
+# Apply once on import so every module that imports from this file inherits the style.
+set_plot_style()
+
+
+def axis_label(name: str, unit: str | None = None) -> str:
+    """Format an axis label as ``name [unit]`` when a unit is supplied."""
+
+    if unit is None or not str(unit).strip():
+        return str(name)
+    return f"{name} [{unit}]"
+
+
+def get_display_names(data: dict[str, Any]) -> list[str]:
+    """Return display-friendly input names with fallback to CSV column names."""
+
+    names = data.get("input_display_names")
+    if names is None or not list(names):
+        names = data.get("feature_names", [])
+    return [str(n) for n in names]
+
+
+def get_input_units(data: dict[str, Any]) -> list[str]:
+    """Return per-input units (empty string when none defined)."""
+
+    units = data.get("input_units")
+    n = len(get_display_names(data))
+    if units is None:
+        return [""] * n
+    units_list = [str(u) if u is not None else "" for u in units]
+    if len(units_list) < n:
+        units_list = units_list + [""] * (n - len(units_list))
+    return units_list[:n]
+
+
+def get_output_display(data: dict[str, Any]) -> tuple[str, str]:
+    """Return ``(output_display_name, output_unit)`` with safe fallbacks."""
+
+    name = data.get("output_display_name") or data.get("output_name", "")
+    unit = data.get("output_unit", "") or ""
+    return str(name), str(unit)
+
 
 def _as_1d_array(values: Any) -> np.ndarray:
     array = np.asarray(values).reshape(-1)

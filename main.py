@@ -37,6 +37,29 @@ if TYPE_CHECKING:
     import optuna
 
 
+def _build_viz_data(data_bundle) -> Dict[str, Any]:
+    """Assemble the data dict consumed by ``run_visualization``."""
+
+    return {
+        "X_train": data_bundle.X_train * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+        "y_train": data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+        "X_val": data_bundle.X_val * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+        "y_val": data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+        "X_test": data_bundle.X_test * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
+        "y_test": data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
+        "feature_names": data_bundle.feature_names,
+        "output_name": ", ".join(data_bundle.target_names),
+        "input_display_names": data_bundle.input_display_names,
+        "input_units": data_bundle.input_units,
+        "output_display_name": data_bundle.output_display_name,
+        "output_unit": data_bundle.output_unit,
+        "input_scaler_mean": data_bundle.input_scaler_mean,
+        "input_scaler_std": data_bundle.input_scaler_std,
+        "target_scaler_mean": data_bundle.target_scaler_mean,
+        "target_scaler_std": data_bundle.target_scaler_std,
+    }
+
+
 def main() -> None:
     """Main training pipeline orchestrator."""
 
@@ -162,20 +185,7 @@ def main() -> None:
             viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(output_resolver.plots_dir))
             run_visualization(
                 models={selected_model: results["model"]},
-                data={
-                    "X_train": data_bundle.X_train * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
-                    "y_train": data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
-                    "X_val": data_bundle.X_val * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
-                    "y_val": data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
-                    "X_test": data_bundle.X_test * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
-                    "y_test": data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
-                    "feature_names": data_bundle.feature_names,
-                    "output_name": ", ".join(data_bundle.target_names),
-                    "input_scaler_mean": data_bundle.input_scaler_mean,
-                    "input_scaler_std": data_bundle.input_scaler_std,
-                    "target_scaler_mean": data_bundle.target_scaler_mean,
-                    "target_scaler_std": data_bundle.target_scaler_std,
-                },
+                data=_build_viz_data(data_bundle),
                 config=viz_config,
                 mode="train",
             )
@@ -203,20 +213,7 @@ def main() -> None:
                 table_viz_config.table.enabled = True
                 run_visualization(
                     models=trained_models,
-                    data={
-                        "X_train": data_bundle.X_train * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
-                        "y_train": data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
-                        "X_val": data_bundle.X_val * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
-                        "y_val": data_bundle.y_val * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
-                        "X_test": data_bundle.X_test * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
-                        "y_test": data_bundle.y_test * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
-                        "feature_names": data_bundle.feature_names,
-                        "output_name": ", ".join(data_bundle.target_names),
-                        "input_scaler_mean": data_bundle.input_scaler_mean,
-                        "input_scaler_std": data_bundle.input_scaler_std,
-                        "target_scaler_mean": data_bundle.target_scaler_mean,
-                        "target_scaler_std": data_bundle.target_scaler_std,
-                    },
+                    data=_build_viz_data(data_bundle),
                     config=table_viz_config,
                     mode="train",
                 )

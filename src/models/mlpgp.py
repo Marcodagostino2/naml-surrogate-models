@@ -15,7 +15,7 @@ import torch
 from gpytorch.distributions import MultivariateNormal
 from gpytorch.models import ExactGP
 
-from src.models.gp import ExponentialKernel, PolynomialTrendMean, _build_gaussian_likelihood
+from src.models.gp import ExponentialKernel, PolynomialTrendMean, _build_gaussian_likelihood, _format_param_block
 from src.models.mlp import MLPRegressor
 from src.utils import setup_logger
 
@@ -280,11 +280,15 @@ class MLPGPModel(ExactGP):
         # All variance scaling is handled internally by sigma(x)
         self.covar_module = nonstationary_kernel
 
+        theta_values = base_kernel.theta.flatten().detach().cpu().tolist()
+        power_values = base_kernel.power_exponent.flatten().detach().cpu().tolist()
         logger.info(
-            "MLPGPModel initialized: "
-            f"lengthscale_mode={lengthscale_mode}, "
-            f"trend_degree={trend_degree}, "
-            f"likelihood_noise={float(self.likelihood.noise.item()):.6e}"
+            "MLPGPModel initialized\n"
+            f"  lengthscale_mode={lengthscale_mode}\n"
+            f"  trend_degree={trend_degree}\n"
+            f"  likelihood_noise={float(self.likelihood.noise.item()):.6e}\n"
+            f"  {_format_param_block('theta', theta_values)}\n"
+            f"  {_format_param_block('power_exponent', power_values)}"
         )
 
     def _predict_local_parameters(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

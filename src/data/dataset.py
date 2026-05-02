@@ -68,6 +68,10 @@ class DataBundle:
         target_scaler_std: np.ndarray,
         feature_names: list[str],
         target_names: list[str],
+        input_display_names: list[str] | None = None,
+        input_units: list[str] | None = None,
+        output_display_name: str | None = None,
+        output_unit: str | None = None,
     ) -> None:
         """
         Initialize DataBundle.
@@ -101,6 +105,10 @@ class DataBundle:
         self.target_scaler_std = target_scaler_std
         self.feature_names = feature_names
         self.target_names = target_names
+        self.input_display_names = list(input_display_names) if input_display_names else list(feature_names)
+        self.input_units = list(input_units) if input_units else [""] * len(feature_names)
+        self.output_display_name = str(output_display_name) if output_display_name else (target_names[0] if target_names else "")
+        self.output_unit = str(output_unit) if output_unit else ""
 
     def get_train_loader(self, batch_size: int = 32, num_workers: int = 0, pin_memory: bool = False) -> DataLoader:
         """Create a DataLoader for training data."""
@@ -146,6 +154,10 @@ def load_and_preprocess_data(
     test_ratio: float = 0.15,
     random_seed: int = 42,
     default_type: str = "float32",
+    input_display_names: list[str] | None = None,
+    input_units: list[str] | None = None,
+    output_display_name: str | None = None,
+    output_unit: str | None = None,
 ) -> DataBundle:
     """
     Load data from CSV, preprocess, normalize, and split into train/val/test.
@@ -206,29 +218,27 @@ def load_and_preprocess_data(
 
     # Handle missing values
     if dropna:
+        before = X.shape[0]
         valid_mask = ~(np.isnan(X).any(axis=1) | np.isnan(y).any(axis=1))
         X = X[valid_mask]
         y = y[valid_mask]
-        logger.info(f"After removing NaN: X={X.shape}, y={y.shape}")
+        if X.shape[0] != before:
+            logger.info(f"Dropped {before - X.shape[0]} rows containing NaN")
 
-    # Normalize inputs
     if normalize_inputs:
         input_mean = X.mean(axis=0, keepdims=False)
         input_std = X.std(axis=0, keepdims=False)
-        input_std = np.where(input_std < 1e-8, 1.0, input_std)  # Avoid division by zero
+        input_std = np.where(input_std < 1e-8, 1.0, input_std)
         X = (X - input_mean) / input_std
-        logger.info("Inputs normalized (zero-mean, unit-std)")
     else:
         input_mean = np.zeros(X.shape[1])
         input_std = np.ones(X.shape[1])
 
-    # Normalize targets
     if normalize_targets:
         target_mean = y.mean(axis=0, keepdims=False)
         target_std = y.std(axis=0, keepdims=False)
         target_std = np.where(target_std < 1e-8, 1.0, target_std)
         y = (y - target_mean) / target_std
-        logger.info("Targets normalized (zero-mean, unit-std)")
     else:
         target_mean = np.zeros(y.shape[1])
         target_std = np.ones(y.shape[1])
@@ -264,4 +274,8 @@ def load_and_preprocess_data(
         target_scaler_std=target_std,
         feature_names=input_columns,
         target_names=target_columns,
+        input_display_names=input_display_names,
+        input_units=input_units,
+        output_display_name=output_display_name,
+        output_unit=output_unit,
     )

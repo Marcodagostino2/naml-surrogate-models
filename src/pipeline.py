@@ -209,8 +209,6 @@ def train_model(
     logger.info(f"Test R²: {metrics['test']['r2']:.6f}, Test RMSE: {metrics['test']['rmse']:.6f}")
 
     generate_diagnostics(
-        y_train_true=splits["train"][1] * y_scale_std + y_scale_mean,
-        y_train_pred=predictions["train"],
         y_val_true=splits["val"][1] * y_scale_std + y_scale_mean,
         y_val_pred=predictions["val"],
         y_test_true=splits["test"][1] * y_scale_std + y_scale_mean,

@@ -14,13 +14,15 @@
 #              Linear -> Tanh -> Linear -> Tanh -> output
 
 architecture:
-  - layers: [512, 1024, 1024, 1024]
+  - layers: [128, 128]
     activation: "tanh"
-  - layers: [64, 64]
+  - layers: [128, 128]
     activation: "relu"
+  - layers: [64, 64]
+    activation: "tanh"
 
 # Dropout probability (0.0 to disable)
-dropout: 0.0
+dropout: 0.03
 
 # Batch normalization: true or false
 batch_norm: false

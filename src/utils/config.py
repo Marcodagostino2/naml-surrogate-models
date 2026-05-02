@@ -231,7 +231,7 @@ def setup_logger(name: str, log_file: Path | str | None = None, level=logging.IN
     console_handler.setLevel(level)
     formatter = logging.Formatter(
         "[%(asctime)s - %(name)s - %(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+        datefmt="%H:%M:%S"
     )
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)

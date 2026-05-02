@@ -150,8 +150,10 @@ class MLPRegressor(nn.Module):
 
         self.network = nn.Sequential(*layers)
 
-        logger.info(f"MLPRegressor initialized: input_dim={input_dim}, output_dim={output_dim}")
-        logger.info(f"Architecture blocks: {len(architecture)}")
+        logger.info(
+            f"MLPRegressor initialized: input_dim={input_dim}, output_dim={output_dim}, "
+            f"architecture_blocks={len(architecture)}"
+        )
 
     @staticmethod
     def _parse_architecture(raw_architecture: List) -> List[Tuple[List[int], str]]:
