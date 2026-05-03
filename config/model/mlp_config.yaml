@@ -14,12 +14,12 @@
 #              Linear -> Tanh -> Linear -> Tanh -> output
 
 architecture:
-  - layers: [128, 128]
+  - layers: [1024, 1024, 1024]
     activation: "tanh"
-  - layers: [128, 128]
-    activation: "relu"
-  - layers: [64, 64]
+  - layers: [128]
     activation: "tanh"
+  - layers: [256]
+    activation: "tanh" 
 
 # Dropout probability (0.0 to disable)
 dropout: 0.03

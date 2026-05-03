@@ -380,12 +380,9 @@ def make_objective(
         training_cfg = overlay(training_cfg, opt_cfg.get("training_overrides", {}))
 
         if model_name == "gp":
-            optimizer_name = str(training_cfg.get("optimizer", "lbfgs")).lower()
-            if optimizer_name == "lbfgs" and "learning_rate" in training_params:
-                logger.warning(
-                    "GP optimizer is lbfgs: suggested learning_rate is used as LBFGS step-size upper bound "
-                    "during line search, not as a fixed SGD-like learning rate."
-                )
+            optimizer_name = str(training_cfg.get("optimizer", "adamw")).lower()
+            if optimizer_name not in {"adam", "adamw", "sgd"}:
+                logger.warning(f"GP optimizer '{optimizer_name}' is not one of adam, adamw, sgd")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = Path(tmpdir)
@@ -429,7 +426,7 @@ def make_objective(
                     trial.set_user_attr("train_losses", [float(x) for x in history["train_losses"]])
                 if isinstance(history.get("val_losses"), list):
                     trial.set_user_attr("val_losses", [float(x) for x in history["val_losses"]])
-
+                
                 return float(metric_value)
             except optuna.TrialPruned:
                 raise
@@ -507,7 +504,6 @@ def save_optimization_results(
             yaml.dump(best_training_cfg, f, default_flow_style=False, allow_unicode=True)
 
         logger.debug(f"Best configs saved to {config_dir}")
-
 
 # Plotting helpers are kept here so optimize.py can stay thin.
 

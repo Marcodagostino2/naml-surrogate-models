@@ -11,9 +11,14 @@ study:
   log_every_n_trials: 5
 
 training_overrides:
-  n_training_steps: 1000
+  n_training_steps: 500
 
-architecture_name: "dkl"
+architecture_name: "non_stationary"  # options: "non_stationary" | "dkl"
+
+# Kernel selection for optimization
+# - Non-stationary: always uses "exponential" (Gibbs kernel)
+# - DKL: supports "exponential" | "rbf" | "matern"
+kernel_name: "exponential"   # override as needed
 
 search_spaces:
   non_stationary:
@@ -54,12 +59,12 @@ search_spaces:
         high: 0.0
       lengthscale_init:
         type: float
-        low: 1.0e-2
+        low: 1.0e-3
         high: 1.0e-1
         log: true
       noise_var:
         type: float
-        low: 1.0e-4
+        low: 1.0e-5
         high: 1.0e-1
         log: true
     training:
@@ -76,7 +81,7 @@ search_spaces:
       mlp_weight_decay:
         type: float
         low: 1.0e-6
-        high: 1.0e-3
+        high: 1.0e-1
         log: true
 
   dkl:
@@ -121,14 +126,14 @@ search_spaces:
       output_width:
         type: int
         low: 1
-        high: 10
+        high: 15
       output_activation:
         type: categorical
         choices: [identity]
       theta:
         type: float
-        low: 1.0e-2
-        high: 1.0e-1
+        low: 1.0e-3
+        high: 1.0
         log: true
       power_exponent:
         type: float
@@ -136,27 +141,27 @@ search_spaces:
         high: 2.0
       tau2:
         type: float
-        low: 1.0e-2
+        low: 1.0e-4
         high: 1.0e+1
         log: true
       noise_var:
         type: float
         low: 1.0e-5
-        high: 1.0e-1
+        high: 1.0
         log: true
     training:
       mlp_learning_rate:
         type: float
         low: 1.0e-5
-        high: 5.0e-3
+        high: 1.0e-1
         log: true
       gp_learning_rate:
         type: float
         low: 1.0e-5
-        high: 1.0e-2
+        high: 1.0e-1
         log: true
       mlp_weight_decay:
         type: float
         low: 1.0e-6
-        high: 1.0e-3
+        high: 1.0e-2
         log: true

@@ -3,24 +3,25 @@
 # ============================================================================
 # Explicit GP kernel configuration.
 #
-# The kernel is organized as:
+# Supported kernels:
+#   - "exponential": Anisotropic generalized exponential (learnable theta, power_exponent)
+#   - "rbf": Radial basis function (RBF) kernel
+#   - "matern": Matern kernel (nu=0.5|1.5|2.5)
+#
+# Exponential kernel:
 #   K(x, x') = tau^2 * k_stationary(x, x')
-# where k_stationary is the anisotropic generalized exponential kernel.
+#   theta: anisotropy weights per input dimension
+#   power_exponent: exponent per input dimension
 #
-# The three kernel parameters are kept separate and explicit:
-#   - theta: anisotropy weights per input dimension
-#   - power_exponent: exponent per input dimension
-#   - nugget: relative diagonal nugget inside the kernel
-#
-# The likelihood noise is fixed to a minimal value (1e-6) to satisfy
-# GPyTorch internal requirements, while all regularization comes from the nugget.
+# The likelihood noise is fixed to satisfy GPyTorch internal requirements.
 
 kernel:
-  type: "exponential"
-  theta: 0.5
-  power_exponent: 1.8
-  tau2: 0.02
-  likelihood_noise: 1e-5
+  type: "exponential"       # options: "exponential" | "rbf" | "matern"
+  theta: 1.0e-1
+  power_exponent: 1.99
+  tau2: 1.0e-2
+  likelihood_noise: 1.0e-2
+  matern_nu: 2.5           # only used if type="matern" (options: 0.5, 1.5, 2.5)
 
 # Polynomial trend degree (0 = constant, 1 = linear, 2 = quadratic)
 trend_degree: 1

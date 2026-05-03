@@ -7,17 +7,19 @@
 optimizer: "adamw"
 
 # Learning rate
-learning_rate: 1e-4
+learning_rate: 1.0e-4
 
 # Weight_decay 
-weight_decay: 1.7e-5 
+weight_decay: 1.0e-4 
 
-# Number of epochs
-n_epochs: 300
+# Number of epochs (kept large; training stops early when tolerances are met)
+n_epochs: 700
 
-# Early stopping
-early_stopping_patience: 30
-early_stopping_min_delta: 1e-5
+# Stop policy
+train_residual_check_interval: 10
+train_residual_tol: 1.0e-4
+validation_check_interval: 10
+validation_residual_tol: 1.0e-4
 
 # Loss function: "mse", "mae", "huber"
 loss_function: "mse"

@@ -15,8 +15,7 @@ study:
   reduction_factor: 3  # reduction factor for Hyperband (how aggressively to prune trials)
 
 training_overrides:
-  n_epochs: 1000
-  early_stopping_patience: 20
+  n_epochs: 500
 
 search_space:
   model:
@@ -58,10 +57,10 @@ search_space:
     learning_rate:
       type: float
       low: 1.0e-5
-      high: 1.0e-3
+      high: 1.0e-2
       log: true
     weight_decay:
       type: float
       low: 1.0e-6
-      high: 1.0e-4
+      high: 1.0e-1
       log: true

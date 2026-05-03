@@ -47,6 +47,8 @@ def load_run_configs(
     """
     main_cfg = load_yaml(config_dir / "main_config.yaml")
     all_datasets = load_yaml(config_dir / "dataset" / "dataset_config.yaml")
+    common_training_cfg_path = config_dir / "training" / "common_training_config.yaml"
+    common_training_cfg = load_yaml(common_training_cfg_path) if common_training_cfg_path.exists() else {}
     dataset_name = str(main_cfg.get("dataset", "airfoil_self_noise"))
     datasets = all_datasets.get("datasets", {})
 
@@ -55,12 +57,18 @@ def load_run_configs(
             f"Dataset '{dataset_name}' not found. Available: {list(datasets.keys())}"
         )
 
+    model_training_cfg = load_yaml(config_dir / "training" / f"training_{model_name}_config.yaml")
+
+    # Merge shared defaults with model-specific overrides so scheduler settings
+    # live in a single source of truth.
+    training_cfg = {**common_training_cfg, **model_training_cfg}
+
     result: Dict[str, Any] = {
         "main_cfg": main_cfg,
         "dataset_cfg": datasets[dataset_name],
         "dataset_name": dataset_name,
         "model_cfg": load_yaml(config_dir / "model" / f"{model_name}_config.yaml"),
-        "training_cfg": load_yaml(config_dir / "training" / f"training_{model_name}_config.yaml"),
+        "training_cfg": training_cfg,
         "viz_cfg": load_yaml(config_dir / "visualization" / "visualization_config.yaml"),
     }
 

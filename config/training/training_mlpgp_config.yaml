@@ -10,28 +10,27 @@
 optimizer: "adamw"
 
 # Learning rates (can be different for MLP and GP components)
-mlp_learning_rate: 1e-3
-gp_learning_rate: 1e-3
+mlp_learning_rate: 1.0e-2
+gp_learning_rate: 1.0e-5
 
 # Weight_decay for MLP optimizer
-mlp_weight_decay: 1e-5
+mlp_weight_decay: 1.0e-6
 
-# Number of joint training steps
-n_training_steps: 1000
+# Number of joint training steps (kept large; training stops early when tolerances are met)
+n_training_steps: 700
 
-# Convergence criteria
-abs_tol: 1e-5
-rel_tol: 1e-3
-
-# Convergence check frequency
-convergence_check_interval: 10
+# Stop policy: train residual checked more frequently than validation
+train_residual_check_interval: 1
+train_residual_tol: 1.0e-4
+validation_check_interval: 10
+validation_residual_tol: 1.0e-4
 
 # Device: "cuda", "cpu", "auto"
 device: "auto"
 
 # Cholesky jitter for numerical stability (GPyTorch psd_safe_cholesky)
-cholesky_jitter_float32: 1e-6
-cholesky_jitter_float64: 1e-8
+cholesky_jitter_float32: 1.0e-6
+cholesky_jitter_float64: 1.0e-8
 
 # Checkpointing
 save_checkpoint_every_n_steps: 20

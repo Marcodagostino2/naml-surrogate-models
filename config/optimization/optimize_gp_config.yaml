@@ -1,5 +1,5 @@
 study:
-  n_trials: 10
+  n_trials: 50
   timeout: 7200
   direction: minimize
   metric: val_rmse
@@ -9,7 +9,11 @@ study:
   log_every_n_trials: 3
 
 training_overrides:
-  n_training_steps: 300
+  n_training_steps: 500
+
+# Kernel selection for optimization
+# Supported: "exponential" | "rbf" | "matern"
+kernel_name: "exponential"   # override in command line or env as needed
 
 search_space:
   model:
@@ -20,7 +24,7 @@ search_space:
       log: true
     lengthscale_init:
       type: float
-      low: 1.0e-1
+      low: 1.0e-2
       high: 1.0
       log: true
     noise_var:

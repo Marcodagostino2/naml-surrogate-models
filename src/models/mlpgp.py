@@ -16,7 +16,8 @@ from gpytorch.distributions import MultivariateNormal
 from gpytorch.kernels import ScaleKernel
 from gpytorch.models import ExactGP
 
-from src.models.gp import ExponentialKernel, PolynomialTrendMean, _build_gaussian_likelihood, _format_param_block
+from src.models.gp import PolynomialTrendMean, _build_gaussian_likelihood, _format_param_block
+from src.models.gp_utils import ExponentialKernel, build_kernel
 from src.models.mlp import MLPRegressor
 from src.utils import setup_logger
 
@@ -282,7 +283,7 @@ class DKLKernel(gpytorch.kernels.Kernel):
 
     def __init__(
         self,
-        base_kernel: ExponentialKernel,
+        base_kernel: gpytorch.kernels.Kernel,
         feature_extractor: DKLFeatureExtractor,
         **kwargs,
     ) -> None:
@@ -342,11 +343,18 @@ class MLPGPModel(ExactGP):
         if self.architecture_name not in {"non_stationary", "dkl"}:
             raise ValueError(f"Unknown architecture: {self.architecture_name}. Must be 'non_stationary' or 'dkl'.")
 
+        # Extract kernel type; support both nested dict and direct string
+        if isinstance(kernel_cfg, dict):
+            kernel_type = str(kernel_cfg.get("type", kernel_cfg.get("kernel_type", "exponential"))).lower()
+        else:
+            kernel_type = str(kernel_cfg).lower()
+
+        # Validate kernel compatibility with architecture
+        if self.architecture_name == "non_stationary" and kernel_type != "exponential":
+            raise ValueError("Non-stationary architecture requires kernel type='exponential' (Gibbs kernel).")
+
         # Common setup shared by all architectures
         trend_degree = int(_require_config_value(model_cfg, "trend_degree", "MLPGP model config"))
-        kernel_type = str(kernel_cfg.get("type", kernel_cfg.get("kernel_type", "exponential"))).lower()
-        if kernel_type != "exponential":
-            raise ValueError("Only the exponential kernel is supported in this MLPGP implementation.")
 
         self.likelihood.initialize(noise=initial_likelihood_noise)
         self.mean_module = PolynomialTrendMean(input_dim=input_dim, degree=trend_degree)
@@ -419,16 +427,14 @@ class MLPGPModel(ExactGP):
         output_dim = int(dkl_cfg.get("output_width", dkl_cfg.get("output_dim", 3)))
 
         kernel_cfg = model_cfg.get("kernel", model_cfg)
-        initial_theta = _require_config_value(kernel_cfg, "theta", "DKL kernel config")
-        initial_p = _require_config_value(kernel_cfg, "power_exponent", "DKL kernel config")
-        initial_tau2 = float(kernel_cfg.get("tau2", 1.0))
-
-        # theta lives in the feature space; expand a scalar / take first element of a vector.
-        if isinstance(initial_theta, (int, float)):
-            theta_value = float(initial_theta)
+        
+        # Extract kernel name; support both nested dict and direct string
+        if isinstance(kernel_cfg, dict):
+            kernel_name = str(kernel_cfg.get("type", kernel_cfg.get("kernel", "exponential"))).lower()
         else:
-            theta_value = float(initial_theta[0])
-        dkl_theta = [theta_value] * output_dim
+            kernel_name = str(kernel_cfg).lower()
+        
+        initial_tau2 = float(kernel_cfg.get("tau2", 1.0))
 
         # Feature extractor maps raw input -> small feature space used by the GP kernel.
         self.dkl_feature_extractor = DKLFeatureExtractor(
@@ -438,18 +444,35 @@ class MLPGPModel(ExactGP):
         )
 
         # Base kernel is sized to the feature space, not the raw input.
-        dkl_base_kernel = ExponentialKernel(
-            input_dim=output_dim,
-            initial_theta=dkl_theta,
-            initial_power_exponent=initial_p,
-        )
+        # For exponential, need to re-parameterize theta to feature space dimensions
+        if kernel_name == "exponential":
+            initial_theta = _require_config_value(kernel_cfg, "theta", "DKL kernel config")
+            initial_p = _require_config_value(kernel_cfg, "power_exponent", "DKL kernel config")
+            
+            # theta lives in the feature space; expand a scalar / take first element of a vector.
+            if isinstance(initial_theta, (int, float)):
+                theta_value = float(initial_theta)
+            else:
+                theta_value = float(initial_theta[0])
+            dkl_theta = [theta_value] * output_dim
+            
+            # Create exponential kernel with feature-space dimensions
+            dkl_base_kernel = ExponentialKernel(
+                input_dim=output_dim,
+                initial_theta=dkl_theta,
+                initial_power_exponent=initial_p,
+            )
+        else:
+            # For RBF/Matern, use the factory (which wraps in ScaleKernel)
+            # Extract the inner kernel from the factory's ScaleKernel wrapper
+            scaled_kernel = build_kernel(kernel_name, output_dim, kernel_cfg)
+            if isinstance(scaled_kernel, ScaleKernel):
+                dkl_base_kernel = scaled_kernel.base_kernel
+            else:
+                dkl_base_kernel = scaled_kernel
 
-        dkl_kernel = DKLKernel(
-            base_kernel=dkl_base_kernel,
-            feature_extractor=self.dkl_feature_extractor,
-        )
         # ScaleKernel adds the learnable outputscale tau^2 (matches GPRegressionModel).
-        self.covar_module = ScaleKernel(dkl_kernel)
+        self.covar_module = ScaleKernel(dkl_base_kernel)
         self.covar_module.outputscale = initial_tau2
 
     def _predict_local_parameters(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -489,5 +512,6 @@ class MLPGPModel(ExactGP):
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:
         mean_x = self.mean_module(x)
-        covar_x = self.covar_module(x)
+        covar_input = self.dkl_feature_extractor(x) if self.architecture_name == "dkl" else x
+        covar_x = self.covar_module(covar_input)
         return MultivariateNormal(mean_x, covar_x)

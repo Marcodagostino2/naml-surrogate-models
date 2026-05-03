@@ -1,0 +1,9 @@
+# ============================================================================
+# Shared Training Configuration
+# ============================================================================
+# Common defaults used by all trainers (MLP, GP, MLPGP).
+# Model-specific training files can override only what differs.
+
+# LR scheduler shared across all trainers
+scheduler_step_size: 200   # halve LR every N epochs/steps
+scheduler_gamma: 0.5      # multiplicative factor

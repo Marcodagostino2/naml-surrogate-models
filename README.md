@@ -151,10 +151,11 @@ likelihood_noise: 1e-4
 ### Training Settings
 
 Edit training configs to control optimization:
-- `optimizer`: "adam", "sgd", "adamw" for MLP; "adam", "sgd", "lbfgs" for GP
+- `optimizer`: "adam", "sgd", "adamw" for MLP, GP, and MLPGP
 - `learning_rate`: Learning rate
 - `n_epochs` (MLP) / `n_training_steps` (GP)
-- Early stopping and convergence criteria
+- `train_residual_check_interval`, `train_residual_tol`
+- `validation_check_interval`, `validation_residual_tol`
 
 ## Outputs
 

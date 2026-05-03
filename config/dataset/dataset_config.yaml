@@ -8,6 +8,108 @@
 #   output_unit         : str, unit for the target (empty when unitless)
 
 datasets:
+  3droad:
+    csv_path: data/3droad.csv
+    input_columns: [x0, x1, x2]
+    target_columns: [y]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 64
+    description: "3D road network (434874 samples, 3 inputs, 1 output)"
+
+  gas:
+    csv_path: data/gas.csv
+    input_columns: [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9,
+      x10, x11, x12, x13, x14, x15, x16, x17, x18, x19,
+      x20, x21, x22, x23, x24, x25, x26, x27, x28, x29,
+      x30, x31, x32, x33, x34, x35, x36, x37, x38, x39,
+      x40, x41, x42, x43, x44, x45, x46, x47, x48, x49,
+      x50, x51, x52, x53, x54, x55, x56, x57, x58, x59,
+      x60, x61, x62, x63, x64, x65, x66, x67, x68, x69,
+      x70, x71, x72, x73, x74, x75, x76, x77, x78, x79,
+      x80, x81, x82, x83, x84, x85, x86, x87, x88, x89,
+      x90, x91, x92, x93, x94, x95, x96, x97, x98, x99,
+      x100, x101, x102, x103, x104, x105, x106, x107, x108, x109,
+      x110, x111, x112, x113, x114, x115, x116, x117, x118, x119,
+      x120, x121, x122, x123, x124, x125, x126, x127]
+    target_columns: [y]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 64
+    description: "Gas sensor array under dynamic gas mixtures (2565 samples, 128 inputs, 1 output)"
+  
+  skillcraft:
+    csv_path: data/skillcraft.csv
+    input_columns: [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9,
+      x10, x11, x12, x13, x14, x15, x16, x17, x18]
+    target_columns: [y]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 64
+    description: "SkillCraft1 Master Table Dataset (3338 samples, 19 inputs, 1 output)"
+
+  sml:
+    csv_path: data/sml.csv
+    input_columns: [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9,
+      x10, x11, x12, x13, x14, x15, x16, x17, x18, x19,
+      x20, x21, x22, x23, x24, x25]
+    target_columns: [y]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 64
+    description: "Superconductivty dataset (4137 samples, 26 inputs, 1 output)"
+
+  parkinsons:
+    csv_path: data/parkinsons.csv
+    input_columns: [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9,
+      x10, x11, x12, x13, x14, x15, x16, x17, x18, x19]
+    target_columns: [y]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 64
+    description: "Parkinson's disease dataset (5875 samples, 20 inputs, 1 output)"
+
+  song:
+    csv_path: data/song.csv
+    input_columns: [x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, 
+      x10, x11, x12, x13, x14, x15, x16, x17, x18, x19,
+      x20, x21, x22, x23, x24, x25, x26, x27, x28, x29,
+      x30, x31, x32, x33, x34, x35, x36, x37, x38, x39,
+      x40, x41, x42, x43, x44, x45, x46, x47, x48, x49,
+      x50, x51, x52, x53, x54, x55, x56, x57, x58, x59,
+      x60, x61, x62, x63, x64, x65, x66, x67, x68, x69,
+      x70, x71, x72, x73, x74, x75, x76, x77, x78, x79,
+      x80, x81, x82, x83, x84, x85, x86, x87, x88, x89]
+    target_columns: [y]
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 256
+    description: "Song year prediction (515345 samples, 10 inputs, 1 output)"
+
   airfoil_self_noise:
     csv_path: data/airfoil_self_noise.csv
     input_columns: [frequency, attack-angle, chord-length, free-stream-velocity, suction-side-displacement-thickness]
@@ -43,16 +145,16 @@ datasets:
     input_columns: [sim_machNumberValue, sim_aoaValue, sim_phiValue, sim_altitudeValue, geom_abk_openingPercentage]
     target_columns: [cfd_cfx_mean]
     input_display_names: [Mach, Angle of attack, Aerodynamic roll angle, Altitude, Airbrakes opening percentage]
-    input_units: [\-, deg, deg, m, \%]
+    input_units: ["-", deg, deg, m, "%"]
     output_display_name: Axial coefficient
-    output_unit: \-
+    output_unit: "-"
     dropna: true
     normalize_inputs: true
     normalize_targets: true
-    train_ratio: 0.3
-    val_ratio: 0.35
-    test_ratio: 0.35
-    batch_size: 16
+    train_ratio: 0.7
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 32
     description: "Hydrodynamics DB v2"
 
   AEDB_v1:
@@ -67,15 +169,15 @@ datasets:
      Boat length, Boat diameter, Airbrakes opening percentage, Nose length, Nose p parameter, Nose c parameter,
      Total length, Fins root chord, Fins free chord, Fins height, Fins deltaX free chord, Fins axial relative distance, Fins semi-thickness, 
      Airbrakes relative position, Rocket bezier X1 control point, Rocket bezier X2 control point, Rocket bezier Y2 control point]
-    input_units: [\-, deg, deg, mm, mm, \%, mm, \-, \-, mm, mm, mm, mm, mm, mm, mm, mm, mm, mm, mm]
+    input_units: ["-", deg, deg, mm, mm, "%", mm, "-", "-", mm, mm, mm, mm, mm, mm, mm, mm, mm, mm, mm]
     output_display_name: Axial coefficient
-    output_unit: \-
+    output_unit: "-"
     dropna: true
     normalize_inputs: true
     normalize_targets: true
-    train_ratio: 0.5
-    val_ratio: 0.25
-    test_ratio: 0.25
+    train_ratio: 0.7
+    val_ratio: 0.15
+    test_ratio: 0.15
     batch_size: 128
     description: "Aero-Dynamic DB v1"
 
