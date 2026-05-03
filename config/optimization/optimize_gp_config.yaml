@@ -1,5 +1,5 @@
 study:
-  n_trials: 5
+  n_trials: 10
   timeout: 7200
   direction: minimize
   metric: val_rmse
@@ -9,7 +9,7 @@ study:
   log_every_n_trials: 3
 
 training_overrides:
-  n_training_steps: 100
+  n_training_steps: 300
 
 search_space:
   model:

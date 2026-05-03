@@ -16,7 +16,7 @@ from src.data import DataBundle, load_and_preprocess_data
 from src.inference import Predictor
 from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
 from src.training import GPTrainer, MLPGPTrainer, MLPTrainer, compute_all_metrics
-from src.utils import OutputPathResolver, RunType, load_run_configs, load_yaml, resolve_device, set_global_seed
+from src.utils import OutputPathResolver, RunType, load_run_configs, load_yaml, resolve_device, set_global_seed, setup_torch_dtype
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -62,6 +62,7 @@ def _load_configs(config_path: Path) -> Dict[str, Any]:
 
     return {
         "analysis": analysis_cfg,
+        "main": loaded_mlp["main_cfg"],
         "dataset": loaded_mlp["dataset_cfg"],
         "dataset_name": loaded_mlp["dataset_name"],
         "model_map": {
@@ -243,6 +244,7 @@ def run_analysis(config_path: Path) -> None:
     """Run convergence analysis over all configured train splits."""
     config_bundle = _load_configs(config_path)
     analysis_cfg = config_bundle["analysis"]
+    main_cfg = config_bundle["main"]
     dataset_cfg = config_bundle["dataset"]
     dataset_name = config_bundle["dataset_name"]
     model_map = config_bundle["model_map"]
@@ -250,6 +252,7 @@ def run_analysis(config_path: Path) -> None:
 
     split_grid = _build_split_grid(list(analysis_cfg.get("split_percentages", [0.7])))
     seed = int(analysis_cfg.get("global_seed", 31))
+    setup_torch_dtype(str(main_cfg.get("precision", "float32")))
 
     model_sequence = ["mlp", "gp", "mlpgp"]
     model_paths = {name: _resolve_analysis_paths(dataset_name, name) for name in model_sequence}
@@ -265,6 +268,7 @@ def run_analysis(config_path: Path) -> None:
         data_bundle = _prepare_data_bundle(dataset_cfg=dataset_cfg, train_ratio=split, seed=seed)
 
         for model_name in model_sequence:
+            set_global_seed(seed)
             model_cfg = deepcopy(model_map[model_name])
             training_cfg = deepcopy(training_map[model_name])
 
@@ -304,6 +308,23 @@ def run_analysis(config_path: Path) -> None:
     metrics_df = pd.DataFrame(metrics_rows).sort_values(["model", "train_split"]).reset_index(drop=True)
     for resolver in model_paths.values():
         metrics_df.to_csv(resolver.summary_csv, index=False)
+
+    # Log convergence analysis summary
+    from src.utils import setup_logger
+    logger = setup_logger(__name__)
+    logger.info("=" * 70)
+    logger.info("CONVERGENCE ANALYSIS RESULTS")
+    logger.info("=" * 70)
+    for model_name in model_sequence:
+        model_data = metrics_df[metrics_df["model"] == model_name].sort_values("train_split")
+        logger.info(f"\n{model_name.upper()} Results:")
+        logger.info("-" * 70)
+        for _, row in model_data.iterrows():
+            logger.info(
+                f"  Split={row['train_split']:.2f} (n_train={int(row['n_train'])}): "
+                f"R²={row['r2']:.6f}, RMSE={row['rmse']:.6f}, MAE={row['mae']:.6f}, MAPE={row['mape']:.2f}%"
+            )
+    logger.info("=" * 70)
 
     for resolver in model_paths.values():
         _plot_metric_curve(metrics_df, metric="r2", output_path=resolver.plots_dir / "r2_vs_split.png")

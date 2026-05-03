@@ -208,6 +208,19 @@ def train_model(
 
     logger.info(f"Test R²: {metrics['test']['r2']:.6f}, Test RMSE: {metrics['test']['rmse']:.6f}")
 
+    # Log complete metrics summary
+    logger.info("=" * 70)
+    logger.info(f"FINAL METRICS SUMMARY ({model_name.upper()})")
+    logger.info("=" * 70)
+    for split in ["train", "val", "test"]:
+        m = metrics[split]
+        logger.info(
+            f"{split.upper()}: "
+            f"MAE={m['mae']:.6f}, MSE={m['mse']:.6f}, RMSE={m['rmse']:.6f}, "
+            f"R²={m['r2']:.6f}, MAPE={m['mape']:.2f}%"
+        )
+    logger.info("=" * 70)
+
     generate_diagnostics(
         y_val_true=splits["val"][1] * y_scale_std + y_scale_mean,
         y_val_pred=predictions["val"],

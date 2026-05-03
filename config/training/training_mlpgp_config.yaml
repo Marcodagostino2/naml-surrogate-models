@@ -10,14 +10,14 @@
 optimizer: "adamw"
 
 # Learning rates (can be different for MLP and GP components)
-mlp_learning_rate: 2e-5
-gp_learning_rate: 0.05
+mlp_learning_rate: 1e-3
+gp_learning_rate: 1e-3
 
 # Weight_decay for MLP optimizer
-mlp_weight_decay: 1e-2
+mlp_weight_decay: 1e-5
 
 # Number of joint training steps
-n_training_steps: 300
+n_training_steps: 1000
 
 # Convergence criteria
 abs_tol: 1e-5

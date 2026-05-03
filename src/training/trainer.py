@@ -20,6 +20,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.models import GPRegressionModel, MLPRegressor
+from src.models.gp import _format_param_block
 from src.models.mlpgp import MLPGPModel
 from src.training.metrics import compute_all_metrics
 from src.utils import resolve_device, setup_logger
@@ -338,6 +339,7 @@ class GPTrainer:
         self.mll_history = []
         self.hyperparams_history = []
         self.likelihood_noise_history = []
+        self.val_metrics_history = []
 
         logger.info(f"GPTrainer initialized on device: {self.device}")
         logger.info(f"Initial GP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
@@ -461,6 +463,7 @@ class GPTrainer:
 
             mll_value = -loss_value
             val_loss: Optional[float] = None
+            val_metrics: Optional[Dict[str, float]] = None
             if self.X_val is not None and self.y_val is not None:
                 self.model.eval()
                 with torch.no_grad():
@@ -468,11 +471,14 @@ class GPTrainer:
                     mean = out.mean
                     y_val_reshaped = self.y_val.view_as(mean)
                     val_loss = float(torch.nn.functional.mse_loss(mean, y_val_reshaped).item())
+                    # Compute all metrics for validation
+                    val_metrics = compute_all_metrics(self.y_val.cpu().numpy(), mean.cpu().numpy())
                 self.model.train()
             else:
                 logger.debug(f"Step {step}: validation skipped because X_val or y_val is None")
 
             val_losses.append(val_loss)
+            self.val_metrics_history.append(val_metrics)
 
             if val_loss is not None and val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
@@ -483,10 +489,17 @@ class GPTrainer:
 
             if step % 10 == 0:
                 val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
-                logger.info(
-                    f"Step {step}/{n_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}, "
-                    f"Likelihood Noise: {current_noise:.6e}"
-                )
+                if val_metrics is not None:
+                    logger.info(
+                        f"Step {step}/{n_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}, "
+                        f"Val R²: {val_metrics['r2']:.4f}, Val MAE: {val_metrics['mae']:.4f}, "
+                        f"Likelihood Noise: {current_noise:.6e}"
+                    )
+                else:
+                    logger.info(
+                        f"Step {step}/{n_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}, "
+                        f"Likelihood Noise: {current_noise:.6e}"
+                    )
 
             if self.trial is not None and val_loss is not None:
                 self.trial.report(val_loss, step=step)
@@ -521,6 +534,7 @@ class GPTrainer:
         return {
             "mll_history": self.mll_history,
             "val_losses": val_losses,
+            "val_metrics_history": self.val_metrics_history,
             "elapsed_time": elapsed,
             "likelihood_noise_history": self.likelihood_noise_history,
         }
@@ -570,6 +584,7 @@ class MLPGPTrainer:
 
         self.mll_history: List[float] = []
         self.likelihood_noise_history: List[float] = []
+        self.val_metrics_history: List[Optional[Dict[str, float]]] = []
 
         # Best-validation tracking
         self.best_loss = float("inf")
@@ -642,25 +657,25 @@ class MLPGPTrainer:
         )
 
     def _parameter_groups(self) -> List[Dict[str, Any]]:
-        base_kernel = self.model.covar_module.base_kernel
+        """Build optimizer parameter groups: feature extractor (with weight decay) vs GP (no weight decay).
 
-        gp_params: List[torch.nn.Parameter] = [
-            base_kernel.raw_theta,
-            base_kernel.raw_power_exponent,
-        ]
-        
-        gp_params.extend(list(self.model.likelihood.parameters()))
-
+        The split is delegated to the model via ``feature_extractor_parameters`` /
+        ``gp_parameters`` so this trainer stays architecture-agnostic.  ``gp_parameters``
+        intentionally includes everything that is not part of the feature extractor —
+        kernel hyperparameters, mean-trend coefficients, likelihood noise, and any
+        ``ScaleKernel`` outputscale — so adding new GP-side parameters does not
+        require changes here.
+        """
         return [
             {
-                "params": self.model.feature_extractor.parameters(),
+                "params": list(self.model.feature_extractor_parameters()),
                 "lr": self.mlp_learning_rate,
-                "weight_decay": self.mlp_weight_decay
+                "weight_decay": self.mlp_weight_decay,
             },
             {
-                "params": gp_params,
+                "params": list(self.model.gp_parameters()),
                 "lr": self.gp_learning_rate,
-                "weight_decay": 0.0
+                "weight_decay": 0.0,
             },
         ]
 
@@ -674,23 +689,18 @@ class MLPGPTrainer:
         if self.optimizer_name == "sgd":
             return torch.optim.SGD(parameter_groups), self.optimizer_name
         raise ValueError(f"Unknown optimizer: {self.optimizer_name}")
-    
+
     # Loss computation uses ExactMarginalLogLikelihood (mll) via model output
 
-    def _compute_validation_loss(self) -> Optional[float]:
-        """Compute validation MSE for pruning if validation tensors are available."""
-        if self.X_val is None or self.y_val is None:
-            return None
-
-        self.model.eval()
-        with torch.no_grad():
-            prediction = self.model(self.X_val)
-            mean = prediction.mean
-            y_val_reshaped = self.y_val.view_as(mean)
-            return float(torch.nn.functional.mse_loss(mean, y_val_reshaped).item())
-
     def train(self) -> Dict[str, Any]:
-        logger.info(f"Starting MLPGP optimization for {self.n_training_steps} steps")
+        architecture = getattr(self.model, "architecture_name", "non_stationary")
+        logger.info(f"Starting MLPGP optimization for {self.n_training_steps} steps (architecture: {architecture})")
+        
+        # Log DKL-specific info
+        if architecture == "dkl":
+            output_dim = self.model.dkl_feature_extractor.output_dim
+            logger.info(f"DKL feature extractor output_dim: {output_dim}")
+        
         start_time = time.time()
         val_losses: List[Optional[float]] = []
 
@@ -709,6 +719,7 @@ class MLPGPTrainer:
             self.likelihood_noise_history.append(current_noise)
 
             val_loss: Optional[float] = None
+            val_metrics: Optional[Dict[str, float]] = None
             if self.X_val is not None and self.y_val is not None:
                 self.model.eval()
                 with torch.no_grad():
@@ -716,11 +727,14 @@ class MLPGPTrainer:
                     mean = out.mean
                     y_val_reshaped = self.y_val.view_as(mean)
                     val_loss = float(torch.nn.functional.mse_loss(mean, y_val_reshaped).item())
+                    # Compute all metrics for validation
+                    val_metrics = compute_all_metrics(self.y_val.cpu().numpy(), mean.cpu().numpy())
                 self.model.train()
             else:
                 logger.debug(f"Step {step}: validation skipped because X_val or y_val is None")
 
             val_losses.append(val_loss)
+            self.val_metrics_history.append(val_metrics)
 
             if val_loss is not None and val_loss < self.best_loss:
                 self.best_loss = val_loss
@@ -731,10 +745,17 @@ class MLPGPTrainer:
 
             if step % 10 == 0:
                 val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
-                logger.info(
-                    f"Step {step}/{self.n_training_steps} - Train Loss (MLL): {mll_value:.6f}, Val MSE: {val_loss_display}, "
-                    f"Likelihood Noise: {current_noise:.6e}"
-                )
+                if val_metrics is not None:
+                    logger.info(
+                        f"Step {step}/{self.n_training_steps} - MLL: {mll_value:.6f}, Val MSE: {val_loss_display}, "
+                        f"Val R²: {val_metrics['r2']:.4f}, Val MAE: {val_metrics['mae']:.4f}, "
+                        f"Likelihood Noise: {current_noise:.6e}"
+                    )
+                else:
+                    logger.info(
+                        f"Step {step}/{self.n_training_steps} - MLL: {mll_value:.6f}, Val MSE: {val_loss_display}, "
+                        f"Likelihood Noise: {current_noise:.6e}"
+                    )
 
             if self.trial is not None and val_loss is not None:
                 self.trial.report(val_loss, step=step)
@@ -765,6 +786,7 @@ class MLPGPTrainer:
         return {
             "mll_history": self.mll_history,
             "val_losses": val_losses,
+            "val_metrics_history": self.val_metrics_history,
             "elapsed_time": elapsed,
             "likelihood_noise_history": self.likelihood_noise_history,
         }

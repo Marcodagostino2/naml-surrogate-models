@@ -8,11 +8,12 @@ input-dependent local kernel parameters.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 import gpytorch
 import torch
 from gpytorch.distributions import MultivariateNormal
+from gpytorch.kernels import ScaleKernel
 from gpytorch.models import ExactGP
 
 from src.models.gp import ExponentialKernel, PolynomialTrendMean, _build_gaussian_likelihood, _format_param_block
@@ -28,14 +29,18 @@ def _require_config_value(config: Dict[str, Any], key: str, context: str) -> Any
     return config[key]
 
 
-class MLPGPFeatureExtractor(torch.nn.Module):
-    """MLP feature extractor producing positive local sigma(x) and l(x)."""
+class NonstationaryFeatureExtractor(torch.nn.Module):
+    """MLP feature extractor producing positive local sigma(x) and l(x).
 
-    def __init__(self, input_dim: int, output_lengthscale_dim: int, model_cfg: Dict[str, Any]) -> None:
+    Expects ``feature_cfg`` to be the resolved sub-config that contains
+    ``architecture``, ``output_activation``, ``sigma_floor``, ``lengthscale_floor``
+    directly at the top level (e.g. the dict under
+    ``model_cfg["non_stationary_feature_extractor"]``).
+    """
+
+    def __init__(self, input_dim: int, output_lengthscale_dim: int, feature_cfg: Dict[str, Any]) -> None:
         super().__init__()
 
-        feature_cfg = model_cfg.get("feature_extractor", model_cfg)
-        
         self.sigma_floor = float(feature_cfg.get("sigma_floor", 1e-8))
         self.lengthscale_floor = float(feature_cfg.get("lengthscale_floor", 1e-8))
         self.output_lengthscale_dim = int(output_lengthscale_dim)
@@ -216,8 +221,104 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
         return covariance
 
 
+class DKLFeatureExtractor(torch.nn.Module):
+    """
+    Deep Kernel Learning feature extractor.
+
+    Maps input x from R^input_dim to R^output_dim (typically small, 2-5).
+    Used as phi(x) in k_DKL(x, x') = k_base(phi(x), phi(x')).
+
+    Expects ``feature_cfg`` to be the resolved sub-config (the dict under
+    ``model_cfg["dkl_feature_extractor"]``).
+    """
+
+    def __init__(self, input_dim: int, output_dim: int, feature_cfg: Dict[str, Any]) -> None:
+        super().__init__()
+
+        self.output_dim = int(output_dim)
+
+        # Warn if output_dim is too large for tractable GP
+        if self.output_dim > 10:
+            logger.warning(
+                f"DKL feature extractor output_dim={self.output_dim} is large; "
+                "GP may become numerically intractable. Consider reducing to < 10."
+            )
+
+        # Reuse the block-based MLP used elsewhere in the codebase.
+        # BatchNorm is controlled by config and should remain disabled for DKL.
+        self.backbone = MLPRegressor(
+            input_dim=input_dim,
+            output_dim=self.output_dim,
+            model_cfg=feature_cfg,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Transform input through feature extractor.
+
+        Parameters
+        ----------
+        x : Tensor (n, input_dim)
+            Input data.
+
+        Returns
+        -------
+        Tensor (n, output_dim)
+            Transformed features phi(x).
+        """
+        return self.backbone(x)
+
+
+class DKLKernel(gpytorch.kernels.Kernel):
+    """
+    Deep Kernel Learning kernel wrapper.
+
+    Applies feature extractor phi(.) to both inputs, then evaluates
+    base kernel on transformed features: k_DKL(x, x') = k_base(phi(x), phi(x')).
+    """
+
+    is_stationary = True
+    has_lengthscale = False
+
+    def __init__(
+        self,
+        base_kernel: ExponentialKernel,
+        feature_extractor: DKLFeatureExtractor,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.base_kernel = base_kernel
+        self.feature_extractor = feature_extractor
+
+    def forward(self, x1: torch.Tensor, x2: torch.Tensor, diag: bool = False, **kwargs) -> torch.Tensor:
+        """
+        Evaluate DKL kernel on raw inputs.
+
+        Parameters
+        ----------
+        x1 : Tensor (n, d_in)
+            First set of input points (raw input space).
+        x2 : Tensor (m, d_in)
+            Second set of input points (raw input space).
+        diag : bool
+            If True, return only diagonal of kernel matrix.
+
+        Returns
+        -------
+        Tensor
+            If diag=True: (n,) diagonal elements.
+            If diag=False: (n, m) full kernel matrix.
+        """
+        # Transform inputs to feature space
+        phi_x1 = self.feature_extractor(x1)  # (n, d_out)
+        phi_x2 = self.feature_extractor(x2)  # (m, d_out)
+
+        # Evaluate base kernel on transformed features
+        return self.base_kernel(phi_x1, phi_x2, diag=diag, **kwargs)
+
+
 class MLPGPModel(ExactGP):
-    """ExactGP model with MLP-parameterized nonstationary covariance."""
+    """ExactGP model supporting multiple architectures: "non_stationary" or "dkl"."""
 
     def __init__(
         self,
@@ -235,38 +336,65 @@ class MLPGPModel(ExactGP):
         super().__init__(X_train, y_train, likelihood)
 
         input_dim = int(X_train.shape[-1])
-        
-        # Extract configuration values
-        feature_cfg = model_cfg.get("feature_extractor", model_cfg)
-        kernel_cfg = model_cfg.get("kernel", model_cfg)
-        
-        lengthscale_mode = str(feature_cfg.get("lengthscale_mode", "per_dimension")).lower()
-        if lengthscale_mode not in {"scalar", "per_dimension"}:
-            raise ValueError("lengthscale_mode must be either 'scalar' or 'per_dimension'.")
-        
+
+        # Extract architecture_name
+        self.architecture_name = str(model_cfg.get("architecture_name", "non_stationary")).lower()
+        if self.architecture_name not in {"non_stationary", "dkl"}:
+            raise ValueError(f"Unknown architecture: {self.architecture_name}. Must be 'non_stationary' or 'dkl'.")
+
+        # Common setup shared by all architectures
         trend_degree = int(_require_config_value(model_cfg, "trend_degree", "MLPGP model config"))
         kernel_type = str(kernel_cfg.get("type", kernel_cfg.get("kernel_type", "exponential"))).lower()
         if kernel_type != "exponential":
             raise ValueError("Only the exponential kernel is supported in this MLPGP implementation.")
-        
-        local_lengthscale_dim = 1 if lengthscale_mode == "scalar" else input_dim
-
-        self.feature_extractor = MLPGPFeatureExtractor(
-            input_dim=input_dim,
-            output_lengthscale_dim=local_lengthscale_dim,
-            model_cfg=model_cfg,
-        )
-        self.mean_module = PolynomialTrendMean(input_dim=input_dim, degree=trend_degree)
-
-        initial_theta = _require_config_value(kernel_cfg, "theta", "MLPGP kernel config")
-        initial_p = _require_config_value(kernel_cfg, "power_exponent", "MLPGP kernel config")
 
         self.likelihood.initialize(noise=initial_likelihood_noise)
+        self.mean_module = PolynomialTrendMean(input_dim=input_dim, degree=trend_degree)
+
+        # Architecture-specific setup builds the kernel and logs its initial state.
+        if self.architecture_name == "non_stationary":
+            self._setup_nonstationary(input_dim, model_cfg)
+        elif self.architecture_name == "dkl":
+            self._setup_dkl(input_dim, model_cfg)
+
+        logger.info(
+            "MLPGPModel initialized\n"
+            f"  architecture_name={self.architecture_name}\n"
+            f"  trend_degree={trend_degree}\n"
+            f"  likelihood_noise={float(self.likelihood.noise.item()):.6e}"
+        )
+
+    def _setup_nonstationary(self, input_dim: int, model_cfg: Dict) -> None:
+        """Build the non-stationary covariance: K(x,x') = sigma(x) sigma(x') R0(z(x), z(x'))."""
+        feature_cfg = model_cfg.get(
+            "non_stationary_feature_extractor",
+            model_cfg.get("feature_extractor", {}),
+        )
+        if not feature_cfg:
+            raise KeyError(
+                "Missing 'non_stationary_feature_extractor' section in MLPGP model config."
+            )
+
+        lengthscale_mode = str(feature_cfg.get("lengthscale_mode", "per_dimension")).lower()
+        if lengthscale_mode not in {"scalar", "per_dimension"}:
+            raise ValueError("lengthscale_mode must be either 'scalar' or 'per_dimension'.")
+
+        local_lengthscale_dim = 1 if lengthscale_mode == "scalar" else input_dim
+
+        kernel_cfg = model_cfg.get("kernel", model_cfg)
+        initial_theta = _require_config_value(kernel_cfg, "theta", "MLPGP kernel config")
+        initial_p = _require_config_value(kernel_cfg, "power_exponent", "MLPGP kernel config")
 
         base_kernel = ExponentialKernel(
             input_dim=input_dim,
             initial_theta=initial_theta,
             initial_power_exponent=initial_p,
+        )
+
+        self.feature_extractor = NonstationaryFeatureExtractor(
+            input_dim=input_dim,
+            output_lengthscale_dim=local_lengthscale_dim,
+            feature_cfg=feature_cfg,
         )
 
         nonstationary_kernel = NonstationaryExponentialKernel(
@@ -275,27 +403,89 @@ class MLPGPModel(ExactGP):
             min_sigma=float(feature_cfg.get("sigma_floor", 1e-8)),
         )
         nonstationary_kernel.set_parameterizer(self._predict_local_parameters)
-
-        # No ScaleKernel wrapping — use nonstationary kernel directly
-        # All variance scaling is handled internally by sigma(x)
         self.covar_module = nonstationary_kernel
 
-        theta_values = base_kernel.theta.flatten().detach().cpu().tolist()
-        power_values = base_kernel.power_exponent.flatten().detach().cpu().tolist()
-        logger.info(
-            "MLPGPModel initialized\n"
-            f"  lengthscale_mode={lengthscale_mode}\n"
-            f"  trend_degree={trend_degree}\n"
-            f"  likelihood_noise={float(self.likelihood.noise.item()):.6e}\n"
-            f"  {_format_param_block('theta', theta_values)}\n"
-            f"  {_format_param_block('power_exponent', power_values)}"
+        logger.info(f"Non-stationary kernel ready (lengthscale_mode={lengthscale_mode})")
+
+    def _setup_dkl(self, input_dim: int, model_cfg: Dict) -> None:
+        """Build the DKL covariance: K(x,x') = tau^2 * R0(phi(x), phi(x')).
+
+        The amplitude ``tau^2`` is exposed as a learnable ``ScaleKernel`` outputscale,
+        mirroring the standard GP and giving the model a learnable prior variance.
+        """
+        dkl_cfg = model_cfg.get("dkl_feature_extractor", model_cfg.get("dkl", {}))
+        if not dkl_cfg:
+            raise KeyError("Missing 'dkl_feature_extractor' section in MLPGP model config.")
+        output_dim = int(dkl_cfg.get("output_width", dkl_cfg.get("output_dim", 3)))
+
+        kernel_cfg = model_cfg.get("kernel", model_cfg)
+        initial_theta = _require_config_value(kernel_cfg, "theta", "DKL kernel config")
+        initial_p = _require_config_value(kernel_cfg, "power_exponent", "DKL kernel config")
+        initial_tau2 = float(kernel_cfg.get("tau2", 1.0))
+
+        # theta lives in the feature space; expand a scalar / take first element of a vector.
+        if isinstance(initial_theta, (int, float)):
+            theta_value = float(initial_theta)
+        else:
+            theta_value = float(initial_theta[0])
+        dkl_theta = [theta_value] * output_dim
+
+        # Feature extractor maps raw input -> small feature space used by the GP kernel.
+        self.dkl_feature_extractor = DKLFeatureExtractor(
+            input_dim=input_dim,
+            output_dim=output_dim,
+            feature_cfg=dkl_cfg,
         )
 
+        # Base kernel is sized to the feature space, not the raw input.
+        dkl_base_kernel = ExponentialKernel(
+            input_dim=output_dim,
+            initial_theta=dkl_theta,
+            initial_power_exponent=initial_p,
+        )
+
+        dkl_kernel = DKLKernel(
+            base_kernel=dkl_base_kernel,
+            feature_extractor=self.dkl_feature_extractor,
+        )
+        # ScaleKernel adds the learnable outputscale tau^2 (matches GPRegressionModel).
+        self.covar_module = ScaleKernel(dkl_kernel)
+        self.covar_module.outputscale = initial_tau2
+
     def _predict_local_parameters(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Helper for nonstationary architecture."""
+        if self.architecture_name != "non_stationary":
+            raise RuntimeError("_predict_local_parameters only valid for non_stationary architecture.")
         sigma_x, lengthscale_x = self.feature_extractor(x)
         if lengthscale_x.shape[-1] == 1 and x.shape[-1] > 1:
             raise ValueError("Scalar lengthscale output is not compatible with multi-dimensional input.")
         return sigma_x, lengthscale_x
+
+    def feature_extractor_module(self) -> torch.nn.Module:
+        """Return the active feature-extractor MLP for the configured architecture.
+
+        Centralizing this lookup lets the trainer treat both architectures uniformly,
+        without branching on ``architecture_name`` or knowing the attribute name.
+        """
+        if self.architecture_name == "dkl":
+            return self.dkl_feature_extractor
+        return self.feature_extractor
+
+    def feature_extractor_parameters(self) -> Iterator[torch.nn.Parameter]:
+        """Iterate over feature-extractor parameters (MLP weights/biases)."""
+        return self.feature_extractor_module().parameters()
+
+    def gp_parameters(self) -> Iterator[torch.nn.Parameter]:
+        """Iterate over GP-side parameters (kernel hyperparams, mean trend, likelihood).
+
+        Defined as ``self.parameters()`` minus the feature-extractor parameters,
+        so any future kernel parameter (e.g. ``raw_outputscale`` of a ScaleKernel)
+        is picked up automatically without changing the trainer.
+        """
+        feature_param_ids = {id(p) for p in self.feature_extractor_parameters()}
+        for param in self.parameters():
+            if id(param) not in feature_param_ids:
+                yield param
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:
         mean_x = self.mean_module(x)

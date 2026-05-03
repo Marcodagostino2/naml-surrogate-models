@@ -191,18 +191,6 @@ class GPRegressionModel(ExactGP):
 
         self.covar_module = ScaleKernel(base_kernel)
         self.covar_module.outputscale = initial_tau2
-    
-
-        theta_values = base_kernel.theta.flatten().detach().cpu().tolist()
-        power_values = base_kernel.power_exponent.flatten().detach().cpu().tolist()
-        logger.info(
-            "GPRegressionModel initialized\n"
-            f"  trend_degree={trend_degree}\n"
-            f"  tau2={float(self.covar_module.outputscale.item()):.6f}\n"
-            f"  likelihood_noise={float(self.likelihood.noise.item()):.6e}\n"
-            f"  {_format_param_block('theta', theta_values)}\n"
-            f"  {_format_param_block('power_exponent', power_values)}"
-        )
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:
         mean_x = self.mean_module(x)

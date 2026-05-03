@@ -11,14 +11,27 @@
 #   - theta
 #   - power_exponent
 
-feature_extractor:
+architecture_name: "non_stationary"   # "dkl" for Deep Kernel Learning, "non_stationary" 
+
+dkl_feature_extractor:
+  name: "dkl"
   architecture:
-    - layers: [256, 256, 256, 256]
-      activation: "relu"
+    - layers: [256, 256, 256, 256, 256, 512]
+      activation: "tanh"
+  dropout: 0.0
+  batch_norm: false
+  output_width: 9
+  output_activation: "identity"
+
+non_stationary_feature_extractor:
+  name: "non_stationary"
+  architecture:
     - layers: [64, 64]
       activation: "tanh"
-    - layers: [128, 128, 128]
+    - layers: [64]
       activation: "relu"
+    - layers: [64, 64, 64]
+      activation: "tanh"
   dropout: 0.0
   batch_norm: false
   output_activation: "softplus"
@@ -28,8 +41,11 @@ feature_extractor:
 
 kernel:
   type: "exponential"
-  theta: 0.02
-  power_exponent: 2.0
-  likelihood_noise: 1e-1
+  theta: 0.01
+  power_exponent: 1.99
+  likelihood_noise: 1e-3
+  # tau2 is only used by the DKL architecture (ScaleKernel outputscale).
+  # The non_stationary kernel encodes amplitude through sigma(x) and ignores this value.
+  tau2: 1.0
 
 trend_degree: 1

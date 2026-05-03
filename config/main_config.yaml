@@ -16,7 +16,7 @@ precision: "float32"
 dataset: "HYDDB_v2"
 
 # Model selection: "mlp", "gp", "mlpgp", or "all"
-model_to_train: "all"
+model_to_train: "mlpgp"
 
 # Execution mode: "training", "test", or "training+test"
 run_mode: "training"

@@ -122,6 +122,32 @@ def run_optimization(
         f"HPO complete | best={study.best_value:.6f} | params={study.best_params} | duration={duration:.0f}s"
     )
 
+    # Log best trial metrics
+    best_trial = study.best_trial
+    best_val_metrics = best_trial.user_attrs.get("val_metrics", {})
+    best_test_metrics = best_trial.user_attrs.get("test_metrics", {})
+    if best_val_metrics or best_test_metrics:
+        logger.info("=" * 70)
+        logger.info(f"BEST TRIAL METRICS (Trial #{best_trial.number})")
+        logger.info("=" * 70)
+        if best_val_metrics:
+            logger.info(
+                f"VAL: MAE={best_val_metrics.get('mae', 'N/A'):.6f}, "
+                f"MSE={best_val_metrics.get('mse', 'N/A'):.6f}, "
+                f"RMSE={best_val_metrics.get('rmse', 'N/A'):.6f}, "
+                f"R²={best_val_metrics.get('r2', 'N/A'):.6f}, "
+                f"MAPE={best_val_metrics.get('mape', 'N/A'):.2f}%"
+            )
+        if best_test_metrics:
+            logger.info(
+                f"TEST: MAE={best_test_metrics.get('mae', 'N/A'):.6f}, "
+                f"MSE={best_test_metrics.get('mse', 'N/A'):.6f}, "
+                f"RMSE={best_test_metrics.get('rmse', 'N/A'):.6f}, "
+                f"R²={best_test_metrics.get('r2', 'N/A'):.6f}, "
+                f"MAPE={best_test_metrics.get('mape', 'N/A'):.2f}%"
+            )
+        logger.info("=" * 70)
+
     output_resolver = OutputPathResolver(
         dataset_name=dataset_name,
         run_type=RunType.OPTIMIZATION,

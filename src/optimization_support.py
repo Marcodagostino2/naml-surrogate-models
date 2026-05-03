@@ -57,15 +57,59 @@ _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("mlpgp", "block3_hidden_size"): "feature_extractor",
     ("mlpgp", "block3_activation"): "feature_extractor",
     ("mlpgp", "dropout"): "feature_extractor",
+    ("mlpgp", "batch_norm"): "feature_extractor",
+    ("mlpgp", "output_activation"): "feature_extractor",
+    ("mlpgp", "output_width"): "feature_extractor",
+    ("mlpgp", "sigma_floor"): "feature_extractor",
+    ("mlpgp", "lengthscale_floor"): "feature_extractor",
+    ("mlpgp", "lengthscale_mode"): "feature_extractor",
+    ("mlpgp", "theta"): "kernel",
+    ("mlpgp", "power_exponent"): "kernel",
     ("mlpgp", "outputscale_init"): "kernel",
+    ("mlpgp", "tau2"): "kernel",
     ("mlpgp", "lengthscale_init"): "kernel",
     ("mlpgp", "noise_var"): "kernel",
 }
 
 _KERNEL_PARAM_MAP: Dict[str, str] = {
     "outputscale_init": "tau2",
+    "tau2": "tau2",
     "lengthscale_init": "theta",
+    "noise_var": "likelihood_noise",
+    "theta": "theta",
+    "power_exponent": "power_exponent",
 }
+
+
+def _resolve_architecture_name(opt_cfg: Dict[str, Any], base_model_cfg: Dict[str, Any]) -> str:
+    """Resolve the active MLPGP architecture name."""
+    architecture_name = opt_cfg.get("architecture_name", base_model_cfg.get("architecture_name", "non_stationary"))
+    return str(architecture_name).lower()
+
+
+def _resolve_active_search_space(
+    opt_cfg: Dict[str, Any],
+    base_model_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Select the active search space for the current architecture."""
+    architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
+
+    search_spaces = opt_cfg.get("search_spaces")
+    if isinstance(search_spaces, dict):
+        if architecture_name in search_spaces:
+            return search_spaces[architecture_name]
+
+    search_space = opt_cfg.get("search_space", {})
+    if isinstance(search_space, dict):
+        if "model" in search_space or "training" in search_space:
+            return search_space
+        if architecture_name in search_space and isinstance(search_space[architecture_name], dict):
+            return search_space[architecture_name]
+
+    raise KeyError(
+        f"No search space found for architecture '{architecture_name}'. "
+        "Expected opt_cfg['search_spaces'][architecture_name] or a flat opt_cfg['search_space']."
+    )
 
 
 def suggest_from_config(trial: optuna.Trial, search_space: Dict[str, Any], target: str) -> Dict[str, Any]:
@@ -217,7 +261,7 @@ def _build_block_architecture(params: Dict[str, Any]) -> List[Dict[str, Any]]:
     return architecture
 
 
-def _apply_hp(model_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_hp(model_name: str, params: Dict[str, Any], architecture_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Translate sampled hyperparameters into a config patch dict.
 
@@ -259,18 +303,29 @@ def _apply_hp(model_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         if arch:
             patch["architecture"] = arch
 
-    if dropout_params := scoped.get("dropout"):
-        patch["dropout"] = float(dropout_params["dropout"])
+    if model_name == "mlpgp" and scoped.get("feature_extractor"):
+        fe_params = scoped["feature_extractor"]
+        feature_patch: Dict[str, Any] = {}
 
-    if fe_params := scoped.get("feature_extractor"):
-        fe: Dict[str, Any] = {}
         arch = _build_block_architecture(fe_params)
         if arch:
-            fe["architecture"] = arch
-        if "dropout" in fe_params:
-            fe["dropout"] = float(fe_params["dropout"])
-        if fe:
-            patch["feature_extractor"] = fe
+            feature_patch["architecture"] = arch
+
+        for key in ["dropout", "batch_norm", "output_activation", "output_width", "sigma_floor", "lengthscale_floor", "lengthscale_mode"]:
+            if key in fe_params:
+                value = fe_params[key]
+                if key in {"dropout", "sigma_floor", "lengthscale_floor"}:
+                    value = float(value)
+                elif key == "batch_norm":
+                    value = bool(value)
+                elif key == "output_width":
+                    value = int(value)
+                else:
+                    value = str(value)
+                feature_patch[key] = value
+
+        if feature_patch:
+            patch["dkl_feature_extractor" if architecture_name == "dkl" else "non_stationary_feature_extractor"] = feature_patch
 
     if kernel_params := scoped.get("kernel"):
         kernel = {
@@ -312,12 +367,15 @@ def make_objective(
     device: torch.device,
 ) -> Callable[[optuna.Trial], float]:
     """Create an Optuna objective bound to the shared training pipeline."""
+    active_search_space = _resolve_active_search_space(opt_cfg, base_model_cfg)
+    architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
 
     def objective(trial: optuna.Trial) -> float:
-        model_params = suggest_from_config(trial, opt_cfg["search_space"], "model")
-        training_params = suggest_from_config(trial, opt_cfg["search_space"], "training")
+        model_params = suggest_from_config(trial, active_search_space, "model")
+        training_params = suggest_from_config(trial, active_search_space, "training")
 
-        model_cfg = overlay(base_model_cfg, _apply_hp(model_name, model_params))
+        model_cfg = overlay(base_model_cfg, {"architecture_name": architecture_name})
+        model_cfg = overlay(model_cfg, _apply_hp(model_name, model_params, architecture_name=architecture_name))
         training_cfg = overlay(base_training_cfg, training_params)
         training_cfg = overlay(training_cfg, opt_cfg.get("training_overrides", {}))
 
@@ -398,6 +456,8 @@ def save_optimization_results(
     model_name: str,
 ) -> None:
     """Persist trials, best params and the optimized configs."""
+    active_search_space = _resolve_active_search_space(opt_cfg, base_model_cfg)
+    architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
     run_dir = output_resolver.root
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -428,9 +488,10 @@ def save_optimization_results(
             json.dump(study.best_params, f, indent=2)
         logger.debug(f"Best params saved to {best_params_file}")
 
-        model_params = _extract_best_params(study.best_params, opt_cfg["search_space"], "model")
-        training_params = _extract_best_params(study.best_params, opt_cfg["search_space"], "training")
-        best_model_cfg = overlay(base_model_cfg, _apply_hp(model_name, model_params))
+        model_params = _extract_best_params(study.best_params, active_search_space, "model")
+        training_params = _extract_best_params(study.best_params, active_search_space, "training")
+        best_model_cfg = overlay(base_model_cfg, {"architecture_name": architecture_name})
+        best_model_cfg = overlay(best_model_cfg, _apply_hp(model_name, model_params, architecture_name=architecture_name))
         best_training_cfg = overlay(overlay(base_training_cfg, training_params), opt_cfg.get("training_overrides", {}))
 
         config_dir = output_resolver.config_dir
