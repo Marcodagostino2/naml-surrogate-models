@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import copy
 import time
+import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import gpytorch
 import torch
+from gpytorch.utils.warnings import GPInputWarning
 from torch.utils.data import DataLoader
 
 from src.models import GPRegressionModel, MLPRegressor, MLPGPModel
@@ -35,7 +37,8 @@ def _evaluate_regression_model(model: Any, X: torch.Tensor, y: torch.Tensor) -> 
     likelihood = getattr(model, "likelihood", None)
     if likelihood is not None:
         likelihood.eval()
-    with torch.no_grad():
+    with torch.no_grad(), warnings.catch_warnings():
+        warnings.simplefilter("ignore", GPInputWarning)
         output = model(X)
         prediction = _to_prediction_tensor(output)
         target = y.view_as(prediction)

@@ -400,10 +400,16 @@ def _run_optimization_mode(
             best_model_cfg = load_yaml(output_resolver.config_dir / "model" / f"{model_name}_config.yaml")
             best_training_cfg = load_yaml(output_resolver.config_dir / "training" / f"training_{model_name}_config.yaml")
 
-            n_retrain_runs = _run_count_for_model(analysis_cfg, "optimization_runs_per_model", model_name, default=1)
+            n_retrain_runs = _run_count_for_model(
+                analysis_cfg,
+                "optimization_runs_per_model",
+                model_name,
+                default=_run_count_for_model(analysis_cfg, "runs_per_model", model_name, default=1),
+            )
             for run_index in range(n_retrain_runs):
                 retrain_seed = seed + run_index
                 set_global_seed(retrain_seed)
+                retrain_data_bundle = _prepare_data_bundle(dataset_cfg, train_ratio, validation_train_ratio, retrain_seed)
                 retrain_kernel_init = _kernel_init_for_model(analysis_cfg, model_name, retrain_seed)
                 retrain_model_cfg = _set_kernel_seeded_values(best_model_cfg, retrain_kernel_init)
                 retrain_training_cfg = deepcopy(best_training_cfg)
@@ -414,7 +420,7 @@ def _run_optimization_mode(
                     split_tag=split_tag,
                     run_tag=f"best_seed_{retrain_seed}_run_{run_index}",
                     model_name=model_name,
-                    data_bundle=data_bundle,
+                    data_bundle=retrain_data_bundle,
                     dataset_cfg=dataset_cfg,
                     model_cfg=retrain_model_cfg,
                     training_cfg=retrain_training_cfg,
