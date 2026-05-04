@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Optional, Tuple
 import warnings
 
-import gpytorch
 import numpy as np
 import torch
 from gpytorch.utils.warnings import GPInputWarning
@@ -21,6 +20,22 @@ from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
 from src.utils import resolve_device, setup_logger
 
 logger = setup_logger(__name__)
+
+
+def _validate_input_matrix(X: np.ndarray) -> np.ndarray:
+    """Validate and normalize a feature matrix for prediction."""
+
+    X_array = np.asarray(X)
+    if X_array.ndim != 2:
+        raise ValueError(f"Expected a 2D feature matrix, got shape {X_array.shape}")
+    return X_array
+
+
+def _as_column_matrix(values: np.ndarray) -> np.ndarray:
+    """Return a 2D column matrix for scalar-output predictions."""
+
+    array = np.asarray(values)
+    return array.reshape(-1, 1) if array.ndim == 1 else array
 
 
 class Predictor:
@@ -77,7 +92,7 @@ class Predictor:
         np.ndarray
             Predictions (n, n_outputs).
         """
-        X_t = torch.from_numpy(X).to(self.device).to(torch.get_default_dtype())
+        X_t = torch.from_numpy(_validate_input_matrix(X)).to(self.device).to(torch.get_default_dtype())
 
         with torch.no_grad():
             y_pred_normalized = self.model(X_t).cpu().numpy()
@@ -107,18 +122,15 @@ class Predictor:
         Returns
         -------
         Tuple[np.ndarray, np.ndarray]
-            (mean, std) of predictions. Both shape (n, n_outputs).
+            (mean, std) of predictions. Each output is shaped as (n, 1) for scalar targets.
         """
-        X_t = torch.from_numpy(X).to(self.device).to(torch.get_default_dtype())
+        X_t = torch.from_numpy(_validate_input_matrix(X)).to(self.device).to(torch.get_default_dtype())
 
         with torch.no_grad(), warnings.catch_warnings():
             warnings.simplefilter("ignore", GPInputWarning)
             posterior = self.model.likelihood(self.model(X_t))
-            mean_normalized = posterior.mean.cpu().numpy()
-            std_normalized = posterior.stddev.cpu().numpy()
-
-        mean_normalized = np.asarray(mean_normalized).reshape(-1)
-        std_normalized = np.asarray(std_normalized).reshape(-1)
+            mean_normalized = _as_column_matrix(posterior.mean.cpu().numpy())
+            std_normalized = _as_column_matrix(posterior.stddev.cpu().numpy())
 
         if denormalize:
             mean = mean_normalized * self.target_scaler_std + self.target_scaler_mean
@@ -128,7 +140,7 @@ class Predictor:
             mean = mean_normalized
             std = std_normalized
 
-        return np.asarray(mean).reshape(-1, 1) if np.asarray(mean).ndim == 1 else np.asarray(mean), np.asarray(std).reshape(-1, 1) if np.asarray(std).ndim == 1 else np.asarray(std)
+        return np.asarray(mean), np.asarray(std)
 
     def predict(
         self,

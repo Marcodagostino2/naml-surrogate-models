@@ -3,25 +3,49 @@
 # ============================================================================
 # Training hyperparameters specific to the standalone GP using GPyTorch.
 #
-# The GP is trained by maximizing the exact marginal log-likelihood.
+# The GP is trained by maximizing the exact marginal log-likelihood (EMLL).
+# Note: "epoch" terminology in shared keys (warmup_epochs, *_patience) refers
+# to optimization steps for this trainer, since GP training is full-batch.
 
-# Optimizer: "adam", "adamw", "sgd"
+# Optimizer: "adam", "adamw", "sgd", "lbfgs"
 optimizer: "adamw"
 
 # Learning rate for EMLL optimization
 learning_rate: 1.0e-2
 
-# Number of optimization steps (kept large; training stops early when tolerances are met)
+# Number of optimization steps (kept large; training stops early when
+# convergence criteria are met)
 n_training_steps: 700
 
-# Stop policy: train residual checked more frequently than validation
-train_residual_check_interval: 1
-train_residual_tol: 1.0e-4
+# ---- Stop policy ----------------------------------------------------------
+# Two criteria are tracked; training stops when EITHER fires (logical OR):
+#
+# 1) Train-loss convergence (scipy.optimize.least_squares-style):
+#    stop when |L_{t-1} - L_t| <= abs_tol + rel_tol * |L_{t-1}|
+#    holds for `train_patience` consecutive steps.
+#
+# 2) Validation patience (Prechelt 1998, "Early Stopping - But When?"):
+#    an improvement counts only if best_val_loss - val_loss
+#                                  > abs_tol + rel_tol * |best_val_loss|.
+#    Stop after `val_patience` consecutive non-improving steps.
+#
+# Tighter `train_patience` than the MLP because GP loss curves are smooth
+# (full-batch EMLL), so a short streak is already meaningful.
+rel_tol: 1.0e-4
+abs_tol: 1.0e-6
+train_patience: 10
+val_patience: 30
+warmup_epochs: 20        # named "epochs" for cross-trainer parity; here = steps
+
+# ---- Logging cadence ------------------------------------------------------
+# How often expensive metric dicts (R², MAE, RMSE) are recomputed for logging.
+# Per-step val_loss for the stopping criterion is computed every step
+# regardless of these intervals.
+train_metrics_log_interval: 10
 validation_check_interval: 10
-validation_residual_tol: 1.0e-4
 
 # Device: "cuda", "cpu", "auto"
-device: "cuda"
+device: "auto"
 
 # Cholesky jitter for numerical stability (GPyTorch psd_safe_cholesky)
 cholesky_jitter_float32: 1.0e-6

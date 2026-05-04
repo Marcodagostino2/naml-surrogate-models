@@ -1,5 +1,5 @@
 study:
-  n_trials: 50
+  n_trials: 20
   timeout: 5400
   direction: minimize
   metric: val_rmse
@@ -11,7 +11,7 @@ study:
   log_every_n_trials: 5
 
 training_overrides:
-  n_training_steps: 500
+  n_training_steps: 2000
 
 architecture_name: "non_stationary"  # options: "non_stationary" | "dkl"
 

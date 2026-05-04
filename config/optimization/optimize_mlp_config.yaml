@@ -15,7 +15,7 @@ study:
   reduction_factor: 3  # reduction factor for Hyperband (how aggressively to prune trials)
 
 training_overrides:
-  n_epochs: 500
+  n_epochs: 2000
 
 search_space:
   model:

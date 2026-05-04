@@ -2,28 +2,41 @@
 # Hybrid MLP+Kriging Training Configuration
 # ============================================================================
 # Joint training settings for the end-to-end MLP+Kriging hybrid model.
+# MLP and GP kernel parameters are optimized jointly via EMLL.
 #
-# The model can use:
-# MLP and GP kernel parameters are optimized jointly.
+# Note: "epoch" terminology in shared keys (warmup_epochs, *_patience) refers
+# to optimization steps for this trainer, since training is full-batch.
 
 # Optimizer: "adam", "sgd", "adamw"
 optimizer: "adamw"
 
-# Learning rates (can be different for MLP and GP components)
+# Learning rates (different for MLP and GP components — feature extractor
+# typically wants a faster LR than kernel hyperparameters)
 mlp_learning_rate: 1.0e-2
 gp_learning_rate: 1.0e-5
 
-# Weight_decay for MLP optimizer
+# Weight decay for MLP feature-extractor parameters (GP params get 0)
 mlp_weight_decay: 1.0e-6
 
-# Number of joint training steps (kept large; training stops early when tolerances are met)
+# Number of joint training steps (kept large; training stops early when
+# convergence criteria are met)
 n_training_steps: 700
 
-# Stop policy: train residual checked more frequently than validation
-train_residual_check_interval: 1
-train_residual_tol: 1.0e-4
+# ---- Stop policy ----------------------------------------------------------
+# Same two-criterion (train-tol OR val-patience) logic as the GP trainer.
+# Slightly more permissive `val_patience` than the pure GP because the joint
+# loss landscape is more complex — the MLP feature extractor and GP kernel
+# can take longer to settle into a coherent minimum, and val loss can plateau
+# transiently while the two components rebalance.
+rel_tol: 1.0e-4
+abs_tol: 1.0e-6
+train_patience: 3
+val_patience: 50
+warmup_epochs: 30        # named "epochs" for cross-trainer parity; here = steps
+
+# ---- Logging cadence ------------------------------------------------------
+train_metrics_log_interval: 10
 validation_check_interval: 10
-validation_residual_tol: 1.0e-4
 
 # Device: "cuda", "cpu", "auto"
 device: "auto"

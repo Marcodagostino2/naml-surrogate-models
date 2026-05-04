@@ -21,6 +21,22 @@ from src.utils import setup_logger
 
 logger = setup_logger(__name__)
 
+# ============================================================================
+# Module Constants: Data Preprocessing Configuration
+# ============================================================================
+
+# Default train/val/test split ratios. Must sum to 1.0.
+DEFAULT_TRAIN_RATIO = 0.70
+DEFAULT_VAL_RATIO = 0.15
+DEFAULT_TEST_RATIO = 0.15
+
+# Epsilon for numerical stability during normalization.
+# Used to prevent division by zero when std is very small.
+NORMALIZATION_EPSILON = 1e-8
+
+# Tolerance for validating that split ratios sum to 1.0.
+RATIO_VALIDATION_TOLERANCE = 1e-6
+
 
 class DataBundle:
     """
@@ -149,9 +165,9 @@ def load_and_preprocess_data(
     dropna: bool = True,
     normalize_inputs: bool = True,
     normalize_targets: bool = True,
-    train_ratio: float = 0.70,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.15,
+    train_ratio: float = DEFAULT_TRAIN_RATIO,
+    val_ratio: float = DEFAULT_VAL_RATIO,
+    test_ratio: float = DEFAULT_TEST_RATIO,
     random_seed: int = 42,
     default_type: str = "float32",
     input_display_names: list[str] | None = None,
@@ -197,7 +213,7 @@ def load_and_preprocess_data(
     ValueError
         If specified columns are missing from CSV.
     """
-    assert abs((train_ratio + val_ratio + test_ratio) - 1.0) < 1e-6, \
+    assert abs((train_ratio + val_ratio + test_ratio) - 1.0) < RATIO_VALIDATION_TOLERANCE, \
         f"Ratios must sum to 1.0, got {train_ratio + val_ratio + test_ratio}"
 
     csv_path = Path(csv_path)
@@ -228,7 +244,7 @@ def load_and_preprocess_data(
     if normalize_inputs:
         input_mean = X.mean(axis=0, keepdims=False)
         input_std = X.std(axis=0, keepdims=False)
-        input_std = np.where(input_std < 1e-8, 1.0, input_std)
+        input_std = np.where(input_std < NORMALIZATION_EPSILON, 1.0, input_std)
         X = (X - input_mean) / input_std
     else:
         input_mean = np.zeros(X.shape[1])
@@ -237,7 +253,7 @@ def load_and_preprocess_data(
     if normalize_targets:
         target_mean = y.mean(axis=0, keepdims=False)
         target_std = y.std(axis=0, keepdims=False)
-        target_std = np.where(target_std < 1e-8, 1.0, target_std)
+        target_std = np.where(target_std < NORMALIZATION_EPSILON, 1.0, target_std)
         y = (y - target_mean) / target_std
     else:
         target_mean = np.zeros(y.shape[1])

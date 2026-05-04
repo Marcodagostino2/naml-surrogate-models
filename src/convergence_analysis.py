@@ -1,8 +1,8 @@
-"""Convergence analysis for MLP, GP, and MLPGP.
+"""Convergence analysis implementation moved into package namespace.
 
-Supports two outer modes:
-- analysis: repeated single runs across split/seed/kernel-initialization combinations
-- optimization: one optimization study per split, followed by a best-model retrain
+This is a copy of the previous top-level `convergence_analysis.py` implementation
+so package-level imports can be used and the top-level script can be removed
+after verification.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
-import optuna
 import pandas as pd
 
 from src.data import DataBundle, load_and_preprocess_data
@@ -24,7 +23,7 @@ from src.optimization_support import build_pruner, build_sampler, generate_optim
 from src.pipeline import train_model
 from src.utils import OutputPathResolver, RunType, load_run_configs, load_yaml, set_global_seed, setup_logger, setup_torch_dtype
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_SEQUENCE: Sequence[str] = ("mlp", "gp", "mlpgp")
 ANALYSIS_ROOT_NAME = "convergence_analysis"
 
@@ -334,6 +333,11 @@ def _run_optimization_mode(
     training_cfg_map: Dict[str, Dict[str, Any]],
     opt_cfg_map: Dict[str, Dict[str, Any]],
 ) -> tuple[pd.DataFrame, List[Dict[str, Any]], Path]:
+    try:
+        import optuna
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ModuleNotFoundError("optuna is required for convergence optimization mode.") from exc
+
     split_grid = _build_split_grid(analysis_cfg.get("split_percentages", [0.7]))
     validation_train_ratio = float(analysis_cfg.get("validation_train_ratio", 0.21428571428571427))
     global_seed = int(analysis_cfg.get("global_seed", 31))
@@ -568,7 +572,7 @@ def _summarize_and_save_outputs(metrics_df: pd.DataFrame, histories: List[Dict[s
             continue
         logger.info(f"\n{model_name.upper()} Results:")
         logger.info("-" * 70)
-        agg = model_data.groupby("train_split")[["r2", "rmse", "mae", "mape"]].agg(["mean", "std"]).reset_index()
+        agg = model_data.groupby("train_split")[ ["r2", "rmse", "mae", "mape"]].agg(["mean", "std"]).reset_index()
         flat_columns = ["train_split"]
         for metric in ["r2", "rmse", "mae", "mape"]:
             flat_columns.extend([f"{metric}_mean", f"{metric}_std"])
@@ -624,22 +628,3 @@ def run_analysis(config_path: Path) -> None:
 
     _summarize_and_save_outputs(metrics_df, histories, analysis_root, title_prefix)
     print(f"Done. Outputs written under {analysis_root}.")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Convergence analysis for MLP, GP, MLPGP.")
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="config/convergence/convergence_config.yaml",
-        help="Path to analysis config YAML.",
-    )
-    return parser.parse_args()
-
-
-if __name__ == "__main__":
-    args = parse_args()
-    config_path = Path(args.config)
-    if not config_path.is_absolute():
-        config_path = PROJECT_ROOT / config_path
-    run_analysis(config_path)

@@ -21,7 +21,7 @@ from gpytorch.kernels import ScaleKernel
 from gpytorch.means import Mean
 from gpytorch.models import ExactGP
 
-from src.models.gp_utils import build_kernel
+from src.models.gp_utils import build_kernel, extract_kernel_name, extract_required_config_value
 from src.utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -46,12 +46,6 @@ def _build_gaussian_likelihood(initial_noise: float) -> gpytorch.likelihoods.Gau
     likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=GreaterThan(1e-10))
     likelihood.initialize(noise=float(initial_noise))
     return likelihood
-
-
-def _require_config_value(config: Dict, key: str, context: str):
-    if key not in config:
-        raise KeyError(f"Missing required config key '{key}' in {context}.")
-    return config[key]
 
 
 class PolynomialTrendMean(Mean):
@@ -103,7 +97,7 @@ class GPRegressionModel(ExactGP):
         likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
     ) -> None:
         kernel_cfg = model_cfg.get("kernel", model_cfg)
-        initial_likelihood_noise = float(_require_config_value(kernel_cfg, "likelihood_noise", "GP kernel config"))
+        initial_likelihood_noise = float(extract_required_config_value(kernel_cfg, "likelihood_noise", "GP kernel config"))
 
         if likelihood is None:
             likelihood = _build_gaussian_likelihood(initial_likelihood_noise)
@@ -111,31 +105,23 @@ class GPRegressionModel(ExactGP):
         super().__init__(X_train, y_train, likelihood)
 
         kernel_cfg = model_cfg.get("kernel", model_cfg)
-        trend_degree = int(_require_config_value(model_cfg, "trend_degree", "GP model config"))
+        trend_degree = int(extract_required_config_value(model_cfg, "trend_degree", "GP model config"))
         input_dim = int(X_train.shape[-1])
         self.mean_module = PolynomialTrendMean(input_dim=input_dim, degree=trend_degree)
 
         # Extract kernel name; support both nested dict (old format) and direct string (new format)
-        if isinstance(kernel_cfg, dict):
-            kernel_name = str(kernel_cfg.get("type", kernel_cfg.get("kernel", "exponential"))).lower()
-        else:
-            kernel_name = str(kernel_cfg).lower()
+        kernel_name = extract_kernel_name(kernel_cfg)
 
-        # Extract kernel hyperparameters (required for exponential, optional for others)
-        if kernel_name == "exponential":
-            initial_theta = _require_config_value(kernel_cfg, "theta", "GP kernel config")
-            initial_p = _require_config_value(kernel_cfg, "power_exponent", "GP kernel config")
-            initial_tau2 = float(_require_config_value(kernel_cfg, "tau2", "GP kernel config"))
-        else:
-            # For RBF/Matern, tau2 is handled via ScaleKernel from factory
-            initial_tau2 = None
-
+        # Build the kernel from config.
+        # For exponential kernels: theta and power_exponent from config become learnable parameters
+        # in ExponentialKernel (initialized and constrained). tau2 sets the ScaleKernel outputscale.
         self.likelihood.initialize(noise=initial_likelihood_noise)
-
         self.covar_module = build_kernel(kernel_name, input_dim, kernel_cfg)
 
-        # Set outputscale for exponential kernel (RBF/Matern already have ScaleKernel from factory)
-        if kernel_name == "exponential" and initial_tau2 is not None:
+        # Set outputscale (tau2) for exponential kernel if provided.
+        # RBF/Matern kernels already have ScaleKernel with outputscale from the factory.
+        if kernel_name == "exponential":
+            initial_tau2 = float(kernel_cfg.get("tau2", 1.0))
             if isinstance(self.covar_module, ScaleKernel):
                 self.covar_module.outputscale = initial_tau2
 

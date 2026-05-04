@@ -23,6 +23,8 @@ PALETTE: dict[str, str] = {
     "ref": "#000000",
 }
 
+MIN_STD_EPSILON = 1e-12
+
 FIG_STYLE: dict[str, float] = {
     "title_size": 14,
     "label_size": 12,
@@ -137,7 +139,7 @@ def normalize_features(features: Any, mean: Any, std: Any) -> np.ndarray:
     features_array = np.asarray(features, dtype=float)
     mean_array = np.asarray(mean, dtype=float)
     std_array = np.asarray(std, dtype=float)
-    std_array = np.where(np.abs(std_array) < 1e-12, 1.0, std_array)
+    std_array = np.where(np.abs(std_array) < MIN_STD_EPSILON, 1.0, std_array)
     return (features_array - mean_array) / std_array
 
 

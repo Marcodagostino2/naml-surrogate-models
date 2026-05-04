@@ -1,0 +1,159 @@
+"""Entrypoint helpers for optimization mode.
+
+This module mirrors the public API previously exposed by the repository
+root `optimize.py` but lives inside the `src` package so `main.py` can
+delegate to package-level modules. It reuses the existing
+`src.optimization_support` utilities and `src.pipeline` training helpers.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from src.data import load_data_from_config
+from src.optimization_support import (
+    _make_logging_callback,
+    build_pruner,
+    build_sampler,
+    generate_optimization_plots,
+    make_objective,
+    save_optimization_results,
+)
+from src.pipeline import save_summary_row
+from src.utils.entrypoints import load_and_initialize_run_configs
+from src.utils import OutputPathResolver, RunType, resolve_device, setup_logger, load_run_configs
+
+logger = setup_logger(__name__)
+
+
+def run_optimization(
+    config_dir: Path,
+    model_name: str,
+    output_dir: Path,
+    n_trials_override: Optional[int] = None,
+    timeout_override: Optional[int] = None,
+) -> None:
+    """Run hyperparameter optimization for a single model.
+
+    This function is adapted from the original top-level `optimize.py` to
+    live under `src` so it can be imported by `main.py` without relying on
+    top-level compatibility wrappers.
+    """
+    try:
+        import optuna
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ModuleNotFoundError("optuna is required to run optimization workflows.") from exc
+
+    logger.info("=" * 70)
+    logger.info(f"Hyperparameter Optimization for {model_name.upper()}")
+    logger.info("=" * 70)
+
+    loaded = load_run_configs(config_dir, model_name, include_optimize=True)
+    main_cfg = loaded["main_cfg"]
+    dataset_cfg = loaded["dataset_cfg"]
+    base_model_cfg = loaded["model_cfg"]
+    base_training_cfg = loaded["training_cfg"]
+    opt_cfg = loaded.get("opt_cfg", {})
+    global_seed = int(main_cfg.get("global_seed", 42))
+    dataset_name = loaded["dataset_name"]
+    logger.info(f"Dataset: {dataset_name} - {dataset_cfg.get('description', '')}")
+
+    if n_trials_override is not None:
+        opt_cfg.setdefault("study", {})["n_trials"] = n_trials_override
+    if timeout_override is not None:
+        opt_cfg.setdefault("study", {})["timeout"] = timeout_override
+
+    logger.info("Loading and preprocessing data...")
+    data_bundle = load_data_from_config(
+        config_dir.parent,
+        dataset_cfg,
+        global_seed,
+        str(main_cfg.get("precision", "float32")),
+    )
+
+    device = resolve_device(base_training_cfg.get("device", main_cfg.get("device", "auto")))
+
+    sampler = build_sampler(opt_cfg.get("study", {}))
+    pruner = build_pruner(opt_cfg.get("study", {}))
+    study = optuna.create_study(
+        direction=opt_cfg.get("study", {}).get("direction", "minimize"),
+        sampler=sampler,
+        pruner=pruner,
+    )
+
+    objective = make_objective(
+        model_name=model_name,
+        data_bundle=data_bundle,
+        base_model_cfg=base_model_cfg,
+        base_training_cfg=base_training_cfg,
+        dataset_cfg=dataset_cfg,
+        opt_cfg=opt_cfg,
+        device=device,
+    )
+
+    n_trials = int(opt_cfg.get("study", {}).get("n_trials", 1))
+    timeout = opt_cfg.get("study", {}).get("timeout")
+    metric_name = str(opt_cfg.get("study", {}).get("metric", ""))
+    sampler_name = str(opt_cfg.get("study", {}).get("sampler", "tpe"))
+    log_every = int(opt_cfg.get("study", {}).get("log_every_n_trials", 5))
+
+    logger.info(
+        f"Starting HPO: {model_name} | {n_trials} trials | metric={metric_name} | sampler={sampler_name}"
+    )
+
+    import time
+
+    start_time = time.perf_counter()
+    study.optimize(
+        objective,
+        n_trials=n_trials,
+        timeout=timeout,
+        show_progress_bar=False,
+        callbacks=[_make_logging_callback(model_name, n_trials, metric_name, log_every)],
+    )
+    duration = time.perf_counter() - start_time
+
+    if study.best_trial is None:
+        raise RuntimeError("No completed trial found in study.")
+    logger.info(
+        f"HPO complete | best={study.best_value:.6f} | params={study.best_params} | duration={duration:.0f}s"
+    )
+
+    output_resolver = OutputPathResolver(
+        dataset_name=dataset_name,
+        run_type=RunType.OPTIMIZATION,
+        model_name=model_name,
+        output_base_dir=output_dir,
+    )
+    run_dir = output_resolver.root
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    save_optimization_results(
+        study=study,
+        output_resolver=output_resolver,
+        opt_cfg=opt_cfg,
+        base_model_cfg=base_model_cfg,
+        base_training_cfg=base_training_cfg,
+        model_name=model_name,
+    )
+
+    generate_optimization_plots(study, output_resolver.plots_dir)
+
+    save_summary_row(
+        output_resolver.summary_csv,
+        {
+            "timestamp": datetime.now().isoformat(),
+            "dataset": dataset_name,
+            "run_dir": str(run_dir),
+            "model": model_name,
+            "n_trials_completed": len(study.trials),
+            "best_value": study.best_value,
+            "best_params": study.best_params,
+            "metric": opt_cfg.get("study", {}).get("metric"),
+            "duration_seconds": duration,
+        },
+    )
+
+    logger.debug(f"Optimization results saved to {run_dir}")

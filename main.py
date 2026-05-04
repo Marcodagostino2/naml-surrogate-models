@@ -1,35 +1,29 @@
-"""
-Main entry point for the aerodynamic surrogate model training and evaluation pipeline.
+"""Main dispatcher for the aerodynamic surrogate model workflows.
 
-Orchestrates:
-1. Configuration loading (main, dataset, model, training)
-2. Data loading and preprocessing
-3. Model training (MLP or GP)
-4. Evaluation and diagnostics
-5. Output management and logging
+The repository now treats this script as the primary entry point for three
+mode-specific runs:
+- ``single_run``: one training/evaluation pass per configured model
+- ``optimization``: hyperparameter search
+- ``convergence``: repeated split/seed analysis
+
+The lower-level workflow implementations remain in ``src.pipeline``,
+``optimize.py``, and ``convergence_analysis.py``. This file just parses the
+mode and routes to the right runner.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict
-import yaml
 
 import torch
 
 from src.data import load_data_from_config
 from src.pipeline import create_run_directory, save_run_configs, save_summary_row, train_model
-from src.utils import (
-    OutputPathResolver,
-    RunType,
-    load_run_configs,
-    set_global_seed,
-    setup_logger,
-    setup_torch_dtype,
-)
+from src.utils import OutputPathResolver, RunType, load_run_configs, setup_logger
+from src.utils.entrypoints import load_and_initialize_run_configs
 
 logger = setup_logger(__name__)
 
@@ -60,87 +54,53 @@ def _build_viz_data(data_bundle) -> Dict[str, Any]:
     }
 
 
-def main() -> None:
-    """Main training pipeline orchestrator."""
+def _run_single_run(config_dir: Path, output_dir: Path) -> None:
+    """Run the standard training/evaluation workflow for the configured models."""
 
-    # ==================== Argument Parsing ====================
-    parser = argparse.ArgumentParser(
-        description="Train aerodynamic surrogate models (MLP, GP, or Hybrid MLP+GP)."
-    )
-    parser.add_argument(
-        "--config-dir",
-        type=str,
-        default="config",
-        help="Path to config directory. All configurations are loaded from this directory.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="outputs",
-        help="Base output directory.",
-    )
-    args = parser.parse_args()
-
-    project_root = Path(__file__).resolve().parent
-    config_base_dir = project_root / args.config_dir
-    output_base_dir = project_root / args.output_dir
-
-    # ==================== Config Loading ====================
     logger.info("Loading configurations...")
+    loaded_configs = load_and_initialize_run_configs(config_dir, "mlp", include_optimize=False)
 
-    loaded_configs = load_run_configs(config_base_dir, "mlp", include_optimize=False)
     main_cfg = loaded_configs["main_cfg"]
-    global_seed = int(main_cfg.get("global_seed", 42))
-    model_to_train = str(main_cfg.get("model_to_train", "mlp")).lower()
-    run_mode = str(main_cfg.get("run_mode", "training")).lower()
-    precision = str(main_cfg.get("precision", "float32")).lower()
-
-    set_global_seed(global_seed)
-    logger.info(f"Global seed set to {global_seed}")
-
-    setup_torch_dtype(precision)
-    logger.info(f"PyTorch default dtype set to {torch.get_default_dtype()}")
-
     dataset_cfg = loaded_configs["dataset_cfg"]
     dataset_name = loaded_configs["dataset_name"]
+    viz_cfg = loaded_configs["viz_cfg"]
+
+    model_to_train = str(main_cfg.get("model_to_train", "mlp")).lower()
+    run_mode = str(main_cfg.get("run_mode", "training")).lower()
+    global_seed = int(main_cfg.get("global_seed", 42))
+    precision = str(main_cfg.get("precision", "float32")).lower()
+
+    logger.info(f"Global seed set to {global_seed}")
+    logger.info(f"PyTorch default dtype set to {torch.get_default_dtype()}")
     logger.info(f"Dataset: {dataset_name} - {dataset_cfg.get('description', '')}")
+    logger.info(f"Model to train: {model_to_train.upper()}")
+    logger.info(f"Run mode: {run_mode.upper()}")
 
     if model_to_train not in {"mlp", "gp", "mlpgp", "all"}:
         raise ValueError(f"Unknown model_to_train: {model_to_train}")
 
-    viz_cfg = loaded_configs["viz_cfg"]
-
-    logger.info(f"Model to train: {model_to_train.upper()}")
-    logger.info(f"Run mode: {run_mode.upper()}")
-
-    # ==================== Data Loading ====================
     logger.info("Loading and preprocessing data...")
-
-    data_bundle = load_data_from_config(project_root, dataset_cfg, global_seed, precision)
+    data_bundle = load_data_from_config(config_dir.parent, dataset_cfg, global_seed, precision)
 
     logger.debug(
-        f"Data shapes: "
-        f"X_train={data_bundle.X_train.shape}, "
-        f"X_val={data_bundle.X_val.shape}, "
-        f"X_test={data_bundle.X_test.shape}"
+        f"Data shapes: X_train={data_bundle.X_train.shape}, "
+        f"X_val={data_bundle.X_val.shape}, X_test={data_bundle.X_test.shape}"
     )
 
     selected_models = ["mlp", "gp", "mlpgp"] if model_to_train == "all" else [model_to_train]
     trained_models: Dict[str, Any] = {}
 
-    # ==================== Training Phase ====================
     if "training" in run_mode:
         for selected_model in selected_models:
-            model_configs = load_run_configs(config_base_dir, selected_model, include_optimize=False)
+            model_configs = load_run_configs(config_dir, selected_model, include_optimize=False)
             model_cfg = model_configs["model_cfg"]
             training_cfg = model_configs["training_cfg"]
-            
 
             output_resolver = OutputPathResolver(
                 dataset_name=dataset_name,
                 run_type=RunType.SINGLE_RUN,
                 model_name=selected_model,
-                output_base_dir=output_base_dir,
+                output_base_dir=output_dir,
             )
 
             run_dir = create_run_directory(output_resolver)
@@ -166,18 +126,19 @@ def main() -> None:
             )
             trained_models[selected_model] = results["model"]
 
-            summary_csv_path = output_resolver.summary_csv
-            run_info = {
-                "timestamp": datetime.now().isoformat(),
-                "run_dir": str(run_dir),
-                "test_r2": results["test_metrics"]["r2"],
-                "test_rmse": results["test_metrics"]["rmse"],
-                "test_mae": results["test_metrics"]["mae"],
-                "test_mape": results["test_metrics"]["mape"],
-                "val_r2": results["val_metrics"]["r2"],
-                "val_rmse": results["val_metrics"]["rmse"],
-            }
-            save_summary_row(summary_csv_path, run_info)
+            save_summary_row(
+                output_resolver.summary_csv,
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "run_dir": str(run_dir),
+                    "test_r2": results["test_metrics"]["r2"],
+                    "test_rmse": results["test_metrics"]["rmse"],
+                    "test_mae": results["test_metrics"]["mae"],
+                    "test_mape": results["test_metrics"]["mape"],
+                    "val_r2": results["val_metrics"]["r2"],
+                    "val_rmse": results["val_metrics"]["rmse"],
+                },
+            )
 
             from src.visualization import run_visualization
             from src.visualization.config import VisualizationConfig
@@ -201,7 +162,7 @@ def main() -> None:
                     dataset_name=dataset_name,
                     run_type=RunType.SINGLE_RUN,
                     model_name=selected_model,
-                    output_base_dir=output_base_dir,
+                    output_base_dir=output_dir,
                 )
                 table_viz_config = VisualizationConfig.from_mapping(
                     viz_cfg,
@@ -221,6 +182,85 @@ def main() -> None:
     logger.info("=" * 60)
     logger.info("Pipeline Execution Completed Successfully!")
     logger.info("=" * 60)
+
+
+def _run_optimization(
+    config_dir: Path,
+    output_dir: Path,
+    model_override: str | None = None,
+    n_trials_override: int | None = None,
+    timeout_override: int | None = None,
+) -> None:
+    """Run the optimization workflow through the dedicated optimizer module."""
+
+    from src.entrypoints.optimize import run_optimization as run_optimization_workflow
+
+    loaded_configs = load_run_configs(config_dir, "mlp", include_optimize=False)
+    main_cfg = loaded_configs["main_cfg"]
+    model_to_train = str(model_override or main_cfg.get("model_to_train", "mlp")).lower()
+
+    if model_to_train == "all":
+        for selected_model in ["mlp", "gp", "mlpgp"]:
+            run_optimization_workflow(config_dir, selected_model, output_dir, n_trials_override, timeout_override)
+    else:
+        run_optimization_workflow(config_dir, model_to_train, output_dir, n_trials_override, timeout_override)
+
+
+def _run_convergence(config_path: Path) -> None:
+    """Run convergence analysis through the dedicated analysis module."""
+
+    from src.entrypoints.convergence import run_analysis
+
+    run_analysis(config_path)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Single entry point for surrogate-model workflows.")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        choices=("single_run", "optimization", "convergence"),
+        help="Workflow mode to execute. Defaults to config/main_config.yaml.",
+    )
+    parser.add_argument("--config-dir", type=str, default="config", help="Path to the config directory.")
+    parser.add_argument("--output-dir", type=str, default="outputs", help="Base output directory.")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        choices=["mlp", "gp", "mlpgp", "all"],
+        help="Override the optimization model selection from config/main_config.yaml.",
+    )
+    parser.add_argument("--n-trials", type=int, default=None, help="Override the number of optimization trials.")
+    parser.add_argument("--timeout", type=int, default=None, help="Override the optimization timeout in seconds.")
+    parser.add_argument(
+        "--config-path",
+        type=str,
+        default="config/convergence/convergence_config.yaml",
+        help="Path to the convergence-analysis config file.",
+    )
+    return parser
+
+
+def main() -> None:
+    """Execute the requested workflow mode."""
+
+    args = _build_parser().parse_args()
+    project_root = Path(__file__).resolve().parent
+    config_dir = project_root / args.config_dir
+    output_dir = project_root / args.output_dir
+    workflow_cfg = load_run_configs(config_dir, "mlp", include_optimize=False)["main_cfg"]
+    workflow_mode = str(args.mode or workflow_cfg.get("mode", "single_run")).lower()
+
+    if workflow_mode == "single_run":
+        _run_single_run(config_dir, output_dir)
+    elif workflow_mode == "optimization":
+        _run_optimization(config_dir, output_dir, args.model, args.n_trials, args.timeout)
+    elif workflow_mode == "convergence":
+        _run_convergence(project_root / args.config_path)
+    else:
+        raise ValueError(f"Unknown workflow mode: {workflow_mode}")
 
 
 if __name__ == "__main__":

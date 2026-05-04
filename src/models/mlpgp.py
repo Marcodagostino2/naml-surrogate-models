@@ -16,8 +16,8 @@ from gpytorch.distributions import MultivariateNormal
 from gpytorch.kernels import ScaleKernel
 from gpytorch.models import ExactGP
 
-from src.models.gp import PolynomialTrendMean, _build_gaussian_likelihood, _format_param_block
-from src.models.gp_utils import ExponentialKernel, build_kernel
+from src.models.gp import PolynomialTrendMean, _build_gaussian_likelihood
+from src.models.gp_utils import ExponentialKernel, build_kernel, extract_kernel_name, extract_required_config_value
 from src.models.mlp import MLPRegressor
 from src.utils import setup_logger
 
@@ -25,9 +25,8 @@ logger = setup_logger(__name__)
 
 
 def _require_config_value(config: Dict[str, Any], key: str, context: str) -> Any:
-    if key not in config:
-        raise KeyError(f"Missing required config key '{key}' in {context}.")
-    return config[key]
+    """Legacy wrapper for extract_required_config_value (mlpgp-specific usage patterns)."""
+    return extract_required_config_value(config, key, context)
 
 
 class NonstationaryFeatureExtractor(torch.nn.Module):
@@ -83,12 +82,20 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
         base_kernel: ExponentialKernel,
         min_lengthscale: float = 1e-8,
         min_sigma: float = 1e-8,
+        force_p2: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.base_kernel = base_kernel
         self.min_lengthscale = float(min_lengthscale)
         self.min_sigma = float(min_sigma)
+        # When True, _compute_scaled_distance ignores base_kernel.power_exponent
+        # and uses p=2 exactly. This is required by the Gibbs (Paciorek &
+        # Schervish 2006) PSD theorem, which holds only for the squared-
+        # exponential base. Using base_kernel.power_exponent directly is unsafe
+        # when the kernel's Interval(1.5, 2.0) constraint cannot reach exactly
+        # 2.0 from the raw parameter side.
+        self.force_p2 = bool(force_p2)
         self.parameterizer: Optional[torch.nn.Module] = None
 
     def set_parameterizer(self, parameterizer: torch.nn.Module) -> None:
@@ -118,6 +125,79 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
         lengthscale_x1 = lengthscale_x1.clamp_min(self.min_lengthscale)
         lengthscale_x2 = lengthscale_x2.clamp_min(self.min_lengthscale)
         return sigma_x1, sigma_x2, lengthscale_x1, lengthscale_x2
+
+    def _compute_norm_factor(
+        self, 
+        lengthscale_x1: torch.Tensor, 
+        lengthscale_x2: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute Gibbs normalization factor: prod_d [ sqrt( 2 * L1_d * L2_d / (L1_sq_d + L2_sq_d) ) ].
+        
+        Parameters
+        ----------
+        lengthscale_x1 : Tensor (n, d)
+            First set of lengthscales.
+        lengthscale_x2 : Tensor (m, d)
+            Second set of lengthscales.
+        
+        Returns
+        -------
+        Tensor (n, m)
+            Normalization factor for all pairwise combinations.
+        """
+        L1_sq = lengthscale_x1.pow(2)
+        L2_sq = lengthscale_x2.pow(2)
+        L1_sq_broad = L1_sq.unsqueeze(-2)  # (n, 1, d)
+        L2_sq_broad = L2_sq.unsqueeze(-3)  # (1, m, d)
+        
+        L1_broad = lengthscale_x1.unsqueeze(-2)  # (n, 1, d)
+        L2_broad = lengthscale_x2.unsqueeze(-3)  # (1, m, d)
+        
+        per_dim_factor = torch.sqrt(2.0 * L1_broad * L2_broad / (L1_sq_broad + L2_sq_broad))
+        return torch.prod(per_dim_factor, dim=-1)  # (n, m)
+
+    def _compute_scaled_distance(
+        self,
+        x1: torch.Tensor,
+        x2: torch.Tensor,
+        lengthscale_x1: torch.Tensor,
+        lengthscale_x2: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute scaled distance for Gibbs kernel evaluation.
+        
+        Implements: delta_d = theta_d * ( diff_d / sqrt(ell_harm_sq_d) )^p
+        
+        Parameters
+        ----------
+        x1, x2 : Tensor
+            Input points.
+        lengthscale_x1, lengthscale_x2 : Tensor
+            Local lengthscales.
+        
+        Returns
+        -------
+        Tensor (n, m)
+            Sum of scaled differences across dimensions.
+        """
+        L1_sq = lengthscale_x1.pow(2)
+        L2_sq = lengthscale_x2.pow(2)
+        L1_sq_broad = L1_sq.unsqueeze(-2)
+        L2_sq_broad = L2_sq.unsqueeze(-3)
+        
+        ell_harm_sq = (L1_sq_broad + L2_sq_broad) / 2.0
+        ell_harm_std = torch.sqrt(ell_harm_sq)
+        
+        diff = (x1.unsqueeze(-2) - x2.unsqueeze(-3)).abs()
+        
+        theta = self.base_kernel.theta
+        # Use exact p=2 when this kernel was constructed with force_p2 (the
+        # non-stationary Gibbs PSD requirement). Otherwise read the learnable
+        # power_exponent from the base kernel (DKL path - not currently using
+        # this kernel class, but kept for symmetry).
+        p = 2.0 if self.force_p2 else self.base_kernel.power_exponent
+        scaled_diff = theta * (diff / ell_harm_std).pow(p)
+        
+        return torch.sum(scaled_diff, dim=-1)
 
     def forward(
         self,
@@ -172,54 +252,40 @@ class NonstationaryExponentialKernel(gpytorch.kernels.Kernel):
             # For diagonal: diff=0 so dist=0 and R0_diag=1.
             # norm_factor_diag = prod_d(sqrt(2*L^2 / 2L^2)) = 1.
             # So diag output = sigma1^2
-            base_diag = sigma_x1.pow(2)
-            return base_diag
+            return sigma_x1.pow(2)
 
-        # Compute lengthscale squared (n, d) and (m, d)
-        L1_sq = lengthscale_x1.pow(2)
-        L2_sq = lengthscale_x2.pow(2)
-
-        # Unsqueeze for broadcasting: (n, 1, d) and (1, m, d) -> (n, m, d)
-        L1_sq_broad = L1_sq.unsqueeze(-2)  # (n, 1, d)
-        L2_sq_broad = L2_sq.unsqueeze(-3)  # (1, m, d)
-
-        # Compute norm_factor (n, m):
-        # prod_d [ sqrt( 2 * L1_d * L2_d / (L1_sq_d + L2_sq_d) ) ]
-        L1_broad = lengthscale_x1.unsqueeze(-2)  # (n, 1, d)
-        L2_broad = lengthscale_x2.unsqueeze(-3)  # (1, m, d)
-
-        per_dim_factor = torch.sqrt(2.0 * L1_broad * L2_broad / (L1_sq_broad + L2_sq_broad))
-        # Shape: (n, m, d)
-        norm_factor = torch.prod(per_dim_factor, dim=-1)  # (n, m)
-
-        # Compute harmonic mean squared length scale: (n, m, d)
-        ell_harm_sq = (L1_sq_broad + L2_sq_broad) / 2.0
-
-        # Compute differences: (n, m, d)
-        diff = (x1.unsqueeze(-2) - x2.unsqueeze(-3)).abs()  # (n, 1, d) - (1, m, d)
-
-        # Get theta and p from base kernel
-        theta = self.base_kernel.theta  # (d,)
-        p = self.base_kernel.power_exponent  # scalar or (d,)
-
-        # Compute scaled difference fed into R0:
-        # delta_d = theta_d * ( diff_d / sqrt(ell_harm_sq_d) )^p
-        ell_harm_std = torch.sqrt(ell_harm_sq)  # (n, m, d)
-        scaled_diff = theta * (diff / ell_harm_std).pow(p)  # (n, m, d)
-
-        # Sum across dimensions to get distance
-        dist = torch.sum(scaled_diff, dim=-1)  # (n, m)
+        # Compute normalization factor and scaled distance
+        norm_factor = self._compute_norm_factor(lengthscale_x1, lengthscale_x2)
+        dist = self._compute_scaled_distance(x1, x2, lengthscale_x1, lengthscale_x2)
 
         # Evaluate base kernel on the scaled distance
-        R0 = torch.exp(-dist)  # (n, m)
+        R0 = torch.exp(-dist)
 
         # Compute sigma_outer: (n, 1) * (1, m) -> (n, m)
         sigma_outer = sigma_x1.unsqueeze(-1) * sigma_x2.unsqueeze(-2)
 
         # Full Gibbs kernel: sigma_outer * norm_factor * R0
-        covariance = sigma_outer * norm_factor * R0
+        result = sigma_outer * norm_factor * R0
 
-        return covariance
+        # When evaluating K(X, X), enforce exact symmetry and a clean diagonal.
+        # The Gibbs formula is mathematically symmetric in (i, j), but the
+        # different broadcast/reduction orders along axes -2 vs -3 in
+        # _compute_norm_factor and _compute_scaled_distance cause floating-point
+        # asymmetries of ~1e-7 between K[i,j] and K[j,i]. psd_safe_cholesky
+        # needs an exactly symmetric input, so we symmetrize. The diagonal is
+        # forced to sigma(x_i)^2 to match what forward(diag=True) would
+        # return; the off-diagonal formula evaluated at i==j computes the same
+        # quantity but accumulates rounding through norm_factor and R0.
+        is_self_kernel = (x1 is x2) or (
+            x1.shape == x2.shape and torch.equal(x1, x2)
+        )
+        if is_self_kernel:
+            result = 0.5 * (result + result.transpose(-2, -1))
+            n = result.shape[-1]
+            diag_idx = torch.arange(n, device=result.device)
+            result[..., diag_idx, diag_idx] = sigma_x1.pow(2)
+
+        return result
 
 
 class DKLFeatureExtractor(torch.nn.Module):
@@ -344,10 +410,7 @@ class MLPGPModel(ExactGP):
             raise ValueError(f"Unknown architecture: {self.architecture_name}. Must be 'non_stationary' or 'dkl'.")
 
         # Extract kernel type; support both nested dict and direct string
-        if isinstance(kernel_cfg, dict):
-            kernel_type = str(kernel_cfg.get("type", kernel_cfg.get("kernel_type", "exponential"))).lower()
-        else:
-            kernel_type = str(kernel_cfg).lower()
+        kernel_type = extract_kernel_name(kernel_cfg)
 
         # Validate kernel compatibility with architecture
         if self.architecture_name == "non_stationary" and kernel_type != "exponential":
@@ -373,7 +436,17 @@ class MLPGPModel(ExactGP):
         )
 
     def _setup_nonstationary(self, input_dim: int, model_cfg: Dict) -> None:
-        """Build the non-stationary covariance: K(x,x') = sigma(x) sigma(x') R0(z(x), z(x'))."""
+        """Build the non-stationary covariance: K(x,x') = sigma(x) sigma(x') R0(z(x), z(x')).
+
+        For the Gibbs / non-stationary architecture we hard-pin power_exponent
+        to 2 (squared exponential) and freeze it. The Gibbs construction with
+        the sqrt(2 L_i L_j / (L_i^2 + L_j^2)) normalization is a PSD kernel
+        only for the squared-exponential base (Paciorek & Schervish, 2006);
+        for p != 2 the resulting matrix has no PSD guarantee and Cholesky
+        will fail with no amount of jitter able to save it. The DKL
+        architecture keeps p learnable since it doesn't use the Gibbs
+        construction.
+        """
         feature_cfg = model_cfg.get(
             "non_stationary_feature_extractor",
             model_cfg.get("feature_extractor", {}),
@@ -391,13 +464,36 @@ class MLPGPModel(ExactGP):
 
         kernel_cfg = model_cfg.get("kernel", model_cfg)
         initial_theta = _require_config_value(kernel_cfg, "theta", "MLPGP kernel config")
-        initial_p = _require_config_value(kernel_cfg, "power_exponent", "MLPGP kernel config")
 
+        # Warn if the config requests a non-2 power_exponent. The kernel below
+        # will use p=2 regardless (via force_p2), but flagging the override
+        # makes user (and Optuna) intent visible. If you have power_exponent
+        # in your hyperparameter search space for non_stationary, remove it
+        # there as well — the dimension is frozen and would waste budget.
+        configured_p = kernel_cfg.get("power_exponent", 2.0)
+        configured_p_scalar = (
+            float(configured_p[0]) if isinstance(configured_p, (list, tuple))
+            else float(configured_p)
+        )
+        if abs(configured_p_scalar - 2.0) > 1e-6:
+            logger.warning(
+                "Non-stationary MLPGP requires power_exponent=2 (Gibbs PSD "
+                f"requirement). Configured value {configured_p_scalar} is "
+                "ignored; using p=2.0."
+            )
+
+        # base_kernel is built normally (its raw_power_exponent stays a
+        # nn.Parameter), but the wrapping NonstationaryExponentialKernel will
+        # use p=2 directly via force_p2. We also freeze raw_power_exponent so
+        # the optimizer can't drift it — even though force_p2 makes the value
+        # unused, freezing keeps things tidy and prevents confusion if a
+        # future maintainer inspects parameter histories.
         base_kernel = ExponentialKernel(
             input_dim=input_dim,
             initial_theta=initial_theta,
-            initial_power_exponent=initial_p,
+            initial_power_exponent=2.0,
         )
+        base_kernel.raw_power_exponent.requires_grad_(False)
 
         self.feature_extractor = NonstationaryFeatureExtractor(
             input_dim=input_dim,
@@ -409,17 +505,24 @@ class MLPGPModel(ExactGP):
             base_kernel=base_kernel,
             min_lengthscale=float(feature_cfg.get("lengthscale_floor", 1e-8)),
             min_sigma=float(feature_cfg.get("sigma_floor", 1e-8)),
+            force_p2=True,
         )
         nonstationary_kernel.set_parameterizer(self._predict_local_parameters)
         self.covar_module = nonstationary_kernel
 
-        logger.info(f"Non-stationary kernel ready (lengthscale_mode={lengthscale_mode})")
+        logger.info(
+            f"Non-stationary kernel ready (lengthscale_mode={lengthscale_mode}, "
+            f"power_exponent=2.0 [frozen via force_p2])"
+        )
 
     def _setup_dkl(self, input_dim: int, model_cfg: Dict) -> None:
         """Build the DKL covariance: K(x,x') = tau^2 * R0(phi(x), phi(x')).
 
         The amplitude ``tau^2`` is exposed as a learnable ``ScaleKernel`` outputscale,
         mirroring the standard GP and giving the model a learnable prior variance.
+        
+        For exponential kernels: theta and power_exponent are learnable parameters initialized
+        from config. Theta is re-parameterized to the feature space dimensionality (output_dim).
         """
         dkl_cfg = model_cfg.get("dkl_feature_extractor", model_cfg.get("dkl", {}))
         if not dkl_cfg:
@@ -429,10 +532,7 @@ class MLPGPModel(ExactGP):
         kernel_cfg = model_cfg.get("kernel", model_cfg)
         
         # Extract kernel name; support both nested dict and direct string
-        if isinstance(kernel_cfg, dict):
-            kernel_name = str(kernel_cfg.get("type", kernel_cfg.get("kernel", "exponential"))).lower()
-        else:
-            kernel_name = str(kernel_cfg).lower()
+        kernel_name = extract_kernel_name(kernel_cfg)
         
         initial_tau2 = float(kernel_cfg.get("tau2", 1.0))
 
@@ -450,6 +550,7 @@ class MLPGPModel(ExactGP):
             initial_p = _require_config_value(kernel_cfg, "power_exponent", "DKL kernel config")
             
             # theta lives in the feature space; expand a scalar / take first element of a vector.
+            # This ensures the exponential kernel operates on output_dim features, not raw input_dim.
             if isinstance(initial_theta, (int, float)):
                 theta_value = float(initial_theta)
             else:

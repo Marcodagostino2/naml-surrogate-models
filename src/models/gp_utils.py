@@ -13,7 +13,15 @@ logger = setup_logger(__name__)
 
 
 class ExponentialKernel(gpytorch.kernels.Kernel):
-    """Anisotropic generalized exponential covariance with learnable theta, and power exponent."""
+    """Anisotropic generalized exponential covariance with learnable theta and power exponent.
+    
+    Parameters theta and power_exponent are learnable (constrained) parameters that are
+    initialized from config values and optimized during training.
+    
+    Constraints:
+    - theta: GreaterThan(1e-5)
+    - power_exponent: Interval(1.5, 2.0)
+    """
 
     is_stationary = True
     has_lengthscale = False
@@ -25,6 +33,18 @@ class ExponentialKernel(gpytorch.kernels.Kernel):
         initial_power_exponent: float | Sequence[float],
         **kwargs,
     ) -> None:
+        """
+        Initialize ExponentialKernel.
+        
+        Parameters
+        ----------
+        input_dim : int
+            Number of input dimensions (for ARD).
+        initial_theta : float or Sequence[float]
+            Initial value for theta (learnable parameter). If scalar, expanded to all dimensions.
+        initial_power_exponent : float or Sequence[float]
+            Initial value for power exponent (learnable parameter). If scalar, expanded to all dimensions.
+        """
         super().__init__(**kwargs)
         self.input_dim = int(input_dim)
 
@@ -79,7 +99,25 @@ def build_kernel(
     num_dims: int,
     config: Dict[str, Any],
 ) -> gpytorch.kernels.Kernel:
-    """Factory for creating kernels from config."""
+    """Factory for creating kernels from config.
+    
+    For exponential kernels, theta and power_exponent from config are used as
+    initial values for learnable parameters (constrained via register_constraint).
+    
+    Parameters
+    ----------
+    kernel_name : str
+        Kernel type: "exponential", "rbf", or "matern".
+    num_dims : int
+        Input dimensionality (for ARD).
+    config : Dict[str, Any]
+        Config dict with kernel-specific keys (theta, power_exponent, tau2, matern_nu, etc.).
+    
+    Returns
+    -------
+    gpytorch.kernels.Kernel
+        Kernel wrapped in ScaleKernel for learnable outputscale (tau2).
+    """
     kernel_name = str(kernel_name).lower() if kernel_name else "exponential"
 
     if kernel_name == "exponential":
@@ -101,5 +139,50 @@ def build_kernel(
 
     else:
         raise ValueError(f"Unknown kernel: {kernel_name}")
+
+
+def extract_kernel_name(kernel_cfg: Dict[str, Any] | str) -> str:
+    """Extract kernel name from config, supporting both nested dict and direct string formats.
+    
+    Parameters
+    ----------
+    kernel_cfg : Dict[str, Any] | str
+        Kernel config (dict with optional "type"/"kernel" keys or direct string).
+    
+    Returns
+    -------
+    str
+        Kernel name in lowercase. Defaults to "exponential" if not found.
+    """
+    if isinstance(kernel_cfg, dict):
+        return str(kernel_cfg.get("type", kernel_cfg.get("kernel", "exponential"))).lower()
+    return str(kernel_cfg).lower() if kernel_cfg else "exponential"
+
+
+def extract_required_config_value(config: Dict[str, Any], key: str, context: str) -> Any:
+    """Extract a required config value, raising KeyError if missing.
+    
+    Parameters
+    ----------
+    config : Dict[str, Any]
+        Configuration dictionary.
+    key : str
+        Key to extract.
+    context : str
+        Context string for error message (e.g., "GP kernel config").
+    
+    Returns
+    -------
+    Any
+        The config value.
+    
+    Raises
+    ------
+    KeyError
+        If key is missing from config.
+    """
+    if key not in config:
+        raise KeyError(f"Missing required config key '{key}' in {context}.")
+    return config[key]
 
 

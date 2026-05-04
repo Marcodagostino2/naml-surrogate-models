@@ -1,31 +1,22 @@
 # ============================================================================
 # MLP Training Configuration
 # ============================================================================
-# Training hyperparameters specific to the standalone MLP.
-
-# Optimizer: "adam", "sgd", "adamw"
 optimizer: "adamw"
-
-# Learning rate
 learning_rate: 1.0e-4
-
-# Weight_decay 
-weight_decay: 1.0e-4 
-
-# Number of epochs (kept large; training stops early when tolerances are met)
+weight_decay: 1.0e-4
 n_epochs: 700
 
-# Stop policy
-train_residual_check_interval: 10
-train_residual_tol: 1.0e-4
+# Stop policy (convergence-based)
+rel_tol: 1.0e-4         # relative tolerance on loss change / val improvement
+abs_tol: 1.0e-6         # absolute tolerance (handles loss values near zero)
+train_patience: 10       # consecutive epochs with |dL| <= tol to call it converged
+val_patience: 30        # consecutive epochs without val improvement to stop
+warmup_epochs: 10       # don't evaluate stop criteria before this epoch
+
+# Logging cadence
+train_metrics_log_interval: 10
 validation_check_interval: 10
-validation_residual_tol: 1.0e-4
 
-# Loss function: "mse", "mae", "huber"
 loss_function: "mse"
-
-# Device: "cuda", "cpu", "auto"
 device: "auto"
-
-# Checkpointing
 save_checkpoint_every_n_epochs: 10

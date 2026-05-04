@@ -40,17 +40,17 @@ non_stationary_feature_extractor:
   dropout: 0.0
   batch_norm: false
   output_activation: "softplus"
-  sigma_floor: 1e-6
-  lengthscale_floor: 1e-6
+  sigma_floor: 1e-4
+  lengthscale_floor: 1e-4
   lengthscale_mode: "per_dimension"
 
 kernel:
   type: "exponential"      # options: "exponential" | "rbf" | "matern"
                            # Note: "exponential" is mandatory for non_stationary architecture
   theta: 1.0e-1            # exponential only
-  power_exponent: 1.99     # exponential only
+  power_exponent: 2.0      # exponential only
   likelihood_noise: 1.0e-2
-  tau2: 1.0e-2               # outputscale (DKL only; non_stationary ignores this)
+  tau2: 1.0e-2             # outputscale (DKL only; non_stationary ignores this)
   matern_nu: 2.5           # matern only (0.5, 1.5, 2.5)
 
 trend_degree: 1

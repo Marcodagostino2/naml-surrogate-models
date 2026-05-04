@@ -15,28 +15,81 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from src.utils import setup_logger
-from src.visualization.utils import set_plot_style
 
 logger = setup_logger(__name__)
-set_plot_style()
+
+DEFAULT_HISTORY_FIGSIZE: Tuple[int, int] = (10, 6)
+DEFAULT_UNCERTAINTY_FIGSIZE: Tuple[int, int] = (14, 6)
 
 
 def plot_training_history(
     train_losses: list,
     val_losses: list,
     title: str = "Training History",
-    figsize: Tuple[int, int] = (10, 6),
+    figsize: Tuple[int, int] = DEFAULT_HISTORY_FIGSIZE,
     output_path: Optional[Path | str] = None,
 ) -> None:
-    """Plot training and validation loss curves."""
+    """Plot training and validation loss curves.
+
+    Defensive against history lists that contain None entries (e.g. when a
+    validation loss came back non-finite, or when there is no val loader).
+    None values are converted to NaN so matplotlib breaks the line at the
+    gap rather than raising. If a series contains zero finite points, it is
+    omitted from the plot rather than drawn as an empty line.
+
+    Length mismatches between the two lists are tolerated by using each
+    series' own x-axis (1..len(series)), since the trainer can in principle
+    return mismatched histories on legacy data — though current trainer
+    code commits all per-step appends atomically.
+    """
     fig, ax = plt.subplots(figsize=figsize)
-    epochs = np.arange(1, len(train_losses) + 1)
-    ax.plot(epochs, train_losses, label="Training Loss", marker="o", markersize=3)
-    ax.plot(epochs, val_losses, label="Validation Loss", marker="s", markersize=3)
+
+    def _to_finite_array(series: list) -> np.ndarray:
+        """None -> NaN; coerce to float ndarray. NaNs render as line gaps."""
+        if series is None:
+            return np.array([], dtype=float)
+        return np.array(
+            [np.nan if v is None else float(v) for v in series],
+            dtype=float,
+        )
+
+    train_arr = _to_finite_array(train_losses)
+    val_arr = _to_finite_array(val_losses)
+
+    plotted_anything = False
+    if train_arr.size and np.isfinite(train_arr).any():
+        ax.plot(
+            np.arange(1, train_arr.size + 1),
+            train_arr,
+            label="Training Loss",
+            marker="o",
+            markersize=3,
+        )
+        plotted_anything = True
+
+    if val_arr.size and np.isfinite(val_arr).any():
+        ax.plot(
+            np.arange(1, val_arr.size + 1),
+            val_arr,
+            label="Validation Loss",
+            marker="s",
+            markersize=3,
+        )
+        plotted_anything = True
+
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     ax.set_title(title)
-    ax.legend()
+    if plotted_anything:
+        ax.legend()
+    else:
+        # Make the empty plot self-explanatory rather than blank.
+        ax.text(
+            0.5, 0.5,
+            "No finite loss values to plot",
+            ha="center", va="center",
+            transform=ax.transAxes,
+        )
 
     if output_path is not None:
         output_path = Path(output_path)
@@ -79,7 +132,7 @@ def plot_uncertainty_combined(
     y_test_pred: np.ndarray,
     y_test_std: np.ndarray,
     title: str = "Predictions with Uncertainty",
-    figsize: Tuple[int, int] = (14, 6),
+    figsize: Tuple[int, int] = DEFAULT_UNCERTAINTY_FIGSIZE,
     output_path: Optional[Path | str] = None,
 ) -> None:
     """Render val + test predictions-with-uncertainty as a single 2-subplot figure."""

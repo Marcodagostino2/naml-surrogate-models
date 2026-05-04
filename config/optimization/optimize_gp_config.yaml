@@ -9,7 +9,7 @@ study:
   log_every_n_trials: 3
 
 training_overrides:
-  n_training_steps: 500
+  n_training_steps: 2000
 
 # Kernel selection for optimization
 # Supported: "exponential" | "rbf" | "matern"

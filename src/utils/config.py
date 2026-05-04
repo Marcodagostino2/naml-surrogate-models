@@ -47,7 +47,7 @@ def load_run_configs(
     """
     main_cfg = load_yaml(config_dir / "main_config.yaml")
     all_datasets = load_yaml(config_dir / "dataset" / "dataset_config.yaml")
-    common_training_cfg_path = config_dir / "training" / "common_training_config.yaml"
+    common_training_cfg_path = config_dir / "training" / "training_common_config.yaml"
     common_training_cfg = load_yaml(common_training_cfg_path) if common_training_cfg_path.exists() else {}
     dataset_name = str(main_cfg.get("dataset", "airfoil_self_noise"))
     datasets = all_datasets.get("datasets", {})

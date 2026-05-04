@@ -3,6 +3,11 @@ Training routines for MLP, GP, and MLPGP models.
 
 Uses large epoch/step budgets with interval-based residual checks on train and
 validation splits for early stopping.
+
+Note on Scheduler Semantics:
+    StepLR scheduler.step() is called after each epoch (not per batch).
+    This decays the learning rate every `scheduler_step_size` epochs by
+    a factor of `scheduler_gamma`.
 """
 
 from __future__ import annotations
@@ -16,6 +21,17 @@ import gpytorch
 import torch
 from gpytorch.utils.warnings import GPInputWarning
 from torch.utils.data import DataLoader
+
+# NotPSDError is raised by linear_operator's psd_safe_cholesky when even the
+# escalated jitter (up to 100x cholesky_jitter) cannot make K positive
+# definite. We handle it as a graceful end-of-training signal rather than a
+# crash. Older versions of the stack expose it under different paths, so we
+# fall back to plain RuntimeError if the import fails.
+try:
+    from linear_operator.utils.errors import NotPSDError as _NotPSDError
+    _CHOLESKY_FAIL_EXCEPTIONS: Tuple[type, ...] = (_NotPSDError, RuntimeError)
+except ImportError:  # linear_operator not installed or moved
+    _CHOLESKY_FAIL_EXCEPTIONS = (RuntimeError,)
 
 from src.models import GPRegressionModel, MLPRegressor, MLPGPModel
 from src.training.metrics import compute_all_metrics
@@ -55,7 +71,7 @@ def _current_likelihood_noise(model: Any) -> float:
 def _build_scheduler(optimizer: torch.optim.Optimizer, training_cfg: Dict[str, Any]) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
     """Build a common LR scheduler from training config.
 
-    Config keys shared in common_training_config.yaml:
+    Config keys shared in training_common_config.yaml:
     - scheduler_step_size
     - scheduler_gamma
     - scheduler_type  (optional: "steplr" or "none")
@@ -71,6 +87,252 @@ def _build_scheduler(optimizer: torch.optim.Optimizer, training_cfg: Dict[str, A
         return torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
     raise ValueError(f"Unknown scheduler_type: {scheduler_type}")
+
+
+def _setup_cholesky_jitter(training_cfg: Dict[str, Any]) -> Dict[str, float]:
+    """Apply the configured GP cholesky jitter and return the previous state."""
+
+    jitter_float32 = float(training_cfg.get("cholesky_jitter_float32", 1e-6))
+    jitter_float64 = float(training_cfg.get("cholesky_jitter_float64", 1e-8))
+
+    if jitter_float32 < 0:
+        raise ValueError(f"cholesky_jitter_float32 must be non-negative, got {jitter_float32}")
+    if jitter_float64 < 0:
+        raise ValueError(f"cholesky_jitter_float64 must be non-negative, got {jitter_float64}")
+
+    previous_state = {
+        "float32": gpytorch.settings.cholesky_jitter.value(torch.float32),
+        "float64": gpytorch.settings.cholesky_jitter.value(torch.float64),
+    }
+
+    gpytorch.settings.cholesky_jitter._set_value(
+        float_value=jitter_float32,
+        double_value=jitter_float64,
+        half_value=None,
+    )
+
+    logger.info(f"Cholesky jitter configured: float32={jitter_float32:.2e}, float64={jitter_float64:.2e}")
+    return previous_state
+
+
+def _restore_cholesky_jitter(previous_state: Dict[str, float]) -> None:
+    """Restore the previously active GP cholesky jitter state."""
+
+    gpytorch.settings.cholesky_jitter._set_state(
+        float_value=previous_state["float32"],
+        double_value=previous_state["float64"],
+    )
+    logger.info(
+        f"Restored previous Cholesky jitter: float32={previous_state['float32']:.2e}, "
+        f"float64={previous_state['float64']:.2e}"
+    )
+
+
+def _is_cholesky_failure(exc: BaseException) -> bool:
+    """Return True if `exc` looks like a Cholesky / non-PSD failure.
+
+    We catch both linear_operator's NotPSDError (clear signal) and torch's
+    plain RuntimeError when its message mentions cholesky / PSD. The string
+    match keeps us from swallowing unrelated RuntimeErrors raised from inside
+    the forward pass (e.g. shape mismatches, CUDA OOM).
+    """
+    if _CHOLESKY_FAIL_EXCEPTIONS and isinstance(exc, _CHOLESKY_FAIL_EXCEPTIONS[0]) \
+            and _CHOLESKY_FAIL_EXCEPTIONS[0] is not RuntimeError:
+        return True  # NotPSDError - definitive
+    msg = str(exc).lower()
+    return ("cholesky" in msg) or ("not positive definite" in msg) or ("psd" in msg)
+
+
+def _handle_cholesky_failure(
+    exc: BaseException,
+    *,
+    model_name: str,
+    step: int,
+    phase: str,
+    trial: Optional["optuna.Trial"],
+) -> None:
+    """Common handling for a Cholesky / non-PSD failure inside training.
+
+    Re-raises `exc` if it is not actually a Cholesky failure (so unrelated
+    RuntimeErrors like CUDA OOM are not swallowed).
+
+    If `trial` is provided (Optuna sweep), raise optuna.TrialPruned so the
+    sampler treats this hyperparameter region as unviable rather than scoring
+    the trial by whatever partial best_val_loss it accumulated. Pruned trials
+    are recorded distinctly from completed ones, which keeps Optuna's posterior
+    over the hyperparameter space honest.
+
+    Outside an Optuna trial, just log a warning and return; the caller is
+    expected to `break` out of the training loop. The post-loop logic in each
+    trainer then restores `_best_model_state` as usual.
+
+    Args:
+        exc: the caught exception.
+        model_name: short tag for the log message ("GP", "MLPGP").
+        step: current training step at which the failure occurred.
+        phase: "training" or "evaluation" - just for the log message.
+        trial: optional Optuna trial; when present, prune instead of returning.
+    """
+    if not _is_cholesky_failure(exc):
+        raise exc  # unrelated RuntimeError - don't swallow
+
+    logger.warning(
+        f"{model_name} {phase} stopped at step {step} due to non-PSD covariance "
+        f"(jitter exhausted). Underlying error: {exc}"
+    )
+
+    if trial is not None:
+        import optuna
+        logger.info(
+            f"Pruning Optuna trial: hyperparameters caused a non-PSD covariance "
+            f"at step {step}, marking trial as unviable."
+        )
+        raise optuna.TrialPruned()
+
+    # No trial: caller will break and restore best state.
+
+_DEPRECATED_KEYS = {
+    "train_residual_tol": "train_residual_tol no longer used; replaced by rel_tol/abs_tol on the loss",
+    "validation_residual_tol": "validation_residual_tol no longer used; replaced by rel_tol/abs_tol on best_val_loss",
+    "train_residual_check_interval": "train_residual_check_interval no longer used; replaced by train_metrics_log_interval (logging only)",
+}
+
+
+def _warn_deprecated_keys(training_cfg: Dict[str, Any]) -> None:
+    """One-shot deprecation warning for keys whose meaning changed.
+
+    These keys used to control stopping; now the stopping logic lives in
+    `ConvergenceMonitor` and reads different keys. Other unknown keys are
+    silently ignored (consistent with the rest of the trainer's `dict.get`
+    style) — only these specific names get a warning because their meaning
+    changed and silent defaults would be misleading.
+    """
+    for key, message in _DEPRECATED_KEYS.items():
+        if key in training_cfg:
+            logger.warning(f"[deprecated config key] {message}")
+
+
+class ConvergenceMonitor:
+    """Unified convergence + early-stopping monitor shared by all trainers.
+
+    Two independent stopping criteria are tracked; training stops as soon as
+    EITHER fires (logical OR), per the user's spec.
+
+    1. Train-loss convergence (scipy.optimize.least_squares style)
+       Stop when the loss change between consecutive epochs satisfies
+            |L_{t-1} - L_t| <= abs_tol + rel_tol * |L_{t-1}|
+       for `train_patience` consecutive epochs. The mixed abs+rel form is the
+       standard one used by NumPy's `isclose` and most numerical optimizers;
+       requiring it to hold for k consecutive steps avoids firing on a single
+       noisy step (same idea as L-BFGS' termination history).
+
+    2. Validation-loss patience (Prechelt 1998, "Early Stopping - But When?")
+       Track best_val_loss; an epoch counts as an improvement only if
+            best_val_loss - val_loss > abs_tol + rel_tol * |best_val_loss|
+       Stop after `val_patience` consecutive non-improving epochs. The
+       min-delta is built from the same (abs_tol, rel_tol) pair so the
+       config has a single, consistent meaning of "tolerance".
+
+    Both criteria are skipped during a configurable warmup so noisy initial
+    epochs don't cause premature stops.
+
+    Config keys read from training_cfg:
+        rel_tol         (default 1e-4)
+        abs_tol         (default 1e-6)
+        train_patience  (default 5)
+        val_patience    (default 20)
+        warmup_epochs   (default 10)
+    """
+
+    def __init__(self, training_cfg: Dict[str, Any]) -> None:
+        # Tolerances - shared meaning across both criteria
+        self.rel_tol = float(training_cfg.get("rel_tol", 1e-4))
+        self.abs_tol = float(training_cfg.get("abs_tol", 1e-6))
+
+        # Per-criterion patience
+        self.train_patience = int(training_cfg.get("train_patience", 5))
+        self.val_patience = int(training_cfg.get("val_patience", 20))
+
+        # Warmup: don't evaluate either criterion before this epoch/step
+        self.warmup_epochs = int(training_cfg.get("warmup_epochs", 10))
+
+        if self.rel_tol < 0 or self.abs_tol < 0:
+            raise ValueError("rel_tol and abs_tol must be non-negative")
+        if self.train_patience < 1 or self.val_patience < 1:
+            raise ValueError("train_patience and val_patience must be >= 1")
+
+        # State
+        self._prev_train_loss: Optional[float] = None
+        self._train_converged_streak: int = 0
+        self.best_val_loss: float = float("inf")
+        self._val_no_improve_streak: int = 0
+
+        # Reason for the stop, set when should_stop() returns True
+        self.stop_reason: Optional[str] = None
+
+    def _is_close(self, current: float, previous: float) -> bool:
+        """numpy.isclose-style mixed abs+rel tolerance test."""
+        return abs(previous - current) <= self.abs_tol + self.rel_tol * abs(previous)
+
+    def update(self, epoch: int, train_loss: float, val_loss: Optional[float]) -> None:
+        """Update internal state with this epoch's losses. Call once per epoch."""
+        # Train-loss convergence streak
+        if self._prev_train_loss is not None and torch.isfinite(torch.tensor(train_loss)):
+            if self._is_close(train_loss, self._prev_train_loss):
+                self._train_converged_streak += 1
+            else:
+                self._train_converged_streak = 0
+        self._prev_train_loss = train_loss
+
+        # Validation improvement streak (Prechelt-style)
+        if val_loss is not None and torch.isfinite(torch.tensor(val_loss)):
+            if torch.isfinite(torch.tensor(self.best_val_loss)):
+                improvement_threshold = self.abs_tol + self.rel_tol * abs(self.best_val_loss)
+                if self.best_val_loss - val_loss > improvement_threshold:
+                    self.best_val_loss = val_loss
+                    self._val_no_improve_streak = 0
+                else:
+                    # Strictly lower but not by min_delta: track the best for
+                    # checkpointing without resetting the patience counter.
+                    if val_loss < self.best_val_loss:
+                        self.best_val_loss = val_loss
+                    self._val_no_improve_streak += 1
+            else:
+                # First finite val_loss seen
+                self.best_val_loss = val_loss
+                self._val_no_improve_streak = 0
+
+    def should_stop(self, epoch: int) -> bool:
+        """Return True if either convergence criterion has fired (post-warmup)."""
+        if epoch < self.warmup_epochs:
+            return False
+
+        if self._train_converged_streak >= self.train_patience:
+            self.stop_reason = (
+                f"train-loss converged: |dL| <= {self.abs_tol:.2e} + "
+                f"{self.rel_tol:.2e}*|L| for {self._train_converged_streak} consecutive epochs"
+            )
+            return True
+
+        if self._val_no_improve_streak >= self.val_patience:
+            self.stop_reason = (
+                f"validation loss did not improve (min_delta = abs_tol + rel_tol*|best|) "
+                f"for {self._val_no_improve_streak} consecutive epochs "
+                f"(best_val_loss={self.best_val_loss:.6e})"
+            )
+            return True
+
+        return False
+
+    @property
+    def state(self) -> Dict[str, Any]:
+        """Diagnostic snapshot, useful for logging."""
+        return {
+            "train_converged_streak": self._train_converged_streak,
+            "val_no_improve_streak": self._val_no_improve_streak,
+            "best_val_loss": self.best_val_loss,
+        }
+
 
 if TYPE_CHECKING:
     import optuna
@@ -101,16 +363,20 @@ class MLPTrainer:
         self.weight_decay = float(training_cfg.get("weight_decay", 0.0))
         self.optimizer_name = str(training_cfg.get("optimizer", "adam")).lower()
 
-        # residual-based stopping (v2 idea)
-        self.train_residual_check_interval = int(training_cfg.get("train_residual_check_interval", 1))
+        # Logging cadence (cheap-to-eval losses are computed every epoch;
+        # full metric dicts only at these intervals, purely for logging).
         self.validation_check_interval = int(training_cfg.get("validation_check_interval", 10))
-        self.train_residual_tol = float(training_cfg.get("train_residual_tol", 1e-4))
-        self.validation_residual_tol = float(training_cfg.get("validation_residual_tol", 1e-4))
+        self.train_metrics_log_interval = int(training_cfg.get("train_metrics_log_interval", 10))
 
-        if self.train_residual_check_interval <= 0:
-            raise ValueError("train_residual_check_interval must be a positive integer")
         if self.validation_check_interval <= 0:
             raise ValueError("validation_check_interval must be a positive integer")
+        if self.train_metrics_log_interval <= 0:
+            raise ValueError("train_metrics_log_interval must be a positive integer")
+
+        # Unified convergence + early-stopping monitor. Reads rel_tol, abs_tol,
+        # train_patience, val_patience, warmup_epochs from training_cfg.
+        _warn_deprecated_keys(training_cfg)
+        self.convergence_monitor = ConvergenceMonitor(training_cfg)
 
         # loss function configurabile come in v1
         loss_name = str(training_cfg.get("loss_function", "mse")).lower()
@@ -166,8 +432,6 @@ class MLPTrainer:
         val_losses: List[Optional[float]] = []
         train_metrics_history: List[Optional[Dict[str, float]]] = []
         val_metrics_history: List[Optional[Dict[str, float]]] = []
-        train_residual_ok = False
-        val_residual_ok = False
 
         for epoch in range(1, self.n_epochs + 1):
             self.model.train()
@@ -200,48 +464,50 @@ class MLPTrainer:
             train_loss = float(sum(epoch_losses) / max(len(epoch_losses), 1))
             train_losses.append(train_loss)
 
+            # Train-set evaluation: kept only on logging ticks (matches original
+            # `_check_interval` gating; metrics_history entry is None off-tick).
             train_metrics: Optional[Dict[str, float]] = None
-            if _check_interval(epoch, self.train_residual_check_interval):
+            if _check_interval(epoch, self.train_metrics_log_interval):
                 _, train_metrics = self._evaluate_loader(self.train_loader)
-                train_metrics_history.append(train_metrics)
-                rmse_train = float(train_metrics.get("rmse", float("inf")))
-                train_residual_ok = torch.isfinite(torch.tensor(rmse_train)) and rmse_train <= self.train_residual_tol
-            else:
-                train_metrics_history.append(None)
+            train_metrics_history.append(train_metrics)
 
+            # Validation: a single evaluation per epoch; val_loss is always
+            # collected (needed by ConvergenceMonitor), val_metrics dict is
+            # only retained on logging ticks (same single-call pattern as
+            # original).
             val_loss: Optional[float] = None
             val_metrics: Optional[Dict[str, float]] = None
             if self.val_loader is not None:
                 val_loss, raw_val_metrics = self._evaluate_loader(self.val_loader)
-
                 if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
                     logger.warning(f"Non-finite val_loss at epoch {epoch}: {val_loss}")
                     val_loss = None
-
                 if _check_interval(epoch, self.validation_check_interval):
                     val_metrics = raw_val_metrics
-                    rmse_val = float(val_metrics.get("rmse", float("inf")))
-                    val_residual_ok = torch.isfinite(torch.tensor(rmse_val)) and rmse_val <= self.validation_residual_tol
-                    val_metrics_history.append(val_metrics)
-                else:
-                    val_metrics_history.append(None)
-            else:
-                val_metrics_history.append(None)
-
+            val_metrics_history.append(val_metrics)
             val_losses.append(val_loss)
 
-            # logging stile v1 ogni 10 epoche
+            # Convergence monitor: single source of truth for early stopping.
+            self.convergence_monitor.update(epoch, train_loss, val_loss)
+
+            # Log training progress every 10 epochs
             if epoch % 10 == 0:
+                state = self.convergence_monitor.state
                 if val_metrics is not None:
                     logger.info(
                         f"Epoch {epoch}/{self.n_epochs} - "
                         f"Train Loss: {train_loss:.6f}, "
                         f"Val Loss: {val_loss if val_loss is not None else float('nan'):.6f}, "
-                        f"Val R²: {val_metrics.get('r2', float('nan')):.4f}"
+                        f"Val R²: {val_metrics.get('r2', float('nan')):.4f} | "
+                        f"train_streak={state['train_converged_streak']}, "
+                        f"val_no_improve={state['val_no_improve_streak']}"
                     )
                 else:
                     logger.info(
-                        f"Epoch {epoch}/{self.n_epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss}"
+                        f"Epoch {epoch}/{self.n_epochs} - Train Loss: {train_loss:.6f}, "
+                        f"Val Loss: {val_loss} | "
+                        f"train_streak={state['train_converged_streak']}, "
+                        f"val_no_improve={state['val_no_improve_streak']}"
                     )
 
             if val_loss is not None and val_loss < self.best_val_loss:
@@ -255,8 +521,11 @@ class MLPTrainer:
                     logger.info(f"Trial pruned at epoch {epoch}")
                     raise optuna.TrialPruned()
 
-            if epoch >= max(self.train_residual_check_interval, self.validation_check_interval) and train_residual_ok and val_residual_ok:
-                logger.info(f"Stopping MLP training early at epoch {epoch} (residuals below tolerance)")
+            if self.convergence_monitor.should_stop(epoch):
+                logger.info(
+                    f"Stopping MLP training early at epoch {epoch}: "
+                    f"{self.convergence_monitor.stop_reason}"
+                )
                 break
 
         elapsed = time.time() - start_time
@@ -306,15 +575,16 @@ class GPTrainer:
         self.learning_rate = float(training_cfg.get("learning_rate", 1e-2))
         self.optimizer_name = str(training_cfg.get("optimizer", "adam")).lower()
 
-        self.train_residual_check_interval = int(training_cfg.get("train_residual_check_interval", 1))
         self.validation_check_interval = int(training_cfg.get("validation_check_interval", 10))
-        self.train_residual_tol = float(training_cfg.get("train_residual_tol", 1e-4))
-        self.validation_residual_tol = float(training_cfg.get("validation_residual_tol", 1e-4))
+        self.train_metrics_log_interval = int(training_cfg.get("train_metrics_log_interval", 10))
 
-        if self.train_residual_check_interval <= 0:
-            raise ValueError("train_residual_check_interval must be a positive integer")
         if self.validation_check_interval <= 0:
             raise ValueError("validation_check_interval must be a positive integer")
+        if self.train_metrics_log_interval <= 0:
+            raise ValueError("train_metrics_log_interval must be a positive integer")
+
+        _warn_deprecated_keys(training_cfg)
+        self.convergence_monitor = ConvergenceMonitor(training_cfg)
 
         params = self._optimizable_parameters()
         if self.optimizer_name == "sgd":
@@ -334,12 +604,6 @@ class GPTrainer:
             raise ValueError(f"Unknown optimizer: {self.optimizer_name}")
 
         self.mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.model.likelihood, self.model)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer,
-            step_size=int(training_cfg.get("scheduler_step_size", 50)),
-            gamma=float(training_cfg.get("scheduler_gamma", 0.5)),
-        )
-
         self.scheduler = _build_scheduler(self.optimizer, training_cfg)
 
         self.mll_history: List[float] = []
@@ -351,7 +615,7 @@ class GPTrainer:
         logger.info(f"GPTrainer initialized on device: {self.device}")
         logger.info(f"Initial GP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
 
-        self._setup_cholesky_jitter(training_cfg)
+        self._previous_jitter_state = _setup_cholesky_jitter(training_cfg)
 
     def _optimizable_parameters(self):
         return list(self.model.parameters())
@@ -384,15 +648,7 @@ class GPTrainer:
         if not hasattr(self, "_previous_jitter_state"):
             logger.warning("No previous jitter state saved; skipping restoration")
             return
-        prev_state = self._previous_jitter_state
-        gpytorch.settings.cholesky_jitter._set_state(
-            float_value=prev_state["float32"],
-            double_value=prev_state["float64"],
-        )
-        logger.info(
-            f"Restored previous Cholesky jitter: float32={prev_state['float32']:.2e}, "
-            f"float64={prev_state['float64']:.2e}"
-        )
+        _restore_cholesky_jitter(self._previous_jitter_state)
 
     def train(self) -> Dict[str, Any]:
         logger.info(f"Starting GP training for up to {self.n_training_steps} steps")
@@ -401,8 +657,6 @@ class GPTrainer:
         val_losses: List[Optional[float]] = []
         train_metrics_history: List[Optional[Dict[str, float]]] = []
         likelihood_noise_history: List[float] = []
-        train_residual_ok = False
-        val_residual_ok = False
 
         for step in range(1, self.n_training_steps + 1):
             self.model.train()
@@ -418,17 +672,23 @@ class GPTrainer:
                 loss.backward()
                 return loss
 
-            if self.optimizer_name == "lbfgs":
-                loss = self.optimizer.step(_closure)
-            else:
-                self.optimizer.zero_grad()
-                output = self.model(self.X_train)
-                loss = -self.mll(output, self.y_train)
-                if not torch.isfinite(loss):
-                    logger.warning(f"Non-finite GP loss at step {step}: {loss.item()}")
-                    break
-                loss.backward()
-                self.optimizer.step()
+            try:
+                if self.optimizer_name == "lbfgs":
+                    loss = self.optimizer.step(_closure)
+                else:
+                    self.optimizer.zero_grad()
+                    output = self.model(self.X_train)
+                    loss = -self.mll(output, self.y_train)
+                    if not torch.isfinite(loss):
+                        logger.warning(f"Non-finite GP loss at step {step}: {loss.item()}")
+                        break
+                    loss.backward()
+                    self.optimizer.step()
+            except _CHOLESKY_FAIL_EXCEPTIONS as exc:
+                _handle_cholesky_failure(
+                    exc, model_name="GP", step=step, phase="training", trial=self.trial
+                )
+                break
 
             if self.scheduler is not None:
                 try:
@@ -440,44 +700,50 @@ class GPTrainer:
 
             loss_value = float(loss.item()) if torch.is_tensor(loss) else float(loss)
             mll_value = -loss_value
-            train_losses.append(loss_value)          # negativo della MLL
-            self.mll_history.append(mll_value)       # MLL positiva
-
             current_noise = _current_likelihood_noise(self.model)
-            self.likelihood_noise_history.append(current_noise)
-            likelihood_noise_history.append(current_noise)
 
-            if _check_interval(step, self.train_residual_check_interval):
-                _, train_metrics = _evaluate_regression_model(self.model, self.X_train, self.y_train)
-                train_metrics_history.append(train_metrics)
-                rmse_train = float(train_metrics.get("rmse", float("inf")))
-                train_residual_ok = torch.isfinite(torch.tensor(rmse_train)) and rmse_train <= self.train_residual_tol
-            else:
-                train_metrics_history.append(None)
-
+            # Compute eval results into locals first; commit *all* per-step
+            # appends together at the end of the iteration, so a Cholesky
+            # failure inside the eval block leaves every history list at the
+            # same length (=step-1) and plots stay aligned.
+            train_metrics: Optional[Dict[str, float]] = None
             val_loss: Optional[float] = None
             val_metrics: Optional[Dict[str, float]] = None
-            if self.X_val is not None and self.y_val is not None:
-                val_loss, raw_val_metrics = _evaluate_regression_model(self.model, self.X_val, self.y_val)
+            try:
+                # Train-set evaluation: kept only on logging ticks.
+                if _check_interval(step, self.train_metrics_log_interval):
+                    _, train_metrics = _evaluate_regression_model(self.model, self.X_train, self.y_train)
 
-                if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
-                    logger.warning(f"Non-finite GP val_loss at step {step}: {val_loss}")
-                    val_loss = None
+                # Validation: single evaluation per step; val_metrics retained only
+                # on logging ticks (matches original single-call pattern).
+                if self.X_val is not None and self.y_val is not None:
+                    val_loss, raw_val_metrics = _evaluate_regression_model(self.model, self.X_val, self.y_val)
+                    if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
+                        logger.warning(f"Non-finite GP val_loss at step {step}: {val_loss}")
+                        val_loss = None
+                    if _check_interval(step, self.validation_check_interval):
+                        val_metrics = raw_val_metrics
+            except _CHOLESKY_FAIL_EXCEPTIONS as exc:
+                _handle_cholesky_failure(
+                    exc, model_name="GP", step=step, phase="evaluation", trial=self.trial
+                )
+                break
 
-                if _check_interval(step, self.validation_check_interval):
-                    val_metrics = raw_val_metrics
-                    rmse_val = float(val_metrics.get("rmse", float("inf")))
-                    val_residual_ok = torch.isfinite(torch.tensor(rmse_val)) and rmse_val <= self.validation_residual_tol
-                    self.val_metrics_history.append(val_metrics)
-                else:
-                    self.val_metrics_history.append(None)
-            else:
-                self.val_metrics_history.append(None)
-
+            # Atomic commit: every list grows by exactly one entry per
+            # successful step.
+            train_losses.append(loss_value)          # negative MLL
+            self.mll_history.append(mll_value)       # positive MLL
+            self.likelihood_noise_history.append(current_noise)
+            likelihood_noise_history.append(current_noise)
+            train_metrics_history.append(train_metrics)
+            self.val_metrics_history.append(val_metrics)
             val_losses.append(val_loss)
+
+            self.convergence_monitor.update(step, loss_value, val_loss)
 
             if step % 10 == 0:
                 val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
+                state = self.convergence_monitor.state
                 if val_metrics is not None:
                     logger.info(
                         f"Step {step}/{self.n_training_steps} - "
@@ -485,14 +751,18 @@ class GPTrainer:
                         f"Val MSE: {val_loss_display}, "
                         f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
                         f"Val MAE: {val_metrics.get('mae', float('nan')):.4f}, "
-                        f"Likelihood Noise: {current_noise:.6e}"
+                        f"Noise: {current_noise:.6e} | "
+                        f"train_streak={state['train_converged_streak']}, "
+                        f"val_no_improve={state['val_no_improve_streak']}"
                     )
                 else:
                     logger.info(
                         f"Step {step}/{self.n_training_steps} - "
                         f"Train Loss (MLL): {mll_value:.6f}, "
                         f"Val MSE: {val_loss_display}, "
-                        f"Likelihood Noise: {current_noise:.6e}"
+                        f"Noise: {current_noise:.6e} | "
+                        f"train_streak={state['train_converged_streak']}, "
+                        f"val_no_improve={state['val_no_improve_streak']}"
                     )
 
             if val_loss is not None and val_loss < self.best_val_loss:
@@ -506,8 +776,11 @@ class GPTrainer:
                     logger.info(f"Trial pruned at step {step}")
                     raise optuna.TrialPruned()
 
-            if step >= max(self.train_residual_check_interval, self.validation_check_interval) and train_residual_ok and val_residual_ok:
-                logger.info(f"Stopping GP training early at step {step} (residuals below tolerance)")
+            if self.convergence_monitor.should_stop(step):
+                logger.info(
+                    f"Stopping GP training early at step {step}: "
+                    f"{self.convergence_monitor.stop_reason}"
+                )
                 break
 
         elapsed = time.time() - start_time
@@ -562,15 +835,16 @@ class MLPGPTrainer:
         self.gp_learning_rate = float(training_cfg.get("gp_learning_rate", training_cfg.get("learning_rate", 1e-2)))
         self.mlp_weight_decay = float(training_cfg.get("mlp_weight_decay", 1e-4))
 
-        self.train_residual_check_interval = int(training_cfg.get("train_residual_check_interval", 1))
         self.validation_check_interval = int(training_cfg.get("validation_check_interval", 10))
-        self.train_residual_tol = float(training_cfg.get("train_residual_tol", 1e-4))
-        self.validation_residual_tol = float(training_cfg.get("validation_residual_tol", 1e-4))
+        self.train_metrics_log_interval = int(training_cfg.get("train_metrics_log_interval", 10))
 
-        if self.train_residual_check_interval <= 0:
-            raise ValueError("train_residual_check_interval must be a positive integer")
         if self.validation_check_interval <= 0:
             raise ValueError("validation_check_interval must be a positive integer")
+        if self.train_metrics_log_interval <= 0:
+            raise ValueError("train_metrics_log_interval must be a positive integer")
+
+        _warn_deprecated_keys(training_cfg)
+        self.convergence_monitor = ConvergenceMonitor(training_cfg)
 
         self.optimizer = self._build_optimizer()
         self.scheduler = _build_scheduler(self.optimizer, training_cfg)
@@ -585,7 +859,7 @@ class MLPGPTrainer:
         logger.info(f"MLPGPTrainer initialized on device: {self.device}")
         logger.info(f"Initial MLPGP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
 
-        self._setup_cholesky_jitter(training_cfg)
+        self._previous_jitter_state = _setup_cholesky_jitter(training_cfg)
 
     def _parameter_groups(self) -> List[Dict[str, Any]]:
         return [
@@ -639,15 +913,7 @@ class MLPGPTrainer:
         if not hasattr(self, "_previous_jitter_state"):
             logger.warning("No previous jitter state saved; skipping restoration")
             return
-        prev_state = self._previous_jitter_state
-        gpytorch.settings.cholesky_jitter._set_state(
-            float_value=prev_state["float32"],
-            double_value=prev_state["float64"],
-        )
-        logger.info(
-            f"Restored previous Cholesky jitter: float32={prev_state['float32']:.2e}, "
-            f"float64={prev_state['float64']:.2e}"
-        )
+        _restore_cholesky_jitter(self._previous_jitter_state)
 
     def train(self) -> Dict[str, Any]:
         architecture = getattr(self.model, "architecture_name", "unknown")
@@ -664,21 +930,25 @@ class MLPGPTrainer:
         val_losses: List[Optional[float]] = []
         train_metrics_history: List[Optional[Dict[str, float]]] = []
         likelihood_noise_history: List[float] = []
-        train_residual_ok = False
-        val_residual_ok = False
 
         for step in range(1, self.n_training_steps + 1):
             self.model.train()
             self.model.likelihood.train()
-            self.optimizer.zero_grad()
 
-            output = self.model(self.X_train)
-            loss = -self.mll(output, self.y_train)
-            if not torch.isfinite(loss):
-                logger.warning(f"Non-finite MLPGP loss at step {step}: {loss.item()}")
+            try:
+                self.optimizer.zero_grad()
+                output = self.model(self.X_train)
+                loss = -self.mll(output, self.y_train)
+                if not torch.isfinite(loss):
+                    logger.warning(f"Non-finite MLPGP loss at step {step}: {loss.item()}")
+                    break
+                loss.backward()
+                self.optimizer.step()
+            except _CHOLESKY_FAIL_EXCEPTIONS as exc:
+                _handle_cholesky_failure(
+                    exc, model_name="MLPGP", step=step, phase="training", trial=self.trial
+                )
                 break
-            loss.backward()
-            self.optimizer.step()
 
             if self.scheduler is not None:
                 try:
@@ -687,47 +957,50 @@ class MLPGPTrainer:
                     logger.warning("Scheduler step failed; disabling scheduler for the rest of training")
                     self.scheduler = None
 
+            loss_value = float(loss.item()) if torch.is_tensor(loss) else float(loss)
+            mll_value = -loss_value
+            current_noise = _current_likelihood_noise(self.model)
 
-                loss_value = float(loss.item()) if torch.is_tensor(loss) else float(loss)
-                mll_value = -loss_value
-                train_losses.append(loss_value)          # negativo della MLL
-                self.mll_history.append(mll_value)       # MLL positiva
-
-                current_noise = _current_likelihood_noise(self.model)
-                self.likelihood_noise_history.append(current_noise)
-                likelihood_noise_history.append(current_noise)
-
-                if _check_interval(step, self.train_residual_check_interval):
+            # Compute eval results into locals; commit *all* per-step appends
+            # together at the end so a Cholesky failure during eval leaves
+            # every history list at length=step-1.
+            train_metrics: Optional[Dict[str, float]] = None
+            val_loss: Optional[float] = None
+            val_metrics: Optional[Dict[str, float]] = None
+            try:
+                # Train-set evaluation: kept only on logging ticks.
+                if _check_interval(step, self.train_metrics_log_interval):
                     _, train_metrics = _evaluate_regression_model(self.model, self.X_train, self.y_train)
-                    train_metrics_history.append(train_metrics)
-                    rmse_train = float(train_metrics.get("rmse", float("inf")))
-                    train_residual_ok = torch.isfinite(torch.tensor(rmse_train)) and rmse_train <= self.train_residual_tol
-                else:
-                    train_metrics_history.append(None)
 
-                val_loss: Optional[float] = None
-                val_metrics: Optional[Dict[str, float]] = None
+                # Validation: single evaluation per step; val_metrics retained only
+                # on logging ticks.
                 if self.X_val is not None and self.y_val is not None:
                     val_loss, raw_val_metrics = _evaluate_regression_model(self.model, self.X_val, self.y_val)
-
                     if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
                         logger.warning(f"Non-finite MLPGP val_loss at step {step}: {val_loss}")
                         val_loss = None
-
                     if _check_interval(step, self.validation_check_interval):
                         val_metrics = raw_val_metrics
-                        rmse_val = float(val_metrics.get("rmse", float("inf")))
-                        val_residual_ok = torch.isfinite(torch.tensor(rmse_val)) and rmse_val <= self.validation_residual_tol
-                        self.val_metrics_history.append(val_metrics)
-                    else:
-                        self.val_metrics_history.append(None)
-                else:
-                    self.val_metrics_history.append(None)
+            except _CHOLESKY_FAIL_EXCEPTIONS as exc:
+                _handle_cholesky_failure(
+                    exc, model_name="MLPGP", step=step, phase="evaluation", trial=self.trial
+                )
+                break
 
-                val_losses.append(val_loss)
+            # Atomic commit: every list grows by exactly one entry per step.
+            train_losses.append(loss_value)  # negative mll
+            self.mll_history.append(mll_value)  # positive mll
+            self.likelihood_noise_history.append(current_noise)
+            likelihood_noise_history.append(current_noise)
+            train_metrics_history.append(train_metrics)
+            self.val_metrics_history.append(val_metrics)
+            val_losses.append(val_loss)
+
+            self.convergence_monitor.update(step, loss_value, val_loss)
 
             if step % 10 == 0:
                 val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
+                state = self.convergence_monitor.state
                 if val_metrics is not None:
                     logger.info(
                         f"Step {step}/{self.n_training_steps} - "
@@ -735,14 +1008,18 @@ class MLPGPTrainer:
                         f"Val MSE: {val_loss_display}, "
                         f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
                         f"Val MAE: {val_metrics.get('mae', float('nan')):.4f}, "
-                        f"Likelihood Noise: {current_noise:.6e}"
+                        f"Noise: {current_noise:.6e} | "
+                        f"train_streak={state['train_converged_streak']}, "
+                        f"val_no_improve={state['val_no_improve_streak']}"
                     )
                 else:
                     logger.info(
                         f"Step {step}/{self.n_training_steps} - "
                         f"MLL: {mll_value:.6f}, "
                         f"Val MSE: {val_loss_display}, "
-                        f"Likelihood Noise: {current_noise:.6e}"
+                        f"Noise: {current_noise:.6e} | "
+                        f"train_streak={state['train_converged_streak']}, "
+                        f"val_no_improve={state['val_no_improve_streak']}"
                     )
 
             if val_loss is not None and val_loss < self.best_val_loss:
@@ -756,8 +1033,11 @@ class MLPGPTrainer:
                     logger.info(f"Trial pruned at step {step}")
                     raise optuna.TrialPruned()
 
-            if step >= max(self.train_residual_check_interval, self.validation_check_interval) and train_residual_ok and val_residual_ok:
-                logger.info(f"Stopping MLPGP training early at step {step} (residuals below tolerance)")
+            if self.convergence_monitor.should_stop(step):
+                logger.info(
+                    f"Stopping MLPGP training early at step {step}: "
+                    f"{self.convergence_monitor.stop_reason}"
+                )
                 break
 
         elapsed = time.time() - start_time

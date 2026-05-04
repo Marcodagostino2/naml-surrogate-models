@@ -1,9 +1,15 @@
 # ============================================================================
 # Main Configuration Orchestrator
 # ============================================================================
-# This file controls the overall experiment run: which model to train, random
-# seed, execution mode, and precision settings. Specific model/training 
-# configs are loaded dynamically based on the 'model_to_train' selection.
+# This file controls the overall experiment run: workflow mode, model
+# selection, random seed, and precision settings. Specific model/training
+# configs are loaded dynamically based on the selected model.
+
+# Top-level workflow mode used by main.py:
+# - single_run: train/evaluate the configured model(s)
+# - optimization: run hyperparameter optimization
+# - convergence: run split/seed convergence analysis
+mode: "optimization"
 
 # Global random seed for reproducibility
 global_seed: 21
@@ -16,9 +22,10 @@ precision: "float32"
 dataset: "HYDDB_v2"
 
 # Model selection: "mlp", "gp", "mlpgp", or "all"
-model_to_train: "mlp"
+model_to_train: "mlpgp"
 
-# Execution mode: "training", "test", or "training+test"
+# Execution mode inside the single_run workflow: "training", "test", or
+# "training+test"
 run_mode: "training"
 
 # Verbose logging

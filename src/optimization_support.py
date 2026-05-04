@@ -17,11 +17,13 @@ from typing import Any, Callable, Dict, Optional, List
 import gpytorch
 import matplotlib.pyplot as plt
 import numpy as np
-import optuna
 import torch
 import yaml
-from optuna.pruners import BasePruner, HyperbandPruner, MedianPruner, NopPruner
-from optuna.samplers import BaseSampler, CmaEsSampler, RandomSampler, TPESampler
+
+try:
+    import optuna
+except ImportError:  # pragma: no cover - optional dependency for optimization workflows
+    optuna = None
 
 from src.pipeline import train_model
 from src.utils import OutputPathResolver, setup_logger
@@ -166,10 +168,9 @@ def _make_logging_callback(
         best = study.best_value if study.best_trial else float("nan")
         current = trial.value if trial.value is not None else float("nan")
         pct = (trial.number + 1) / max(n_trials, 1) * 100
-        print(
+        logger.info(
             f"[{model_name.upper()}] {trial.number + 1:>3}/{n_trials} ({pct:4.0f}%) | "
-            f"current={current:.5f}  best={best:.5f}",
-            flush=True,
+            f"current={current:.5f}  best={best:.5f}"
         )
 
     return callback
@@ -191,8 +192,13 @@ def compute_val_nll(model: Any, X_val_t: torch.Tensor, y_val_t: torch.Tensor) ->
 
 def build_sampler(study_cfg: Dict[str, Any]) -> BaseSampler:
     """Create an Optuna sampler from study configuration."""
+    if optuna is None:
+        raise ModuleNotFoundError("optuna is required to build optimization samplers.")
+
     sampler_name = str(study_cfg.get("sampler", "tpe")).lower()
     seed = int(study_cfg.get("seed", 42))
+
+    from optuna.samplers import CmaEsSampler, RandomSampler, TPESampler
 
     if sampler_name == "tpe":
         return TPESampler(seed=seed, multivariate=study_cfg.get("multivariate", True), n_startup_trials=study_cfg.get("n_startup_trials", 10))
@@ -217,7 +223,12 @@ def build_sampler(study_cfg: Dict[str, Any]) -> BaseSampler:
 
 def build_pruner(study_cfg: Dict[str, Any]) -> BasePruner:
     """Create an Optuna pruner from study configuration."""
+    if optuna is None:
+        raise ModuleNotFoundError("optuna is required to build optimization pruners.")
+
     pruner_name = study_cfg.get("pruner", "median")
+
+    from optuna.pruners import HyperbandPruner, MedianPruner, NopPruner
     if pruner_name is None or pruner_name == "null":
         return NopPruner()
     if pruner_name == "median":

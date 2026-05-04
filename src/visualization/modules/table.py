@@ -9,9 +9,11 @@ import numpy as np
 import pandas as pd
 
 from ..utils import FIG_STYLE, apply_style, compute_metrics, finalize_figure, predict_mean
+from src.utils import setup_logger
 
 if TYPE_CHECKING:
     from ..config import VisualizationConfig
+logger = setup_logger(__name__)
 
 _METRICS = ("r2", "rmse", "mae", "mape", "max_error")
 
@@ -41,17 +43,19 @@ def _build_metrics_dataframe(models: dict[str, Any], data: dict[str, Any]) -> pd
 def _print_table(df: pd.DataFrame) -> None:
     try:
         from tabulate import tabulate
+        table_str = tabulate(
+            df.reset_index(),
+            headers="keys",
+            tablefmt="rounded_outline",
+            floatfmt=".4f",
+            showindex=False,
+        )
     except ImportError:
-        tabulate = None
+        table_str = df.to_string(float_format=lambda value: f"{value:.4f}")
 
-    print("=" * 80)
-    print("MODEL METRICS SUMMARY")
-    print("=" * 80)
-    if tabulate is None:
-        print(df.to_string(float_format=lambda value: f"{value:.4f}"))
-    else:
-        print(tabulate(df.reset_index(), headers="keys", tablefmt="rounded_outline", floatfmt=".4f", showindex=False))
-
+    header = "=" * 80
+    for line in (header, "MODEL METRICS SUMMARY", header, *table_str.splitlines(), header):
+        logger.info(line)
 
 def _best_row_mask(df: pd.DataFrame, metric: str) -> pd.Series:
     return df[metric] == df[metric].max() if metric == "r2" else df[metric] == df[metric].min()
