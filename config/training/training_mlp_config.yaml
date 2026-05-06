@@ -9,8 +9,8 @@ n_epochs: 700
 # Stop policy (convergence-based)
 rel_tol: 1.0e-4         # relative tolerance on loss change / val improvement
 abs_tol: 1.0e-6         # absolute tolerance (handles loss values near zero)
-train_patience: 10       # consecutive epochs with |dL| <= tol to call it converged
-val_patience: 30        # consecutive epochs without val improvement to stop
+train_patience: 50       # consecutive epochs with |dL| <= tol to call it converged
+val_patience: 50        # consecutive epochs without val improvement to stop
 warmup_epochs: 10       # don't evaluate stop criteria before this epoch
 
 # Logging cadence

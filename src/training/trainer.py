@@ -13,6 +13,7 @@ Note on Scheduler Semantics:
 from __future__ import annotations
 
 import copy
+import contextlib
 import time
 import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -21,6 +22,8 @@ import gpytorch
 import torch
 from gpytorch.utils.warnings import GPInputWarning
 from torch.utils.data import DataLoader
+
+from linear_operator.utils.warnings import NumericalWarning
 
 # NotPSDError is raised by linear_operator's psd_safe_cholesky when even the
 # escalated jitter (up to 100x cholesky_jitter) cannot make K positive
@@ -48,12 +51,29 @@ def _to_prediction_tensor(output: Any) -> torch.Tensor:
         return output.mean
     return output
 
-def _evaluate_regression_model(model: Any, X: torch.Tensor, y: torch.Tensor) -> Tuple[float, Dict[str, float]]:
+def _evaluate_regression_model(
+    model: Any,
+    X: torch.Tensor,
+    y: torch.Tensor,
+    force_cholesky: bool = False,
+) -> Tuple[float, Dict[str, float]]:
     model.eval()
     likelihood = getattr(model, "likelihood", None)
     if likelihood is not None:
         likelihood.eval()
-    with torch.no_grad(), warnings.catch_warnings():
+    if force_cholesky:
+        ctx = contextlib.ExitStack()
+        ctx.enter_context(gpytorch.settings.max_cholesky_size(float("inf")))
+        ctx.enter_context(
+            gpytorch.settings.fast_computations(
+                covar_root_decomposition=False,
+                log_prob=False,
+                solves=False,
+            )
+        )
+    else:
+        ctx = contextlib.nullcontext()
+    with torch.no_grad(), ctx, warnings.catch_warnings():
         warnings.simplefilter("ignore", GPInputWarning)
         output = model(X)
         prediction = _to_prediction_tensor(output)
@@ -88,44 +108,6 @@ def _build_scheduler(optimizer: torch.optim.Optimizer, training_cfg: Dict[str, A
 
     raise ValueError(f"Unknown scheduler_type: {scheduler_type}")
 
-
-def _setup_cholesky_jitter(training_cfg: Dict[str, Any]) -> Dict[str, float]:
-    """Apply the configured GP cholesky jitter and return the previous state."""
-
-    jitter_float32 = float(training_cfg.get("cholesky_jitter_float32", 1e-6))
-    jitter_float64 = float(training_cfg.get("cholesky_jitter_float64", 1e-8))
-
-    if jitter_float32 < 0:
-        raise ValueError(f"cholesky_jitter_float32 must be non-negative, got {jitter_float32}")
-    if jitter_float64 < 0:
-        raise ValueError(f"cholesky_jitter_float64 must be non-negative, got {jitter_float64}")
-
-    previous_state = {
-        "float32": gpytorch.settings.cholesky_jitter.value(torch.float32),
-        "float64": gpytorch.settings.cholesky_jitter.value(torch.float64),
-    }
-
-    gpytorch.settings.cholesky_jitter._set_value(
-        float_value=jitter_float32,
-        double_value=jitter_float64,
-        half_value=None,
-    )
-
-    logger.info(f"Cholesky jitter configured: float32={jitter_float32:.2e}, float64={jitter_float64:.2e}")
-    return previous_state
-
-
-def _restore_cholesky_jitter(previous_state: Dict[str, float]) -> None:
-    """Restore the previously active GP cholesky jitter state."""
-
-    gpytorch.settings.cholesky_jitter._set_state(
-        float_value=previous_state["float32"],
-        double_value=previous_state["float64"],
-    )
-    logger.info(
-        f"Restored previous Cholesky jitter: float32={previous_state['float32']:.2e}, "
-        f"float64={previous_state['float64']:.2e}"
-    )
 
 
 def _is_cholesky_failure(exc: BaseException) -> bool:
@@ -165,13 +147,6 @@ def _handle_cholesky_failure(
     Outside an Optuna trial, just log a warning and return; the caller is
     expected to `break` out of the training loop. The post-loop logic in each
     trainer then restores `_best_model_state` as usual.
-
-    Args:
-        exc: the caught exception.
-        model_name: short tag for the log message ("GP", "MLPGP").
-        step: current training step at which the failure occurred.
-        phase: "training" or "evaluation" - just for the log message.
-        trial: optional Optuna trial; when present, prune instead of returning.
     """
     if not _is_cholesky_failure(exc):
         raise exc  # unrelated RuntimeError - don't swallow
@@ -274,37 +249,44 @@ class ConvergenceMonitor:
         """numpy.isclose-style mixed abs+rel tolerance test."""
         return abs(previous - current) <= self.abs_tol + self.rel_tol * abs(previous)
 
-    def update(self, epoch: int, train_loss: float, val_loss: Optional[float]) -> None:
-        """Update internal state with this epoch's losses. Call once per epoch."""
-        # Train-loss convergence streak
-        if self._prev_train_loss is not None and torch.isfinite(torch.tensor(train_loss)):
+    def step(self, epoch: int, train_loss: float, val_loss: Optional[float]) -> bool:
+        """Update state and return True if training should stop.
+
+        Streaks are frozen during warmup so that noisy initial epochs cannot
+        accumulate patience counts that fire immediately after warmup ends.
+        best_val_loss is still updated during warmup for checkpointing purposes.
+        """
+        in_warmup = epoch < self.warmup_epochs
+
+        # Train-loss convergence streak — frozen during warmup
+        if not in_warmup and self._prev_train_loss is not None and torch.isfinite(torch.tensor(train_loss)):
             if self._is_close(train_loss, self._prev_train_loss):
                 self._train_converged_streak += 1
             else:
                 self._train_converged_streak = 0
         self._prev_train_loss = train_loss
 
-        # Validation improvement streak (Prechelt-style)
+        # Validation improvement streak — frozen during warmup
         if val_loss is not None and torch.isfinite(torch.tensor(val_loss)):
             if torch.isfinite(torch.tensor(self.best_val_loss)):
                 improvement_threshold = self.abs_tol + self.rel_tol * abs(self.best_val_loss)
                 if self.best_val_loss - val_loss > improvement_threshold:
                     self.best_val_loss = val_loss
-                    self._val_no_improve_streak = 0
+                    if not in_warmup:
+                        self._val_no_improve_streak = 0
                 else:
-                    # Strictly lower but not by min_delta: track the best for
+                    # Strictly lower but not by min_delta: update best for
                     # checkpointing without resetting the patience counter.
                     if val_loss < self.best_val_loss:
                         self.best_val_loss = val_loss
-                    self._val_no_improve_streak += 1
+                    if not in_warmup:
+                        self._val_no_improve_streak += 1
             else:
                 # First finite val_loss seen
                 self.best_val_loss = val_loss
                 self._val_no_improve_streak = 0
 
-    def should_stop(self, epoch: int) -> bool:
-        """Return True if either convergence criterion has fired (post-warmup)."""
-        if epoch < self.warmup_epochs:
+        if in_warmup:
             return False
 
         if self._train_converged_streak >= self.train_patience:
@@ -488,7 +470,7 @@ class MLPTrainer:
             val_losses.append(val_loss)
 
             # Convergence monitor: single source of truth for early stopping.
-            self.convergence_monitor.update(epoch, train_loss, val_loss)
+            should_stop = self.convergence_monitor.step(epoch, train_loss, val_loss)
 
             # Log training progress every 10 epochs
             if epoch % 10 == 0:
@@ -521,7 +503,7 @@ class MLPTrainer:
                     logger.info(f"Trial pruned at epoch {epoch}")
                     raise optuna.TrialPruned()
 
-            if self.convergence_monitor.should_stop(epoch):
+            if should_stop:
                 logger.info(
                     f"Stopping MLP training early at epoch {epoch}: "
                     f"{self.convergence_monitor.stop_reason}"
@@ -542,7 +524,42 @@ class MLPTrainer:
             "elapsed_time": elapsed,
         }
 
-class GPTrainer:
+class _BaseGPTrainer:
+    def __init__(self, training_cfg: Dict[str, Any]) -> None:
+        self._force_cholesky = bool(training_cfg.get("force_cholesky", True))
+        logger.info(f"Cholesky forced: {self._force_cholesky}")
+
+        self._jitter_float32 = float(training_cfg.get("cholesky_jitter_float32", 1e-6))
+        self._jitter_float64 = float(training_cfg.get("cholesky_jitter_float64", 1e-8))
+
+        if self._jitter_float32 < 0:
+            raise ValueError(f"cholesky_jitter_float32 must be non-negative, got {self._jitter_float32}")
+        if self._jitter_float64 < 0:
+            raise ValueError(f"cholesky_jitter_float64 must be non-negative, got {self._jitter_float64}")
+
+        logger.info(
+            f"Cholesky jitter configured: float32={self._jitter_float32:.2e}, "
+            f"float64={self._jitter_float64:.2e}"
+        )
+
+    @contextlib.contextmanager
+    def _cholesky_context(self):
+        jitter_ctx = gpytorch.settings.cholesky_jitter(
+            self._jitter_float32, self._jitter_float64
+        )
+        with warnings.catch_warnings(), jitter_ctx:
+            warnings.filterwarnings("ignore", category=NumericalWarning)
+            if self._force_cholesky:
+                with gpytorch.settings.max_cholesky_size(float("inf")), gpytorch.settings.fast_computations(
+                    covar_root_decomposition=False,
+                    log_prob=False,
+                    solves=False,
+                ):
+                    yield
+                return
+            yield
+
+class GPTrainer(_BaseGPTrainer):
     """Trainer for exact GP regression models (EMLL + residual-based early stopping)."""
 
     def __init__(
@@ -563,6 +580,7 @@ class GPTrainer:
         self.y_val = y_val
         self.training_cfg = training_cfg
         self.trial = trial
+        super().__init__(training_cfg)
 
         self.device = device or resolve_device(str(training_cfg.get("device", "auto")))
         self.model.to(self.device)
@@ -615,40 +633,8 @@ class GPTrainer:
         logger.info(f"GPTrainer initialized on device: {self.device}")
         logger.info(f"Initial GP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
 
-        self._previous_jitter_state = _setup_cholesky_jitter(training_cfg)
-
     def _optimizable_parameters(self):
         return list(self.model.parameters())
-
-    def _setup_cholesky_jitter(self, training_cfg: Dict[str, Any]) -> None:
-        jitter_float32 = float(training_cfg.get("cholesky_jitter_float32", 1e-6))
-        jitter_float64 = float(training_cfg.get("cholesky_jitter_float64", 1e-8))
-
-        if jitter_float32 < 0:
-            raise ValueError(f"cholesky_jitter_float32 must be non-negative, got {jitter_float32}")
-        if jitter_float64 < 0:
-            raise ValueError(f"cholesky_jitter_float64 must be non-negative, got {jitter_float64}")
-
-        self._previous_jitter_state = {
-            "float32": gpytorch.settings.cholesky_jitter.value(torch.float32),
-            "float64": gpytorch.settings.cholesky_jitter.value(torch.float64),
-        }
-
-        gpytorch.settings.cholesky_jitter._set_value(
-            float_value=jitter_float32,
-            double_value=jitter_float64,
-            half_value=None,
-        )
-
-        logger.info(
-            f"Cholesky jitter configured: float32={jitter_float32:.2e}, float64={jitter_float64:.2e}"
-        )
-
-    def restore_previous_jitter(self) -> None:
-        if not hasattr(self, "_previous_jitter_state"):
-            logger.warning("No previous jitter state saved; skipping restoration")
-            return
-        _restore_cholesky_jitter(self._previous_jitter_state)
 
     def train(self) -> Dict[str, Any]:
         logger.info(f"Starting GP training for up to {self.n_training_steps} steps")
@@ -658,130 +644,141 @@ class GPTrainer:
         train_metrics_history: List[Optional[Dict[str, float]]] = []
         likelihood_noise_history: List[float] = []
 
-        for step in range(1, self.n_training_steps + 1):
-            self.model.train()
-            self.model.likelihood.train()
-
-            def _closure() -> torch.Tensor:
-                self.optimizer.zero_grad()
+        with self._cholesky_context():
+            for step in range(1, self.n_training_steps + 1):
                 self.model.train()
-                output = self.model(self.X_train)
-                loss = -self.mll(output, self.y_train)
-                if not torch.isfinite(loss):
-                    logger.warning(f"Non-finite GP loss at step {step}: {loss.item()}")
-                loss.backward()
-                return loss
+                self.model.likelihood.train()
 
-            try:
-                if self.optimizer_name == "lbfgs":
-                    loss = self.optimizer.step(_closure)
-                else:
+                def _closure() -> torch.Tensor:
                     self.optimizer.zero_grad()
+                    self.model.train()
                     output = self.model(self.X_train)
                     loss = -self.mll(output, self.y_train)
                     if not torch.isfinite(loss):
                         logger.warning(f"Non-finite GP loss at step {step}: {loss.item()}")
-                        break
                     loss.backward()
-                    self.optimizer.step()
-            except _CHOLESKY_FAIL_EXCEPTIONS as exc:
-                _handle_cholesky_failure(
-                    exc, model_name="GP", step=step, phase="training", trial=self.trial
-                )
-                break
+                    return loss
 
-            if self.scheduler is not None:
                 try:
-                    self.scheduler.step()
-                except Exception:
-                    logger.warning("Scheduler step failed; disabling scheduler for the rest of training")
-                    self.scheduler = None
-
-
-            loss_value = float(loss.item()) if torch.is_tensor(loss) else float(loss)
-            mll_value = -loss_value
-            current_noise = _current_likelihood_noise(self.model)
-
-            # Compute eval results into locals first; commit *all* per-step
-            # appends together at the end of the iteration, so a Cholesky
-            # failure inside the eval block leaves every history list at the
-            # same length (=step-1) and plots stay aligned.
-            train_metrics: Optional[Dict[str, float]] = None
-            val_loss: Optional[float] = None
-            val_metrics: Optional[Dict[str, float]] = None
-            try:
-                # Train-set evaluation: kept only on logging ticks.
-                if _check_interval(step, self.train_metrics_log_interval):
-                    _, train_metrics = _evaluate_regression_model(self.model, self.X_train, self.y_train)
-
-                # Validation: single evaluation per step; val_metrics retained only
-                # on logging ticks (matches original single-call pattern).
-                if self.X_val is not None and self.y_val is not None:
-                    val_loss, raw_val_metrics = _evaluate_regression_model(self.model, self.X_val, self.y_val)
-                    if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
-                        logger.warning(f"Non-finite GP val_loss at step {step}: {val_loss}")
-                        val_loss = None
-                    if _check_interval(step, self.validation_check_interval):
-                        val_metrics = raw_val_metrics
-            except _CHOLESKY_FAIL_EXCEPTIONS as exc:
-                _handle_cholesky_failure(
-                    exc, model_name="GP", step=step, phase="evaluation", trial=self.trial
-                )
-                break
-
-            # Atomic commit: every list grows by exactly one entry per
-            # successful step.
-            train_losses.append(loss_value)          # negative MLL
-            self.mll_history.append(mll_value)       # positive MLL
-            self.likelihood_noise_history.append(current_noise)
-            likelihood_noise_history.append(current_noise)
-            train_metrics_history.append(train_metrics)
-            self.val_metrics_history.append(val_metrics)
-            val_losses.append(val_loss)
-
-            self.convergence_monitor.update(step, loss_value, val_loss)
-
-            if step % 10 == 0:
-                val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
-                state = self.convergence_monitor.state
-                if val_metrics is not None:
-                    logger.info(
-                        f"Step {step}/{self.n_training_steps} - "
-                        f"Train Loss (MLL): {mll_value:.6f}, "
-                        f"Val MSE: {val_loss_display}, "
-                        f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
-                        f"Val MAE: {val_metrics.get('mae', float('nan')):.4f}, "
-                        f"Noise: {current_noise:.6e} | "
-                        f"train_streak={state['train_converged_streak']}, "
-                        f"val_no_improve={state['val_no_improve_streak']}"
+                    if self.optimizer_name == "lbfgs":
+                        loss = self.optimizer.step(_closure)
+                    else:
+                        self.optimizer.zero_grad()
+                        output = self.model(self.X_train)
+                        loss = -self.mll(output, self.y_train)
+                        if not torch.isfinite(loss):
+                            logger.warning(f"Non-finite GP loss at step {step}: {loss.item()}")
+                            break
+                        loss.backward()
+                        self.optimizer.step()
+                except _CHOLESKY_FAIL_EXCEPTIONS as exc:
+                    _handle_cholesky_failure(
+                        exc, model_name="GP", step=step, phase="training", trial=self.trial
                     )
-                else:
+                    break
+
+                if self.scheduler is not None:
+                    try:
+                        self.scheduler.step()
+                    except Exception:
+                        logger.warning("Scheduler step failed; disabling scheduler for the rest of training")
+                        self.scheduler = None
+
+
+                loss_value = float(loss.item()) if torch.is_tensor(loss) else float(loss)
+                mll_value = -loss_value
+                current_noise = _current_likelihood_noise(self.model)
+
+                # Compute eval results into locals first; commit *all* per-step
+                # appends together at the end of the iteration, so a Cholesky
+                # failure inside the eval block leaves every history list at the
+                # same length (=step-1) and plots stay aligned.
+                train_metrics: Optional[Dict[str, float]] = None
+                val_loss: Optional[float] = None
+                val_metrics: Optional[Dict[str, float]] = None
+                try:
+                    # Train-set evaluation: kept only on logging ticks.
+                    if _check_interval(step, self.train_metrics_log_interval):
+                        _, train_metrics = _evaluate_regression_model(
+                            self.model,
+                            self.X_train,
+                            self.y_train,
+                            force_cholesky=self._force_cholesky,
+                        )
+
+                    # Validation: single evaluation per step; val_metrics retained only
+                    # on logging ticks (matches original single-call pattern).
+                    if self.X_val is not None and self.y_val is not None:
+                        val_loss, raw_val_metrics = _evaluate_regression_model(
+                            self.model,
+                            self.X_val,
+                            self.y_val,
+                            force_cholesky=self._force_cholesky,
+                        )
+                        if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
+                            logger.warning(f"Non-finite GP val_loss at step {step}: {val_loss}")
+                            val_loss = None
+                        if _check_interval(step, self.validation_check_interval):
+                            val_metrics = raw_val_metrics
+                except _CHOLESKY_FAIL_EXCEPTIONS as exc:
+                        _handle_cholesky_failure(
+                            exc, model_name="GP", step=step, phase="evaluation", trial=self.trial
+                        )
+                        break
+
+                # Atomic commit: every list grows by exactly one entry per
+                # successful step.
+                train_losses.append(loss_value)          # negative MLL
+                self.mll_history.append(mll_value)       # positive MLL
+                self.likelihood_noise_history.append(current_noise)
+                likelihood_noise_history.append(current_noise)
+                train_metrics_history.append(train_metrics)
+                self.val_metrics_history.append(val_metrics)
+                val_losses.append(val_loss)
+
+                should_stop = self.convergence_monitor.step(step, loss_value, val_loss)
+
+                if step % 10 == 0:
+                    val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
+                    state = self.convergence_monitor.state
+                    if val_metrics is not None:
+                        logger.info(
+                            f"Step {step}/{self.n_training_steps} - "
+                            f"Train Loss (MLL): {mll_value:.6f}, "
+                            f"Val MSE: {val_loss_display}, "
+                            f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
+                            f"Val MAE: {val_metrics.get('mae', float('nan')):.4f}, "
+                            f"Noise: {current_noise:.6e} | "
+                            f"train_streak={state['train_converged_streak']}, "
+                            f"val_no_improve={state['val_no_improve_streak']}"
+                        )
+                    else:
+                        logger.info(
+                            f"Step {step}/{self.n_training_steps} - "
+                            f"Train Loss (MLL): {mll_value:.6f}, "
+                            f"Val MSE: {val_loss_display}, "
+                            f"Noise: {current_noise:.6e} | "
+                            f"train_streak={state['train_converged_streak']}, "
+                            f"val_no_improve={state['val_no_improve_streak']}"
+                        )
+
+                if val_loss is not None and val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
+
+                if self.trial is not None and val_loss is not None:
+                    self.trial.report(val_loss, step=step)
+                    if self.trial.should_prune():
+                        import optuna
+                        logger.info(f"Trial pruned at step {step}")
+                        raise optuna.TrialPruned()
+
+                if should_stop:
                     logger.info(
-                        f"Step {step}/{self.n_training_steps} - "
-                        f"Train Loss (MLL): {mll_value:.6f}, "
-                        f"Val MSE: {val_loss_display}, "
-                        f"Noise: {current_noise:.6e} | "
-                        f"train_streak={state['train_converged_streak']}, "
-                        f"val_no_improve={state['val_no_improve_streak']}"
+                        f"Stopping GP training early at step {step}: "
+                        f"{self.convergence_monitor.stop_reason}"
                     )
-
-            if val_loss is not None and val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
-
-            if self.trial is not None and val_loss is not None:
-                self.trial.report(val_loss, step=step)
-                if self.trial.should_prune():
-                    import optuna
-                    logger.info(f"Trial pruned at step {step}")
-                    raise optuna.TrialPruned()
-
-            if self.convergence_monitor.should_stop(step):
-                logger.info(
-                    f"Stopping GP training early at step {step}: "
-                    f"{self.convergence_monitor.stop_reason}"
-                )
-                break
+                    break
 
         elapsed = time.time() - start_time
         logger.info(f"GP training completed in {elapsed:.2f} seconds")
@@ -800,7 +797,7 @@ class GPTrainer:
             "elapsed_time": elapsed,
         }
 
-class MLPGPTrainer:
+class MLPGPTrainer(_BaseGPTrainer):
     """Trainer for end-to-end MLPGP models (EMLL + residual-based early stopping)."""
 
     def __init__(
@@ -821,6 +818,7 @@ class MLPGPTrainer:
         self.y_val = y_val
         self.training_cfg = training_cfg
         self.trial = trial
+        super().__init__(training_cfg)
 
         self.device = device or resolve_device(str(training_cfg.get("device", "auto")))
         self.model.to(self.device)
@@ -859,8 +857,6 @@ class MLPGPTrainer:
         logger.info(f"MLPGPTrainer initialized on device: {self.device}")
         logger.info(f"Initial MLPGP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
 
-        self._previous_jitter_state = _setup_cholesky_jitter(training_cfg)
-
     def _parameter_groups(self) -> List[Dict[str, Any]]:
         return [
             {
@@ -885,36 +881,6 @@ class MLPGPTrainer:
             return torch.optim.SGD(parameter_groups)
         raise ValueError(f"Unknown optimizer: {self.optimizer_name}")
 
-    def _setup_cholesky_jitter(self, training_cfg: Dict[str, Any]) -> None:
-        jitter_float32 = float(training_cfg.get("cholesky_jitter_float32", 1e-6))
-        jitter_float64 = float(training_cfg.get("cholesky_jitter_float64", 1e-8))
-
-        if jitter_float32 < 0:
-            raise ValueError(f"cholesky_jitter_float32 must be non-negative, got {jitter_float32}")
-        if jitter_float64 < 0:
-            raise ValueError(f"cholesky_jitter_float64 must be non-negative, got {jitter_float64}")
-
-        self._previous_jitter_state = {
-            "float32": gpytorch.settings.cholesky_jitter.value(torch.float32),
-            "float64": gpytorch.settings.cholesky_jitter.value(torch.float64),
-        }
-
-        gpytorch.settings.cholesky_jitter._set_value(
-            float_value=jitter_float32,
-            double_value=jitter_float64,
-            half_value=None,
-        )
-
-        logger.info(
-            f"Cholesky jitter configured: float32={jitter_float32:.2e}, float64={jitter_float64:.2e}"
-        )
-
-    def restore_previous_jitter(self) -> None:
-        if not hasattr(self, "_previous_jitter_state"):
-            logger.warning("No previous jitter state saved; skipping restoration")
-            return
-        _restore_cholesky_jitter(self._previous_jitter_state)
-
     def train(self) -> Dict[str, Any]:
         architecture = getattr(self.model, "architecture_name", "unknown")
         logger.info(
@@ -931,114 +897,125 @@ class MLPGPTrainer:
         train_metrics_history: List[Optional[Dict[str, float]]] = []
         likelihood_noise_history: List[float] = []
 
-        for step in range(1, self.n_training_steps + 1):
-            self.model.train()
-            self.model.likelihood.train()
+        with self._cholesky_context():
+            for step in range(1, self.n_training_steps + 1):
+                self.model.train()
+                self.model.likelihood.train()
 
-            try:
-                self.optimizer.zero_grad()
-                output = self.model(self.X_train)
-                loss = -self.mll(output, self.y_train)
-                if not torch.isfinite(loss):
-                    logger.warning(f"Non-finite MLPGP loss at step {step}: {loss.item()}")
-                    break
-                loss.backward()
-                self.optimizer.step()
-            except _CHOLESKY_FAIL_EXCEPTIONS as exc:
-                _handle_cholesky_failure(
-                    exc, model_name="MLPGP", step=step, phase="training", trial=self.trial
-                )
-                break
-
-            if self.scheduler is not None:
                 try:
-                    self.scheduler.step()
-                except Exception:
-                    logger.warning("Scheduler step failed; disabling scheduler for the rest of training")
-                    self.scheduler = None
-
-            loss_value = float(loss.item()) if torch.is_tensor(loss) else float(loss)
-            mll_value = -loss_value
-            current_noise = _current_likelihood_noise(self.model)
-
-            # Compute eval results into locals; commit *all* per-step appends
-            # together at the end so a Cholesky failure during eval leaves
-            # every history list at length=step-1.
-            train_metrics: Optional[Dict[str, float]] = None
-            val_loss: Optional[float] = None
-            val_metrics: Optional[Dict[str, float]] = None
-            try:
-                # Train-set evaluation: kept only on logging ticks.
-                if _check_interval(step, self.train_metrics_log_interval):
-                    _, train_metrics = _evaluate_regression_model(self.model, self.X_train, self.y_train)
-
-                # Validation: single evaluation per step; val_metrics retained only
-                # on logging ticks.
-                if self.X_val is not None and self.y_val is not None:
-                    val_loss, raw_val_metrics = _evaluate_regression_model(self.model, self.X_val, self.y_val)
-                    if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
-                        logger.warning(f"Non-finite MLPGP val_loss at step {step}: {val_loss}")
-                        val_loss = None
-                    if _check_interval(step, self.validation_check_interval):
-                        val_metrics = raw_val_metrics
-            except _CHOLESKY_FAIL_EXCEPTIONS as exc:
-                _handle_cholesky_failure(
-                    exc, model_name="MLPGP", step=step, phase="evaluation", trial=self.trial
-                )
-                break
-
-            # Atomic commit: every list grows by exactly one entry per step.
-            train_losses.append(loss_value)  # negative mll
-            self.mll_history.append(mll_value)  # positive mll
-            self.likelihood_noise_history.append(current_noise)
-            likelihood_noise_history.append(current_noise)
-            train_metrics_history.append(train_metrics)
-            self.val_metrics_history.append(val_metrics)
-            val_losses.append(val_loss)
-
-            self.convergence_monitor.update(step, loss_value, val_loss)
-
-            if step % 10 == 0:
-                val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
-                state = self.convergence_monitor.state
-                if val_metrics is not None:
-                    logger.info(
-                        f"Step {step}/{self.n_training_steps} - "
-                        f"MLL: {mll_value:.6f}, "
-                        f"Val MSE: {val_loss_display}, "
-                        f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
-                        f"Val MAE: {val_metrics.get('mae', float('nan')):.4f}, "
-                        f"Noise: {current_noise:.6e} | "
-                        f"train_streak={state['train_converged_streak']}, "
-                        f"val_no_improve={state['val_no_improve_streak']}"
+                    self.optimizer.zero_grad()
+                    output = self.model(self.X_train)
+                    loss = -self.mll(output, self.y_train)
+                    if not torch.isfinite(loss):
+                        logger.warning(f"Non-finite MLPGP loss at step {step}: {loss.item()}")
+                        break
+                    loss.backward()
+                    self.optimizer.step()
+                except _CHOLESKY_FAIL_EXCEPTIONS as exc:
+                    _handle_cholesky_failure(
+                        exc, model_name="MLPGP", step=step, phase="training", trial=self.trial
                     )
-                else:
-                    logger.info(
-                        f"Step {step}/{self.n_training_steps} - "
-                        f"MLL: {mll_value:.6f}, "
-                        f"Val MSE: {val_loss_display}, "
-                        f"Noise: {current_noise:.6e} | "
-                        f"train_streak={state['train_converged_streak']}, "
-                        f"val_no_improve={state['val_no_improve_streak']}"
+                    break
+
+                if self.scheduler is not None:
+                    try:
+                        self.scheduler.step()
+                    except Exception:
+                        logger.warning("Scheduler step failed; disabling scheduler for the rest of training")
+                        self.scheduler = None
+
+                loss_value = float(loss.item()) if torch.is_tensor(loss) else float(loss)
+                mll_value = -loss_value
+                current_noise = _current_likelihood_noise(self.model)
+
+                # Compute eval results into locals; commit *all* per-step appends
+                # together at the end so a Cholesky failure during eval leaves
+                # every history list at length=step-1.
+                train_metrics: Optional[Dict[str, float]] = None
+                val_loss: Optional[float] = None
+                val_metrics: Optional[Dict[str, float]] = None
+                try:
+                    # Train-set evaluation: kept only on logging ticks.
+                    if _check_interval(step, self.train_metrics_log_interval):
+                        _, train_metrics = _evaluate_regression_model(
+                            self.model,
+                            self.X_train,
+                            self.y_train,
+                            force_cholesky=self._force_cholesky,
+                        )
+
+                    # Validation: single evaluation per step; val_metrics retained only
+                    # on logging ticks.
+                    if self.X_val is not None and self.y_val is not None:
+                        val_loss, raw_val_metrics = _evaluate_regression_model(
+                            self.model,
+                            self.X_val,
+                            self.y_val,
+                            force_cholesky=self._force_cholesky,
+                        )
+                        if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
+                            logger.warning(f"Non-finite MLPGP val_loss at step {step}: {val_loss}")
+                            val_loss = None
+                        if _check_interval(step, self.validation_check_interval):
+                            val_metrics = raw_val_metrics
+                except _CHOLESKY_FAIL_EXCEPTIONS as exc:
+                    _handle_cholesky_failure(
+                        exc, model_name="MLPGP", step=step, phase="evaluation", trial=self.trial
                     )
+                    break
 
-            if val_loss is not None and val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
+                # Atomic commit: every list grows by exactly one entry per step.
+                train_losses.append(loss_value)  # negative mll
+                self.mll_history.append(mll_value)  # positive mll
+                self.likelihood_noise_history.append(current_noise)
+                likelihood_noise_history.append(current_noise)
+                train_metrics_history.append(train_metrics)
+                self.val_metrics_history.append(val_metrics)
+                val_losses.append(val_loss)
 
-            if self.trial is not None and val_loss is not None:
-                self.trial.report(val_loss, step=step)
-                if self.trial.should_prune():
-                    import optuna
-                    logger.info(f"Trial pruned at step {step}")
-                    raise optuna.TrialPruned()
+                should_stop = self.convergence_monitor.step(step, loss_value, val_loss)
 
-            if self.convergence_monitor.should_stop(step):
-                logger.info(
-                    f"Stopping MLPGP training early at step {step}: "
-                    f"{self.convergence_monitor.stop_reason}"
-                )
-                break
+                if step % 10 == 0:
+                    val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
+                    state = self.convergence_monitor.state
+                    if val_metrics is not None:
+                        logger.info(
+                            f"Step {step}/{self.n_training_steps} - "
+                            f"MLL: {mll_value:.6f}, "
+                            f"Val MSE: {val_loss_display}, "
+                            f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
+                            f"Val MAE: {val_metrics.get('mae', float('nan')):.4f}, "
+                            f"Noise: {current_noise:.6e} | "
+                            f"train_streak={state['train_converged_streak']}, "
+                            f"val_no_improve={state['val_no_improve_streak']}"
+                        )
+                    else:
+                        logger.info(
+                            f"Step {step}/{self.n_training_steps} - "
+                            f"MLL: {mll_value:.6f}, "
+                            f"Val MSE: {val_loss_display}, "
+                            f"Noise: {current_noise:.6e} | "
+                            f"train_streak={state['train_converged_streak']}, "
+                            f"val_no_improve={state['val_no_improve_streak']}"
+                        )
+
+                if val_loss is not None and val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
+
+                if self.trial is not None and val_loss is not None:
+                    self.trial.report(val_loss, step=step)
+                    if self.trial.should_prune():
+                        import optuna
+                        logger.info(f"Trial pruned at step {step}")
+                        raise optuna.TrialPruned()
+
+                if should_stop:
+                    logger.info(
+                        f"Stopping MLPGP training early at step {step}: "
+                        f"{self.convergence_monitor.stop_reason}"
+                    )
+                    break
 
         elapsed = time.time() - start_time
         logger.info(f"MLPGP training completed in {elapsed:.2f} seconds")

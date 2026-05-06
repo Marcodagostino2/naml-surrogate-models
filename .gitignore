@@ -83,6 +83,7 @@ Thumbs.db
 outputs/
 results/
 scripts/
+tests/
 report/
 uci_csv/
 data/*.csv

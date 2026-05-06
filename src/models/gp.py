@@ -11,40 +11,31 @@ Implemented using GPyTorch with:
 from __future__ import annotations
 
 from itertools import combinations_with_replacement
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import gpytorch
 import torch
-from gpytorch.constraints import GreaterThan, Interval
+from gpytorch.constraints import Interval
 from gpytorch.distributions import MultivariateNormal
-from gpytorch.kernels import ScaleKernel
 from gpytorch.means import Mean
 from gpytorch.models import ExactGP
 
-from src.models.gp_utils import build_kernel, extract_kernel_name, extract_required_config_value
+from src.models.gp_utils import build_kernel, clamp_to_bounds, extract_config_value, extract_kernel_name, extract_required_config_value
 from src.utils import setup_logger
 
 logger = setup_logger(__name__)
 
 
-def _format_param_block(name: str, values: Sequence[float], precision: str = ".4g") -> str:
-    """Render a vector parameter as a labelled block, one element per line.
-
-    Scalar (single-value) parameters render inline as ``name=value`` so that
-    short hyperparameters do not consume extra log lines.
-    """
-
-    seq = list(values)
-    if len(seq) == 1:
-        return f"{name}={seq[0]:{precision}}"
-    lines = [f"{name} (n_dims={len(seq)}):"]
-    lines.extend(f"    [{i}] {v:{precision}}" for i, v in enumerate(seq))
-    return "\n  ".join(lines)
-
-
-def _build_gaussian_likelihood(initial_noise: float) -> gpytorch.likelihoods.GaussianLikelihood:
-    likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=GreaterThan(1e-10))
-    likelihood.initialize(noise=float(initial_noise))
+def _build_gaussian_likelihood(initial_noise: float, noise_floor: float, noise_ceiling: float) -> gpytorch.likelihoods.GaussianLikelihood:
+    likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=Interval(noise_floor, noise_ceiling))
+    clamped_noise = float(
+        clamp_to_bounds(
+            torch.as_tensor(initial_noise, dtype=torch.get_default_dtype()),
+            noise_floor,
+            noise_ceiling,
+        ).item()
+    )
+    likelihood.initialize(noise=clamped_noise)
     return likelihood
 
 
@@ -97,10 +88,40 @@ class GPRegressionModel(ExactGP):
         likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
     ) -> None:
         kernel_cfg = model_cfg.get("kernel", model_cfg)
-        initial_likelihood_noise = float(extract_required_config_value(kernel_cfg, "likelihood_noise", "GP kernel config"))
+        initial_likelihood_noise = float(
+            extract_config_value(
+                kernel_cfg,
+                ("likelihood_noise_init"),
+                "GP kernel config",
+            )
+        )
+        noise_floor = float(
+            extract_config_value(
+                kernel_cfg,
+                ("likelihood_noise_floor"),
+                "GP kernel config",
+                default=1.0e-6,
+            )
+        )
+        noise_ceiling = float(
+            extract_config_value(
+                kernel_cfg,
+                ("likelihood_noise_ceiling"),
+                "GP kernel config",
+                default=1.0,
+            )
+        )
+
+        initial_likelihood_noise = float(
+            clamp_to_bounds(
+                torch.as_tensor(initial_likelihood_noise, dtype=torch.get_default_dtype()),
+                noise_floor,
+                noise_ceiling,
+            ).item()
+        )
 
         if likelihood is None:
-            likelihood = _build_gaussian_likelihood(initial_likelihood_noise)
+            likelihood = _build_gaussian_likelihood(initial_likelihood_noise, noise_floor, noise_ceiling)
 
         super().__init__(X_train, y_train, likelihood)
 
@@ -112,18 +133,8 @@ class GPRegressionModel(ExactGP):
         # Extract kernel name; support both nested dict (old format) and direct string (new format)
         kernel_name = extract_kernel_name(kernel_cfg)
 
-        # Build the kernel from config.
-        # For exponential kernels: theta and power_exponent from config become learnable parameters
-        # in ExponentialKernel (initialized and constrained). tau2 sets the ScaleKernel outputscale.
         self.likelihood.initialize(noise=initial_likelihood_noise)
         self.covar_module = build_kernel(kernel_name, input_dim, kernel_cfg)
-
-        # Set outputscale (tau2) for exponential kernel if provided.
-        # RBF/Matern kernels already have ScaleKernel with outputscale from the factory.
-        if kernel_name == "exponential":
-            initial_tau2 = float(kernel_cfg.get("tau2", 1.0))
-            if isinstance(self.covar_module, ScaleKernel):
-                self.covar_module.outputscale = initial_tau2
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:
         mean_x = self.mean_module(x)

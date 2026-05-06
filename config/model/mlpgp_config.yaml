@@ -39,18 +39,26 @@ non_stationary_feature_extractor:
       activation: "tanh"    
   dropout: 0.0
   batch_norm: false
-  output_activation: "softplus"
-  sigma_floor: 1e-4
-  lengthscale_floor: 1e-4
+  output_activation: "identity"
+  log_sigma_floor: -4
+  log_sigma_ceiling: 3
+  log_lengthscale_floor: -4
+  log_lengthscale_ceiling: 3
   lengthscale_mode: "per_dimension"
 
 kernel:
   type: "exponential"      # options: "exponential" | "rbf" | "matern"
                            # Note: "exponential" is mandatory for non_stationary architecture
-  theta: 1.0e-1            # exponential only
-  power_exponent: 2.0      # exponential only
-  likelihood_noise: 1.0e-2
-  tau2: 1.0e-2             # outputscale (DKL only; non_stationary ignores this)
+  theta_init: 1.0e-1            # exponential only
+  power_exponent_init: 1.9      # exponential only
+  likelihood_noise_init: 1.0e-2
+  tau2_init: 1.0e-2             # outputscale (DKL only; non_stationary ignores this)
   matern_nu: 2.5           # matern only (0.5, 1.5, 2.5)
+  likelihood_noise_floor: 1.0e-6      # minimum noise level
+  likelihood_noise_ceiling: 1.0       # maximum noise level 
+  theta_floor: 1.0e-5      # minimum theta value 
+  theta_ceiling: 1.0e3     # maximum theta value 
+  power_exponent_floor: 1.5  # minimum power exponent
+  power_exponent_ceiling: 2.0  # maximum power exponent
 
 trend_degree: 1

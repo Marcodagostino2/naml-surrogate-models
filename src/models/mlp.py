@@ -131,9 +131,6 @@ class MLPRegressor(nn.Module):
             for out_features in block_layers:
                 layers.append(nn.Linear(in_features, out_features))
 
-                if use_batch_norm:
-                    layers.append(nn.BatchNorm1d(out_features))
-
                 layers.append(activation_module)
 
                 if dropout_prob > 0.0:
@@ -141,13 +138,16 @@ class MLPRegressor(nn.Module):
 
                 in_features = out_features
 
+        if use_batch_norm:
+            layers.append(nn.BatchNorm1d(out_features))
+            
         # Output layer
         layers.append(nn.Linear(in_features, output_dim))
 
         # Output activation
         output_activation = _resolve_activation(output_activation_name)
         layers.append(output_activation)
-
+        
         self.network = nn.Sequential(*layers)
 
         logger.info(

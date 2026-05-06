@@ -9,8 +9,7 @@
 # - single_run: train/evaluate the configured model(s)
 # - optimization: run hyperparameter optimization
 # - convergence: run split/seed convergence analysis
-mode: "optimization"
-
+mode: "convergence"  
 # Global random seed for reproducibility
 global_seed: 21
 
@@ -19,7 +18,7 @@ global_seed: 21
 precision: "float32"
 
 # Active dataset key from config/dataset/dataset_config.yaml
-dataset: "HYDDB_v2"
+dataset: "airfoil_self_noise"
 
 # Model selection: "mlp", "gp", "mlpgp", or "all"
 model_to_train: "mlpgp"

@@ -33,8 +33,8 @@ n_training_steps: 700
 # (full-batch EMLL), so a short streak is already meaningful.
 rel_tol: 1.0e-4
 abs_tol: 1.0e-6
-train_patience: 10
-val_patience: 30
+train_patience: 50
+val_patience: 50
 warmup_epochs: 20        # named "epochs" for cross-trainer parity; here = steps
 
 # ---- Logging cadence ------------------------------------------------------
@@ -46,6 +46,9 @@ validation_check_interval: 10
 
 # Device: "cuda", "cpu", "auto"
 device: "auto"
+
+# Force exact Cholesky-based GP solves during evaluation/training context.
+force_cholesky: true
 
 # Cholesky jitter for numerical stability (GPyTorch psd_safe_cholesky)
 cholesky_jitter_float32: 1.0e-6

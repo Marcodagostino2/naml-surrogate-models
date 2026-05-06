@@ -277,10 +277,152 @@ For detailed architecture and workflow info, see:
 
 ## References
 
-- **GPyTorch**: https://gpytorch.ai/
-- **PyTorch**: https://pytorch.org/
-- **Optuna**: https://optuna.org/
-- Gaussian Processes: Rasmussen & Williams (2006)
+This section documents all papers, methods, and frameworks used throughout the project, organized by functionality.
+
+### Dataset Handling
+
+1. **Santner, T. J., Williams, B. J., & Notz, W. I. (2003).** *The Design and Analysis of Computer Experiments.* Springer.
+   - Foundational reference for surrogate modeling and design of experiments.
+   - Used for dataset design principles and computer experiment methodology.
+
+2. **Kennedy, M. C., & O'Hagan, A. (2000).** Predicting the output from a complex computer code when fast approximations are available. *Biometrika*, 87(1), 1–13.
+   - Kennedy-O'Hagan emulator framework for computer code approximation.
+   - Used as a methodological basis for surrogate model training strategies.
+
+3. **Data Preprocessing & Normalization**
+   - Standard z-score normalization: $\tilde{x} = \frac{x - \mu}{\sigma}$
+   - Train/validation/test splitting: 70/15/15 default ratios (configurable).
+   - CSV loading with Pandas; PyTorch DataLoader for batching.
+
+### Model Definition
+
+#### Gaussian Process (GP)
+
+4. **Rasmussen, C. E., & Williams, C. K. I. (2006).** *Gaussian Processes for Machine Learning.* MIT Press.
+   - Comprehensive reference for GP theory, kernels, and inference.
+   - Used for exact Gaussian Process regression (Kriging) with learnable kernels.
+
+5. **Learnable Exponential Kernel**
+   - Custom exponential kernel with Automatic Relevance Determination (ARD) scaling.
+   - Parametrization:
+     - `theta`: Distance-scaling parameter (learnable).
+     - `power_exponent`: Kernel exponent ∈ [1.5, 2.0] (constrained, learnable).
+     - `tau2`: Outputscale (variance).
+   - Enables feature-specific lengthscale learning.
+
+6. **RBF & Matérn Kernels** (optional alternatives)
+   - Radial Basis Function (RBF) kernel: $k(x, x') = \exp\left(-\frac{\|x-x'\|^2}{2\ell^2}\right)$
+   - Matérn kernel (ν-parameterized): interpolates between exponential (ν→0) and squared-exponential (ν→∞).
+   - Wrapped in `ScaleKernel` for learnable outputscale.
+
+#### Multi-Layer Perceptron (MLP)
+
+7. **MLPRegressor (Block-Based Architecture)**
+   - Three independent blocks (configurable layers/neurons per block).
+   - Flexible architecture: each block can have different activation functions (ReLU, Tanh, etc.).
+   - Dropout regularization for generalization.
+   - Batch normalization optional per block.
+
+#### Hybrid MLPGP Models
+
+8. **Wilson, A. G., Hu, Z., Salakhudinov, R., & Xing, E. P. (2016).** Deep Kernel Learning. In *Proceedings of the 19th International Conference on Artificial Intelligence and Statistics (AISTATS)*.
+   - Deep Kernel Learning (DKL) combines neural networks with GP kernels.
+   - Implemented as `DKLFeatureExtractor` that learns a feature map φ(x) → ℝ^d.
+   - Kernel in feature space: $k_{\text{DKL}}(x, x') = k_{\text{base}}(\phi(x), \phi(x'))$
+   - Reduces model complexity while maintaining expressiveness.
+
+9. **Paciorek, C. J., & Schervish, M. J. (2006).** Nonstationary Covariance Functions for Gaussian Process Regression. In *Advances in Neural Information Processing Systems (NIPS)*.
+   - Gibbs non-stationary kernel for input-dependent variance and lengthscale.
+   - Implemented as `NonstationaryExponentialKernel` with harmonic mean lengthscales.
+   - Formula: $K_{\text{Gibbs}}(x, x') = \sigma(x)\sigma(x') \cdot k_{\text{stat}}\left(\frac{x}{\ell(x)}, \frac{x'}{\ell(x')}\right)$
+   - Learned via MLP feature extraction (`NonstationaryFeatureExtractor`).
+
+10. **Hybrid Architecture Variants**
+    - **Non-Stationary MLPGP**: Uses exponential kernel with position-dependent variance σ(x) and lengthscale ℓ(x).
+    - **DKL MLPGP**: Uses standard or learnable kernels with deep feature extraction; supports exponential, RBF, and Matérn.
+
+### Training Logic
+
+11. **Prechelt, L. (1998).** Early Stopping - But When? In *Neural Networks: Tricks of the Trade.*
+    - Validation-based early stopping criterion with generalization gap monitoring.
+    - Implemented as: stop if best_val_loss - val_loss < rel_tol × |best_val_loss| + abs_tol for `val_patience` consecutive steps.
+    - Prevents overfitting without manual validation-set tuning.
+
+12. **Convergence Criterion (Least-Squares Style)**
+    - Train-loss convergence: $|L_{t-1} - L_t| \leq \text{abs\_tol} + \text{rel\_tol} \times |L_{t-1}|$
+    - Adapted from `scipy.optimize.least_squares` stopping rule.
+    - Used for detecting plateau in training loss; fires after `train_patience` consecutive steps.
+    - Training stops when **either** validation patience **or** train convergence fires.
+
+13. **Exact Marginal Log-Likelihood (EMLL) for GP**
+    - GP training maximizes marginal likelihood: $\log p(y | X, \theta) = -\frac{1}{2}(y^T K^{-1} y + \log |K| + n \log 2\pi)$
+    - Uses GPyTorch's `ExactMarginalLogLikelihood` objective.
+    - Full-batch optimization with no minibatching (all data in one step).
+    - Supports exact Cholesky-based solves with numerical jitter for stability.
+
+14. **Cholesky Jitter for Numerical Stability**
+    - GPyTorch's `psd_safe_cholesky` adds small jitter when Cholesky decomposition fails.
+    - Configurable jitter: separate values for float32 and float64 precisions.
+    - Default: 1e-6 (float32), 1e-8 (float64).
+
+15. **Optimizers**
+    - Supported: AdamW, Adam, SGD, LBFGS.
+    - Warmup epochs: delay early stopping criteria for N initial steps (allows learning rate to stabilize).
+    - Learning rate scheduling: optional StepLR scheduler (e.g., decay by γ every K steps).
+
+### Metric Comparison
+
+16. **Standard Regression Metrics**
+    - **Mean Squared Error (MSE)**: $\text{MSE} = \frac{1}{n}\sum (y_i - \hat{y}_i)^2$
+    - **Mean Absolute Error (MAE)**: $\text{MAE} = \frac{1}{n}\sum |y_i - \hat{y}_i|$
+    - **Root Mean Squared Error (RMSE)**: $\text{RMSE} = \sqrt{\text{MSE}}$
+    - **R² Score**: $R^2 = 1 - \frac{\sum(y_i - \hat{y}_i)^2}{\sum(y_i - \bar{y})^2}$ (fraction of variance explained).
+    - **Mean Absolute Percentage Error (MAPE)**: $\text{MAPE} = \frac{1}{n}\sum\left|\frac{y_i - \hat{y}_i}{y_i}\right| \times 100\%$
+
+17. **Uncertainty Quantification (GP/MLPGP)**
+    - Posterior variance from GP predictive distribution: $\text{Var}[\hat{y}(x)] = \text{diag}(K_* K^{-1} K_*^T)$
+    - Enables calibration plots and uncertainty band visualization.
+    - Used to diagnose model reliability across input space.
+
+### Optimization (Optuna)
+
+18. **Akiba, T., Sano, S., Yanase, T., Ohta, T., & Koyama, M. (2019).** Optuna: A Next-generation Hyperparameter Optimization Framework. In *Proceedings of the 25th ACM SIGKDD Conference on Knowledge Discovery & Data Mining*.
+    - Bayesian hyperparameter optimization framework with pruning support.
+    - Samplers: TPE (Tree-structured Parzen Estimator, default), Grid, Random, Bayesian.
+    - Pruners: Median, Hyperband, SuccessiveHalving for early termination of unpromising trials.
+    - Configuration: study direction (minimize/maximize), n_trials, timeout, metric name.
+
+19. **Hyperparameter Search Spaces**
+    - **MLP**: Block layer counts, hidden dimensions, activations, dropout rates, learning rates.
+    - **GP**: Kernel hyperparameters (theta, power_exponent, tau2), likelihood noise.
+    - **MLPGP (DKL)**: Feature extractor hidden dims, output dims, learning rates.
+    - Each trial trains a model from scratch and logs val_loss to the study.
+
+20. **Sampling & Pruning Strategy**
+    - Default: TPE sampler + Median pruner (stops trials performing below median at checkpoints).
+    - Enables efficient search over high-dimensional hyperparameter spaces.
+    - Objective function: typically validation loss (cross-entropy or regression loss).
+
+### Core Libraries & Frameworks
+
+21. **PyTorch**: https://pytorch.org/
+    - Deep learning framework for neural network training.
+    - Automatic differentiation (autograd) for gradient computation.
+    - CUDA support for GPU acceleration.
+
+22. **GPyTorch**: https://gpytorch.ai/
+    - Gaussian Process library built on PyTorch.
+    - Supports exact and approximate GP inference.
+    - Flexible kernel and mean function definitions.
+    - Scalable training via MLL objectives.
+
+23. **Optuna**: https://optuna.org/ (optional dependency)
+    - Hyperparameter optimization framework.
+    - Supports multiple samplers and pruners for efficient search.
+
+24. **Pandas & NumPy**
+    - CSV I/O and data manipulation (Pandas).
+    - Numerical computation and linear algebra (NumPy).
 
 ## Development Notes
 
@@ -293,31 +435,3 @@ For detailed architecture and workflow info, see:
 ## License
 
 Proprietary - NAML Project
-
-## Refactoring Status
-
-### Phase 1: Structural Refactoring ✅ COMPLETE
-
-- ✅ Entry-point consolidation (main.py mode dispatcher)
-- ✅ Trainer layer fixes (Cholesky jitter, scheduler semantics)
-- ✅ Lazy optuna imports (--help works without optuna)
-- ✅ Model layer consolidation (kernel configs, dead code removal)
-- ✅ Data layer refactoring (magic numbers → module constants)
-- ✅ Comprehensive documentation (codebase_map)
-
-### Phase 2: Code Hygiene ✅ COMPLETE
-
-- ✅ Removed all debug code (commented filler removed)
-- ✅ Replaced all `print()` statements with `logger` calls:
-  - `src/optimization_support.py` - Trial progress logging
-  - `src/visualization/modules/table.py` - Metrics summary
-- ✅ No remaining TODO/FIXME/HACK comments in src/
-- ✅ All imports verified functional
-
-**Code is production-ready.**
-
-## Current Status
-
-The entrypoint consolidation is complete. `main.py` dispatches the three supported modes, the package-level workflow entrypoints live under `src/entrypoints/`, and convergence analysis now runs from `src/convergence_analysis.py`.
-
-Optimization remains an optional path because it depends on `optuna`.

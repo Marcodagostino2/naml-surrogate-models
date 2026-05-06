@@ -7,39 +7,39 @@ global_seed: 21
 
 # Train split grid.
 # Validation uses a fixed ratio of the training split.
-split_percentages: [0.10, 0.20, 0.40, 0.70]
+split_percentages: [0.20]
 validation_train_ratio: 0.21428571428571427  # 0.07 -> 0.015, 0.10 -> 0.02142857
 
 # Number of runs to perform for each model.
 # Used for both analysis mode and the post-optimization uncertainty retrains.
 runs_per_model:
-  mlp: 7
-  gp: 7
-  mlpgp: 7
+  mlp: 2
+  gp: 2
+  mlpgp: 2
 
 # Random kernel-initialization bounds for the GP-family models.
 # The script samples one value per parameter within the configured bounds.
 kernel_init_bounds:
   gp:
     type: "exponential"
-    theta: {low: 1.0e-3, high: 1.0e-1}
-    power_exponent: {low: 1.5, high: 2.0}
-    tau2: {low: 1.0e-4, high: 1.0e-1}
-    likelihood_noise: {low: 1.0e-5, high: 1.0e-2}
+    theta_init: {low: 1.0e-3, high: 1.0e-1}
+    power_exponent_init: {low: 1.5, high: 2.0}
+    tau2_init: {low: 1.0e-4, high: 1.0e-1}
+    likelihood_noise_init: {low: 1.0e-5, high: 1.0e-2}
     matern_nu: {low: 0.5, high: 2.5}
   mlpgp:
     type: "exponential"
-    theta: {low: 1.0e-3, high: 1.0e-1}
-    power_exponent: {low: 1.5, high: 2.0}
-    tau2: {low: 1.0e-4, high: 1.0e-1}
-    likelihood_noise: {low: 1.0e-5, high: 1.0e-2}
+    theta_init: {low: 1.0e-3, high: 1.0e-1}
+    power_exponent_init: {low: 1.5, high: 2.0}
+    tau2_init: {low: 1.0e-4, high: 1.0e-1}
+    likelihood_noise_init: {low: 1.0e-5, high: 1.0e-2}
     matern_nu: {low: 0.5, high: 2.5}
 
 # Optional overrides for the optimization mode.
 # These settings are merged into config/optimization/*.yaml at runtime.
 optimization_overrides:
   study:
-    n_trials: 100
+    n_trials: 2
     timeout: 3600
     metric: "val_rmse"
     sampler: "tpe"

@@ -12,7 +12,7 @@ import json
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, List
+from typing import Any, Callable, Dict, Optional, List, TYPE_CHECKING
 
 import gpytorch
 import matplotlib.pyplot as plt
@@ -24,6 +24,12 @@ try:
     import optuna
 except ImportError:  # pragma: no cover - optional dependency for optimization workflows
     optuna = None
+
+if TYPE_CHECKING:
+    from optuna import Study, Trial
+    from optuna.pruners import BasePruner
+    from optuna.samplers import BaseSampler
+    from optuna.trial import FrozenTrial
 
 from src.pipeline import train_model
 from src.utils import OutputPathResolver, setup_logger
@@ -46,9 +52,10 @@ _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("mlp", "block3_layers"): "architecture",
     ("mlp", "block3_hidden_size"): "architecture",
     ("mlp", "block3_activation"): "architecture",
-    ("gp", "outputscale_init"): "kernel",
-    ("gp", "lengthscale_init"): "kernel",
-    ("gp", "noise_var"): "kernel",
+    ("gp", "tau2_init"): "kernel",
+    ("gp", "theta_init"): "kernel",
+    ("gp", "power_exponent_init"): "kernel",
+    ("gp", "likelihood_noise_init"): "kernel",
     ("mlpgp", "block1_layers"): "feature_extractor",
     ("mlpgp", "block1_hidden_size"): "feature_extractor",
     ("mlpgp", "block1_activation"): "feature_extractor",
@@ -65,21 +72,10 @@ _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("mlpgp", "sigma_floor"): "feature_extractor",
     ("mlpgp", "lengthscale_floor"): "feature_extractor",
     ("mlpgp", "lengthscale_mode"): "feature_extractor",
-    ("mlpgp", "theta"): "kernel",
-    ("mlpgp", "power_exponent"): "kernel",
-    ("mlpgp", "outputscale_init"): "kernel",
-    ("mlpgp", "tau2"): "kernel",
-    ("mlpgp", "lengthscale_init"): "kernel",
-    ("mlpgp", "noise_var"): "kernel",
-}
-
-_KERNEL_PARAM_MAP: Dict[str, str] = {
-    "outputscale_init": "tau2",
-    "tau2": "tau2",
-    "lengthscale_init": "theta",
-    "noise_var": "likelihood_noise",
-    "theta": "theta",
-    "power_exponent": "power_exponent",
+    ("mlpgp", "tau2_init"): "kernel",
+    ("mlpgp", "theta_init"): "kernel",
+    ("mlpgp", "power_exponent_init"): "kernel",
+    ("mlpgp", "likelihood_noise_init"): "kernel",
 }
 
 
@@ -114,7 +110,7 @@ def _resolve_active_search_space(
     )
 
 
-def suggest_from_config(trial: optuna.Trial, search_space: Dict[str, Any], target: str) -> Dict[str, Any]:
+def suggest_from_config(trial: Trial, search_space: Dict[str, Any], target: str) -> Dict[str, Any]:
     """Convert a YAML search space section into Optuna suggestions."""
     if target not in search_space:
         return {}
@@ -159,13 +155,16 @@ def _make_logging_callback(
     n_trials: int,
     metric_name: str,
     log_every: int = 5,
-) -> Callable[[optuna.Study, optuna.trial.FrozenTrial], None]:
+) -> Callable[[Study, FrozenTrial], None]:
     """Create a compact Optuna callback that prints periodic progress."""
     # removed: per-trial logger spam, replaced by coarse-grained callback logging.
-    def callback(study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
+    def callback(study: Study, trial: FrozenTrial) -> None:
         if log_every <= 0 or trial.number % log_every != 0:
             return
-        best = study.best_value if study.best_trial else float("nan")
+        try:
+            best = study.best_value
+        except ValueError:
+            best = float("nan")
         current = trial.value if trial.value is not None else float("nan")
         pct = (trial.number + 1) / max(n_trials, 1) * 100
         logger.info(
@@ -339,11 +338,7 @@ def _apply_hp(model_name: str, params: Dict[str, Any], architecture_name: Option
             patch["dkl_feature_extractor" if architecture_name == "dkl" else "non_stationary_feature_extractor"] = feature_patch
 
     if kernel_params := scoped.get("kernel"):
-        kernel = {
-            _KERNEL_PARAM_MAP[k]: float(v)
-            for k, v in kernel_params.items()
-            if k in _KERNEL_PARAM_MAP
-        }
+        kernel = {k: float(v) for k, v in kernel_params.items()}
         if kernel:
             patch["kernel"] = kernel
 
@@ -376,12 +371,12 @@ def make_objective(
     dataset_cfg: Dict[str, Any],
     opt_cfg: Dict[str, Any],
     device: torch.device,
-) -> Callable[[optuna.Trial], float]:
+) -> Callable[[Trial], float]:
     """Create an Optuna objective bound to the shared training pipeline."""
     active_search_space = _resolve_active_search_space(opt_cfg, base_model_cfg)
     architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
 
-    def objective(trial: optuna.Trial) -> float:
+    def objective(trial: Trial) -> float:
         model_params = suggest_from_config(trial, active_search_space, "model")
         training_params = suggest_from_config(trial, active_search_space, "training")
 
@@ -456,7 +451,7 @@ def _extract_best_params(best_params: Dict[str, Any], search_space: Dict[str, An
 
 
 def save_optimization_results(
-    study: optuna.Study,
+    study: Study,
     output_resolver: OutputPathResolver,
     opt_cfg: Dict[str, Any],
     base_model_cfg: Dict[str, Any],
@@ -518,7 +513,7 @@ def save_optimization_results(
 
 # Plotting helpers are kept here so optimize.py can stay thin.
 
-def _generate_summary_dashboard(study: optuna.Study, plots_dir: Path) -> None:
+def _generate_summary_dashboard(study: Study, plots_dir: Path) -> None:
     """Generate a 2x3 dashboard with optimization and multi-metric diagnostics."""
     completed_trials = [
         t for t in study.trials
@@ -665,7 +660,7 @@ def _generate_summary_dashboard(study: optuna.Study, plots_dir: Path) -> None:
     logger.debug(f"Summary dashboard saved to {dashboard_path}")
 
 
-def generate_optimization_plots(study: optuna.Study, plots_dir: Path) -> None:
+def generate_optimization_plots(study: Study, plots_dir: Path) -> None:
     """Generate the optimization dashboard."""
     plots_dir.mkdir(parents=True, exist_ok=True)
     _generate_summary_dashboard(study, plots_dir)

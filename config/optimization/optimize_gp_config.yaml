@@ -17,17 +17,17 @@ kernel_name: "exponential"   # override in command line or env as needed
 
 search_space:
   model:
-    outputscale_init:
+    tau2_init:
       type: float
       low: 1.0e-3
       high: 1.0e-1
       log: true
-    lengthscale_init:
+    theta_init:
       type: float
       low: 1.0e-2
       high: 1.0
       log: true
-    noise_var:
+    likelihood_noise_init:
       type: float
       low: 1.0e-5
       high: 1.0e-1

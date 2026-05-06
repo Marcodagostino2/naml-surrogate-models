@@ -94,10 +94,24 @@ def _run_tag(seed: int, repeat_index: int, kernel_index: int | None = None) -> s
     return f"seed_{seed}_run_{repeat_index}_k_{kernel_index}"
 
 
-def _load_contexts(config_dir: Path, mode: str) -> Dict[str, Dict[str, Any]]:
+def _get_models_to_train(main_cfg: Dict[str, Any], all_models: Sequence[str] = MODEL_SEQUENCE) -> Sequence[str]:
+    """Filter models to train based on main_cfg model_to_train setting.
+    
+    If model_to_train is 'all', return all models. Otherwise return just the specified model.
+    """
+    model_to_train = str(main_cfg.get("model_to_train", "all")).lower()
+    if model_to_train == "all":
+        return all_models
+    if model_to_train in all_models:
+        return (model_to_train,)
+    logger.warning(f"Invalid model_to_train '{model_to_train}'. Using all models instead.")
+    return all_models
+
+
+def _load_contexts(config_dir: Path, mode: str, model_sequence: Sequence[str] = MODEL_SEQUENCE) -> Dict[str, Dict[str, Any]]:
     contexts: Dict[str, Dict[str, Any]] = {}
     include_optimize = mode == "optimization"
-    for model_name in MODEL_SEQUENCE:
+    for model_name in model_sequence:
         contexts[model_name] = load_run_configs(config_dir, model_name, include_optimize=include_optimize)
     return contexts
 
@@ -139,21 +153,6 @@ def _kernel_init_for_model(analysis_cfg: Dict[str, Any], model_name: str, seed: 
     return sampled
 
 
-def _apply_kernel_variant(model_cfg: Dict[str, Any], kernel_variant: Any) -> Dict[str, Any]:
-    if kernel_variant is None:
-        return deepcopy(model_cfg)
-    updated = deepcopy(model_cfg)
-    kernel_cfg = updated.get("kernel", {})
-    if not isinstance(kernel_cfg, dict):
-        kernel_cfg = {}
-    if isinstance(kernel_variant, dict):
-        kernel_cfg.update(kernel_variant)
-    else:
-        kernel_cfg["theta"] = float(kernel_variant)
-    updated["kernel"] = kernel_cfg
-    return updated
-
-
 def _set_kernel_seeded_values(model_cfg: Dict[str, Any], kernel_init: Dict[str, Any] | None) -> Dict[str, Any]:
     if kernel_init is None:
         return deepcopy(model_cfg)
@@ -166,8 +165,12 @@ def _set_kernel_seeded_values(model_cfg: Dict[str, Any], kernel_init: Dict[str, 
     return updated
 
 
-def _analysis_output_resolver(dataset_name: str, mode: str, split_tag: str, run_tag: str, model_name: str) -> OutputPathResolver:
-    synthetic_dataset_name = f"{dataset_name}/{ANALYSIS_ROOT_NAME}/{mode}/{split_tag}/{run_tag}"
+def _analysis_output_resolver(dataset_name: str, model_name: str) -> OutputPathResolver:
+    """Return output resolver for convergence analysis intermediate training outputs.
+    
+    Uses a flattened path structure without split/run tags to avoid cluttering the results directory.
+    """
+    synthetic_dataset_name = f"{dataset_name}/{ANALYSIS_ROOT_NAME}/training"
     return OutputPathResolver(
         dataset_name=synthetic_dataset_name,
         run_type=RunType.CONVERGENCE_ANALYSIS,
@@ -189,16 +192,13 @@ def _extract_history_values(model_name: str, history: Dict[str, Any]) -> tuple[s
 def _train_best_model(
     *,
     dataset_name: str,
-    mode: str,
-    split_tag: str,
-    run_tag: str,
     model_name: str,
     data_bundle: DataBundle,
     dataset_cfg: Dict[str, Any],
     model_cfg: Dict[str, Any],
     training_cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
-    output_resolver = _analysis_output_resolver(dataset_name, mode, split_tag, run_tag, model_name)
+    output_resolver = _analysis_output_resolver(dataset_name, model_name)
     output_resolver.root.mkdir(parents=True, exist_ok=True)
     results = train_model(
         model_name=model_name,
@@ -254,12 +254,12 @@ def _run_analysis_mode(
 
     metrics_rows: List[Dict[str, Any]] = []
     histories: List[Dict[str, Any]] = []
-    analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME / "analysis"
+    analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME
     analysis_root.mkdir(parents=True, exist_ok=True)
 
     for split_index, train_ratio in enumerate(split_grid):
         split_tag = _split_tag(train_ratio)
-        for model_name in MODEL_SEQUENCE:
+        for model_name in model_cfg_map.keys():
             n_runs = _run_count_for_model(analysis_cfg, "runs_per_model", model_name, default=1)
             for run_index in range(n_runs):
                 seed = global_seed + split_index * 1000 + run_index * 10 + MODEL_SEQUENCE.index(model_name)
@@ -271,9 +271,6 @@ def _run_analysis_mode(
 
                 result = _train_best_model(
                     dataset_name=dataset_name,
-                    mode="analysis",
-                    split_tag=split_tag,
-                    run_tag=_run_tag(seed, run_index),
                     model_name=model_name,
                     data_bundle=data_bundle,
                     dataset_cfg=dataset_cfg,
@@ -344,7 +341,7 @@ def _run_optimization_mode(
 
     metrics_rows: List[Dict[str, Any]] = []
     histories: List[Dict[str, Any]] = []
-    analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME / "optimization"
+    analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME
     analysis_root.mkdir(parents=True, exist_ok=True)
 
     for split_index, train_ratio in enumerate(split_grid):
@@ -352,16 +349,13 @@ def _run_optimization_mode(
         seed = global_seed + split_index * 1000
         set_global_seed(seed)
         data_bundle = _prepare_data_bundle(dataset_cfg, train_ratio, validation_train_ratio, seed)
-        for model_name in MODEL_SEQUENCE:
+        for model_name in model_cfg_map.keys():
             model_cfg = deepcopy(model_cfg_map[model_name])
             training_cfg = deepcopy(training_cfg_map[model_name])
             opt_cfg = _apply_optimization_overrides(opt_cfg_map[model_name], analysis_cfg)
 
             output_resolver = _analysis_output_resolver(
                 dataset_name=dataset_name,
-                mode="optimization",
-                split_tag=split_tag,
-                run_tag=f"best_seed_{seed}",
                 model_name=model_name,
             )
             output_resolver.root.mkdir(parents=True, exist_ok=True)
@@ -414,15 +408,11 @@ def _run_optimization_mode(
                 retrain_seed = seed + run_index
                 set_global_seed(retrain_seed)
                 retrain_data_bundle = _prepare_data_bundle(dataset_cfg, train_ratio, validation_train_ratio, retrain_seed)
-                retrain_kernel_init = _kernel_init_for_model(analysis_cfg, model_name, retrain_seed)
-                retrain_model_cfg = _set_kernel_seeded_values(best_model_cfg, retrain_kernel_init)
+                retrain_model_cfg = deepcopy(best_model_cfg)
                 retrain_training_cfg = deepcopy(best_training_cfg)
 
                 best_result = _train_best_model(
                     dataset_name=dataset_name,
-                    mode="optimization",
-                    split_tag=split_tag,
-                    run_tag=f"best_seed_{retrain_seed}_run_{run_index}",
                     model_name=model_name,
                     data_bundle=retrain_data_bundle,
                     dataset_cfg=dataset_cfg,
@@ -452,7 +442,7 @@ def _run_optimization_mode(
                         "n_test": int(data_bundle.X_test.shape[0]),
                         "seed": retrain_seed,
                         "run_index": run_index,
-                        "kernel_init": json.dumps(retrain_kernel_init, sort_keys=True) if retrain_kernel_init is not None else None,
+                        "kernel_init": json.dumps(retrain_model_cfg.get("kernel"), sort_keys=True) if isinstance(retrain_model_cfg.get("kernel"), dict) else None,
                         "best_value": float(study.best_value) if study.best_value is not None else np.nan,
                         "best_trial": int(study.best_trial.number) if study.best_trial is not None else -1,
                         "n_trials_completed": int(len(study.trials)),
@@ -480,9 +470,34 @@ def _aggregate_results(metrics_df: pd.DataFrame, mode: str) -> pd.DataFrame:
     return agg.reset_index(drop=True)
 
 
-def _plot_metric_curve(df: pd.DataFrame, metric: str, output_path: Path, title_prefix: str) -> None:
+def _plot_metric_curve(df: pd.DataFrame, metric: str, output_path: Path, title: str, model_name: str | None = None) -> None:
+    """Plot metric curve for a single model or combined models.
+    
+    If model_name is specified, filter to that model. Otherwise plot all models in df.
+    """
     plt.figure(figsize=(9, 6))
-    for model_name in MODEL_SEQUENCE:
+    if model_name is not None:
+        df = df[df["model"] == model_name]
+    agg = df.groupby("train_split")[metric].agg(["mean", "std"]).reset_index().sort_values("train_split")
+    x = agg["train_split"].to_numpy(dtype=float)
+    y = agg["mean"].to_numpy(dtype=float)
+    yerr = agg["std"].fillna(0.0).to_numpy(dtype=float)
+    plt.plot(x, y, marker="o", linewidth=2)
+    plt.fill_between(x, y - yerr, y + yerr, alpha=0.2)
+
+    plt.xlabel("Train split")
+    plt.ylabel(metric.upper())
+    plt.title(title)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=160)
+    plt.close()
+
+
+def _plot_metric_curve_all_models(df: pd.DataFrame, metric: str, output_path: Path, title: str, model_sequence: Sequence[str] = MODEL_SEQUENCE) -> None:
+    """Plot metric curve showing all models together with uncertainty bands."""
+    plt.figure(figsize=(11, 6))
+    for model_name in model_sequence:
         subset = df[df["model"] == model_name]
         if subset.empty:
             continue
@@ -490,12 +505,12 @@ def _plot_metric_curve(df: pd.DataFrame, metric: str, output_path: Path, title_p
         x = agg["train_split"].to_numpy(dtype=float)
         y = agg["mean"].to_numpy(dtype=float)
         yerr = agg["std"].fillna(0.0).to_numpy(dtype=float)
-        plt.plot(x, y, marker="o", linewidth=2, label=model_name.upper())
+        plt.plot(x, y, marker="o", linewidth=2.5, label=model_name.upper())
         plt.fill_between(x, y - yerr, y + yerr, alpha=0.15)
 
     plt.xlabel("Train split")
     plt.ylabel(metric.upper())
-    plt.title(f"{title_prefix}: {metric.upper()} vs train split")
+    plt.title(title)
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
@@ -503,45 +518,68 @@ def _plot_metric_curve(df: pd.DataFrame, metric: str, output_path: Path, title_p
     plt.close()
 
 
-def _plot_training_histories(history_records: List[Dict[str, Any]], output_path: Path, title_prefix: str) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharex=False)
-    for ax, model_name in zip(axes, MODEL_SEQUENCE):
-        model_records = [record for record in history_records if record["model"] == model_name]
-        for record in sorted(model_records, key=lambda item: (item["train_split"], item.get("repeat_index", 0), item.get("kernel_index", 0))):
-            values = np.asarray(record["history_values"], dtype=float)
-            if values.size == 0:
-                continue
-            x = np.arange(1, values.size + 1)
-            label = f"split={record['train_split']:.2f}"
-            if "repeat_index" in record:
-                label += f" run={record['repeat_index']}"
-            if "kernel_index" in record and record["kernel_index"] is not None:
-                label += f" k={record['kernel_index']}"
-            ax.plot(x, values, linewidth=1.4, alpha=0.9, label=label)
+def _plot_training_histories(history_records: List[Dict[str, Any]], output_path: Path, title: str, model_name: str | None = None) -> None:
+    """Plot training histories for a single model or all models.
+    
+    If model_name is specified, filter to that model. Otherwise plot all models.
+    """
+    plt.figure(figsize=(10, 6))
+    if model_name is not None:
+        history_records = [record for record in history_records if record["model"] == model_name]
+    for record in sorted(history_records, key=lambda item: (item["train_split"], item.get("run_index", 0))):
+        values = np.asarray(record["history_values"], dtype=float)
+        if values.size == 0:
+            continue
+        x = np.arange(1, values.size + 1)
+        label = f"{record['model']}: split={record['train_split']:.2f}, run={record.get('run_index', 0)}"
+        plt.plot(x, values, linewidth=1.0, alpha=0.75, label=label)
 
-        ax.set_title(model_name.upper())
-        ax.set_xlabel("epoch/step")
-        ax.set_ylabel(model_records[0]["history_label"] if model_records else "history")
-        ax.grid(True, alpha=0.3)
-        if model_records:
-            ax.legend(fontsize=7)
+    ylabel = history_records[0]["history_label"] if history_records else "history"
+    plt.xlabel("epoch/step")
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.grid(True, alpha=0.3)
+    if history_records:
+        plt.legend(fontsize=6)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=160)
+    plt.close()
 
-    fig.suptitle(f"{title_prefix}: training histories across splits")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=160)
-    plt.close(fig)
 
-
-def _summarize_and_save_outputs(metrics_df: pd.DataFrame, histories: List[Dict[str, Any]], analysis_root: Path, title_prefix: str) -> None:
+def _summarize_and_save_outputs(metrics_df: pd.DataFrame, histories: List[Dict[str, Any]], analysis_root: Path, model_sequence: Sequence[str] = MODEL_SEQUENCE) -> None:
     analysis_root.mkdir(parents=True, exist_ok=True)
     metrics_df.to_csv(analysis_root / "all_runs.csv", index=False)
 
     summary_rows: List[Dict[str, Any]] = []
-    for model_name in MODEL_SEQUENCE:
+    
+    # Save per-model results
+    for model_name in model_sequence:
         subset = metrics_df[metrics_df["model"] == model_name].copy()
         if subset.empty:
             continue
-        subset.to_csv(analysis_root / f"{model_name}_runs.csv", index=False)
+        model_root = analysis_root / model_name
+        model_root.mkdir(parents=True, exist_ok=True)
+
+        subset.to_csv(model_root / "runs.csv", index=False)
+
+        metrics_vs_split = (
+            subset.groupby("train_split")[["r2", "rmse", "mae", "mape"]]
+            .agg(["mean", "std"])
+            .reset_index()
+            .sort_values("train_split")
+        )
+        metrics_vs_split.columns = [
+            "_".join([str(part) for part in col if part]).strip("_")
+            for col in metrics_vs_split.columns.to_flat_index()
+        ]
+        metrics_vs_split.to_csv(model_root / "metrics_vs_split.csv", index=False)
+
+        model_histories = [record for record in histories if record["model"] == model_name]
+        _plot_metric_curve(subset, "r2", model_root / "r2_vs_split.png", f"{model_name.upper()}: R2 vs train split", model_name=None)
+        _plot_metric_curve(subset, "rmse", model_root / "rmse_vs_split.png", f"{model_name.upper()}: RMSE vs train split", model_name=None)
+        _plot_metric_curve(subset, "mae", model_root / "mae_vs_split.png", f"{model_name.upper()}: MAE vs train split", model_name=None)
+        _plot_metric_curve(subset, "mape", model_root / "mape_vs_split.png", f"{model_name.upper()}: MAPE vs train split", model_name=None)
+
         summary_rows.append(
             {
                 "model": model_name,
@@ -557,16 +595,20 @@ def _summarize_and_save_outputs(metrics_df: pd.DataFrame, histories: List[Dict[s
 
     pd.DataFrame(summary_rows).to_csv(analysis_root / "summary.csv", index=False)
 
-    _plot_metric_curve(metrics_df, "r2", analysis_root / "r2_vs_split.png", title_prefix)
-    _plot_metric_curve(metrics_df, "rmse", analysis_root / "rmse_vs_split.png", title_prefix)
-    _plot_metric_curve(metrics_df, "mae", analysis_root / "mae_vs_split.png", title_prefix)
-    _plot_metric_curve(metrics_df, "mape", analysis_root / "mape_vs_split.png", title_prefix)
-    _plot_training_histories(histories, analysis_root / "training_history.png", title_prefix)
+    # Create complete folder with combined plots showing all models
+    if len(model_sequence) > 1:
+        complete_root = analysis_root / "complete"
+        complete_root.mkdir(parents=True, exist_ok=True)
+        _plot_metric_curve_all_models(metrics_df, "r2", complete_root / "r2_vs_split.png", "All Models: R² vs train split", model_sequence)
+        _plot_metric_curve_all_models(metrics_df, "rmse", complete_root / "rmse_vs_split.png", "All Models: RMSE vs train split", model_sequence)
+        _plot_metric_curve_all_models(metrics_df, "mae", complete_root / "mae_vs_split.png", "All Models: MAE vs train split", model_sequence)
+        _plot_metric_curve_all_models(metrics_df, "mape", complete_root / "mape_vs_split.png", "All Models: MAPE vs train split", model_sequence)
+        _plot_training_histories(histories, complete_root / "training_history.png", "All Models: training histories across splits", model_name=None)
 
     logger.info("=" * 70)
-    logger.info(f"CONVERGENCE ANALYSIS RESULTS ({title_prefix.upper()})")
+    logger.info("CONVERGENCE ANALYSIS RESULTS")
     logger.info("=" * 70)
-    for model_name in MODEL_SEQUENCE:
+    for model_name in model_sequence:
         model_data = metrics_df[metrics_df["model"] == model_name]
         if model_data.empty:
             continue
@@ -594,13 +636,19 @@ def run_analysis(config_path: Path) -> None:
     if mode not in {"analysis", "optimization"}:
         raise ValueError("mode must be either 'analysis' or 'optimization'.")
 
-    contexts = _load_contexts(config_dir, mode)
-    main_cfg = contexts["mlp"]["main_cfg"]
-    dataset_cfg = contexts["mlp"]["dataset_cfg"]
-    dataset_name = contexts["mlp"]["dataset_name"]
-    model_cfg_map = {name: contexts[name]["model_cfg"] for name in MODEL_SEQUENCE}
-    training_cfg_map = {name: contexts[name]["training_cfg"] for name in MODEL_SEQUENCE}
-    opt_cfg_map = {name: contexts[name].get("opt_cfg", {}) for name in MODEL_SEQUENCE}
+    # Load main config to determine model filtering
+    main_cfg_path = config_dir / "main_config.yaml"
+    temp_main_cfg = load_yaml(main_cfg_path)
+    models_to_train = _get_models_to_train(temp_main_cfg, MODEL_SEQUENCE)
+    logger.info(f"Training models: {', '.join(models_to_train)}")
+
+    contexts = _load_contexts(config_dir, mode, models_to_train)
+    main_cfg = contexts[next(iter(models_to_train))]["main_cfg"]
+    dataset_cfg = contexts[next(iter(models_to_train))]["dataset_cfg"]
+    dataset_name = contexts[next(iter(models_to_train))]["dataset_name"]
+    model_cfg_map = {name: contexts[name]["model_cfg"] for name in models_to_train}
+    training_cfg_map = {name: contexts[name]["training_cfg"] for name in models_to_train}
+    opt_cfg_map = {name: contexts[name].get("opt_cfg", {}) for name in models_to_train}
 
     setup_torch_dtype(str(main_cfg.get("precision", "float32")))
 
@@ -613,7 +661,6 @@ def run_analysis(config_path: Path) -> None:
             model_cfg_map=model_cfg_map,
             training_cfg_map=training_cfg_map,
         )
-        title_prefix = "analysis"
     else:
         metrics_df, histories, analysis_root = _run_optimization_mode(
             analysis_cfg=analysis_cfg,
@@ -624,7 +671,6 @@ def run_analysis(config_path: Path) -> None:
             training_cfg_map=training_cfg_map,
             opt_cfg_map=opt_cfg_map,
         )
-        title_prefix = "optimization"
 
-    _summarize_and_save_outputs(metrics_df, histories, analysis_root, title_prefix)
+    _summarize_and_save_outputs(metrics_df, histories, analysis_root, models_to_train)
     print(f"Done. Outputs written under {analysis_root}.")
