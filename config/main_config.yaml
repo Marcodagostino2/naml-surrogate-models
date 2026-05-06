@@ -18,10 +18,10 @@ global_seed: 21
 precision: "float32"
 
 # Active dataset key from config/dataset/dataset_config.yaml
-dataset: "airfoil_self_noise"
+dataset: "sml"
 
 # Model selection: "mlp", "gp", "mlpgp", or "all"
-model_to_train: "mlpgp"
+model_to_train: "all"
 
 # Execution mode inside the single_run workflow: "training", "test", or
 # "training+test"

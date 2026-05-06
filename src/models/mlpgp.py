@@ -67,13 +67,13 @@ class NonstationaryFeatureExtractor(torch.nn.Module):
 
         log_sigma_floor = self.log_sigma_floor
         log_sigma_ceiling = self.log_sigma_ceiling
-        sigma_x = torch.exp(
+        sigma_x = torch.pow(10,
             log_sigma_floor + (log_sigma_ceiling - log_sigma_floor) * feature_out[..., :1]
         )
 
         log_l_floor = self.log_lengthscale_floor
         log_l_ceiling = self.log_lengthscale_ceiling
-        lengthscale_x = torch.exp(
+        lengthscale_x = torch.pow(10,
             log_l_floor + (log_l_ceiling - log_l_floor) * feature_out[..., 1:]
         )
 

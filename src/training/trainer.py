@@ -5,9 +5,10 @@ Uses large epoch/step budgets with interval-based residual checks on train and
 validation splits for early stopping.
 
 Note on Scheduler Semantics:
-    StepLR scheduler.step() is called after each epoch (not per batch).
-    This decays the learning rate every `scheduler_step_size` epochs by
-    a factor of `scheduler_gamma`.
+    scheduler.step() is called after each epoch/step (not per batch).
+    CosineAnnealingLR (default): lr decays smoothly from initial lr to eta_min
+    over T_max steps, then restarts. T_max defaults to n_training_steps/n_epochs.
+    StepLR: decays lr by gamma every scheduler_step_size epochs.
 """
 
 from __future__ import annotations
@@ -28,8 +29,7 @@ from linear_operator.utils.warnings import NumericalWarning
 # NotPSDError is raised by linear_operator's psd_safe_cholesky when even the
 # escalated jitter (up to 100x cholesky_jitter) cannot make K positive
 # definite. We handle it as a graceful end-of-training signal rather than a
-# crash. Older versions of the stack expose it under different paths, so we
-# fall back to plain RuntimeError if the import fails.
+# crash.
 try:
     from linear_operator.utils.errors import NotPSDError as _NotPSDError
     _CHOLESKY_FAIL_EXCEPTIONS: Tuple[type, ...] = (_NotPSDError, RuntimeError)
@@ -91,22 +91,41 @@ def _current_likelihood_noise(model: Any) -> float:
 def _build_scheduler(optimizer: torch.optim.Optimizer, training_cfg: Dict[str, Any]) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
     """Build a common LR scheduler from training config.
 
-    Config keys shared in training_common_config.yaml:
-    - scheduler_step_size
-    - scheduler_gamma
-    - scheduler_type  (optional: "steplr" or "none")
+    Config keys (training_common_config.yaml):
+    - scheduler_type:      "steplr" | "cosine" | "none"  (default: "cosine")
+
+    StepLR keys:
+    - scheduler_step_size: decay LR every N steps         (default: 200)
+    - scheduler_gamma:     multiplicative factor           (default: 0.5)
+
+    Cosine Annealing keys:
+    - scheduler_T_max:     period in steps; null -> n_training_steps or n_epochs (default: null)
+    - scheduler_eta_min:   minimum LR at the trough       (default: 1e-7)
     """
-    scheduler_type = str(training_cfg.get("scheduler_type", "steplr")).lower()
+    scheduler_type = str(training_cfg.get("scheduler_type", "cosine")).lower()
     if scheduler_type == "none":
         return None
 
-    step_size = int(training_cfg.get("scheduler_step_size", 50))
-    gamma = float(training_cfg.get("scheduler_gamma", 0.5))
-
     if scheduler_type == "steplr":
-        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=int(training_cfg.get("scheduler_step_size", 200)),
+            gamma=float(training_cfg.get("scheduler_gamma", 0.5)),
+        )
 
-    raise ValueError(f"Unknown scheduler_type: {scheduler_type}")
+    if scheduler_type == "cosine":
+        t_max_cfg = training_cfg.get("scheduler_T_max")
+        if t_max_cfg is None:
+            t_max = int(training_cfg.get("n_training_steps", training_cfg.get("n_epochs", 1000)))
+        else:
+            t_max = int(t_max_cfg)
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=t_max,
+            eta_min=float(training_cfg.get("scheduler_eta_min", 1e-7)),
+        )
+
+    raise ValueError(f"Unknown scheduler_type: '{scheduler_type}'. Valid options: 'steplr', 'cosine', 'none'.")
 
 
 

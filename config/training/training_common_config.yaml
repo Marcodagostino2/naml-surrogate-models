@@ -5,5 +5,12 @@
 # Model-specific training files can override only what differs.
 
 # LR scheduler shared across all trainers
-scheduler_step_size: 200   # halve LR every N epochs/steps
-scheduler_gamma: 0.5      # multiplicative factor
+scheduler_type: cosine          # "steplr" | "cosine" | "none"
+
+# StepLR params (used only when scheduler_type: steplr)
+scheduler_step_size: 200        # halve LR every N epochs/steps
+scheduler_gamma: 0.5            # multiplicative factor
+
+# Cosine Annealing params (used only when scheduler_type: cosine)
+scheduler_T_max: null           # defaults to n_training_steps/n_epochs if null
+scheduler_eta_min: 1.0e-7
