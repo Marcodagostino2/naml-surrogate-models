@@ -7,7 +7,6 @@ after verification.
 
 from __future__ import annotations
 
-import argparse
 import json
 import random
 from copy import deepcopy
@@ -74,24 +73,19 @@ def _build_split_grid(raw_splits: Iterable[float]) -> List[float]:
     return sorted(set(split_grid))
 
 
-def _build_validation_ratios(train_ratio: float, validation_train_ratio: float) -> tuple[float, float]:
-    val_ratio = float(train_ratio) * float(validation_train_ratio)
-    test_ratio = 1.0 - float(train_ratio) - val_ratio
+def _build_validation_ratios(train_plus_val_ratio: float, validation_train_ratio: float) -> tuple[float, float]:
+    val_ratio = float(train_plus_val_ratio) * float(validation_train_ratio)
+    train_ratio = train_plus_val_ratio - float(val_ratio) 
+    test_ratio = 1.0 - float(train_plus_val_ratio)
     if val_ratio <= 0.0 or test_ratio <= 0.0:
         raise ValueError(
             f"Invalid ratios for train={train_ratio:.6f} and validation_train_ratio={validation_train_ratio:.6f}."
         )
-    return val_ratio, test_ratio
+    return train_ratio, val_ratio, test_ratio
 
 
 def _split_tag(train_ratio: float) -> str:
     return f"split_{train_ratio:.4f}".replace(".", "p")
-
-
-def _run_tag(seed: int, repeat_index: int, kernel_index: int | None = None) -> str:
-    if kernel_index is None:
-        return f"seed_{seed}_run_{repeat_index}"
-    return f"seed_{seed}_run_{repeat_index}_k_{kernel_index}"
 
 
 def _get_models_to_train(main_cfg: Dict[str, Any], all_models: Sequence[str] = MODEL_SEQUENCE) -> Sequence[str]:
@@ -116,8 +110,8 @@ def _load_contexts(config_dir: Path, mode: str, model_sequence: Sequence[str] = 
     return contexts
 
 
-def _prepare_data_bundle(dataset_cfg: Dict[str, Any], train_ratio: float, validation_train_ratio: float, seed: int) -> DataBundle:
-    val_ratio, test_ratio = _build_validation_ratios(train_ratio, validation_train_ratio)
+def _prepare_data_bundle(dataset_cfg: Dict[str, Any], train_plus_val_ratio: float, validation_train_ratio: float, seed: int) -> DataBundle:
+    train_ratio, val_ratio, test_ratio = _build_validation_ratios(train_plus_val_ratio, validation_train_ratio)
     return load_and_preprocess_data(
         csv_path=PROJECT_ROOT / dataset_cfg["csv_path"],
         input_columns=dataset_cfg["input_columns"],
@@ -242,7 +236,6 @@ def _apply_optimization_overrides(opt_cfg: Dict[str, Any], analysis_cfg: Dict[st
 def _run_analysis_mode(
     *,
     analysis_cfg: Dict[str, Any],
-    main_cfg: Dict[str, Any],
     dataset_cfg: Dict[str, Any],
     dataset_name: str,
     model_cfg_map: Dict[str, Dict[str, Any]],
@@ -257,14 +250,13 @@ def _run_analysis_mode(
     analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME
     analysis_root.mkdir(parents=True, exist_ok=True)
 
-    for split_index, train_ratio in enumerate(split_grid):
-        split_tag = _split_tag(train_ratio)
+    for split_index, train_plus_val_ratio in enumerate(split_grid):
         for model_name in model_cfg_map.keys():
             n_runs = _run_count_for_model(analysis_cfg, "runs_per_model", model_name, default=1)
             for run_index in range(n_runs):
                 seed = global_seed + split_index * 1000 + run_index * 10 + MODEL_SEQUENCE.index(model_name)
                 set_global_seed(seed)
-                data_bundle = _prepare_data_bundle(dataset_cfg, train_ratio, validation_train_ratio, seed)
+                data_bundle = _prepare_data_bundle(dataset_cfg, train_plus_val_ratio, validation_train_ratio, seed)
                 kernel_init = _kernel_init_for_model(analysis_cfg, model_name, seed)
                 model_cfg = _set_kernel_seeded_values(model_cfg_map[model_name], kernel_init)
                 training_cfg = deepcopy(training_cfg_map[model_name])
@@ -463,13 +455,6 @@ def _run_optimization_mode(
     return metrics_df, histories, analysis_root
 
 
-def _aggregate_results(metrics_df: pd.DataFrame, mode: str) -> pd.DataFrame:
-    numeric_cols = [col for col in ["r2", "rmse", "mae", "mape", "elapsed_time", "train_r2", "val_r2"] if col in metrics_df.columns]
-    agg = metrics_df.groupby(["model", "train_split"], as_index=False)[numeric_cols].agg(["mean", "std"])
-    agg.columns = ["_".join([str(part) for part in col if part]) for col in agg.columns.to_flat_index()]
-    return agg.reset_index(drop=True)
-
-
 def _plot_metric_curve(df: pd.DataFrame, metric: str, output_path: Path, title: str, model_name: str | None = None) -> None:
     """Plot metric curve for a single model or combined models.
     
@@ -655,7 +640,6 @@ def run_analysis(config_path: Path) -> None:
     if mode == "analysis":
         metrics_df, histories, analysis_root = _run_analysis_mode(
             analysis_cfg=analysis_cfg,
-            main_cfg=main_cfg,
             dataset_cfg=dataset_cfg,
             dataset_name=dataset_name,
             model_cfg_map=model_cfg_map,
