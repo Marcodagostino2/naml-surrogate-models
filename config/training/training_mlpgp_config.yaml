@@ -1,52 +1,39 @@
-# ============================================================================
-# Hybrid MLP+Kriging Training Configuration
-# ============================================================================
-# Joint training settings for the end-to-end MLP+Kriging hybrid model.
-# MLP and GP kernel parameters are optimized jointly via EMLL.
-#
-# Note: "epoch" terminology in shared keys (warmup_epochs, *_patience) refers
-# to optimization steps for this trainer, since training is full-batch.
+# Joint MLP+GP training (full-batch, EMLL maximization).
+# "epoch" in shared keys (warmup_epochs, *_patience) means optimization step
+# here, since training has no mini-batches.
 
-# Optimizer: "adam", "sgd", "adamw"
+# "adam" | "adamw" | "sgd"
 optimizer: "adamw"
 
-# Learning rates (different for MLP and GP components — feature extractor
-# typically wants a faster LR than kernel hyperparameters)
-mlp_learning_rate: 1.0e-2
-gp_learning_rate: 1.0e-5
-
-# Weight decay for MLP feature-extractor parameters (GP params get 0)
+# Distinct learning rates: feature extractor typically wants a faster LR than
+# kernel hyperparameters; weight decay only applied to the MLP side.
+mlp_learning_rate: 1.0e-3
+gp_learning_rate: 1.0e-3
 mlp_weight_decay: 1.0e-6
 
-# Number of joint training steps (kept large; training stops early when
-# convergence criteria are met)
 n_training_steps: 700
 
-# ---- Stop policy ----------------------------------------------------------
-# Same two-criterion (train-tol OR val-patience) logic as the GP trainer.
-# Slightly more permissive `val_patience` than the pure GP because the joint
-# loss landscape is more complex — the MLP feature extractor and GP kernel
-# can take longer to settle into a coherent minimum, and val loss can plateau
-# transiently while the two components rebalance.
+# Two stop criteria, same as GP trainer (logical OR). val_patience is more
+# permissive: the joint loss landscape lets val loss plateau transiently while
+# MLP and kernel rebalance.
 rel_tol: 1.0e-4
 abs_tol: 1.0e-6
 train_patience: 50
 val_patience: 400
-warmup_epochs: 30        # named "epochs" for cross-trainer parity; here = steps
+warmup_epochs: 30
 
-# ---- Logging cadence ------------------------------------------------------
 train_metrics_log_interval: 10
 validation_check_interval: 10
 
-# Device: "cuda", "cpu", "auto"
 device: "auto"
 
-# Force exact Cholesky-based GP solves during evaluation/training context.
 force_cholesky: true
-
-# Cholesky jitter for numerical stability (GPyTorch psd_safe_cholesky)
+cg_max_iterations: 1000
 cholesky_jitter_float32: 1.0e-6
 cholesky_jitter_float64: 1.0e-8
 
-# Checkpointing
 save_checkpoint_every_n_steps: 20
+
+# SVGP-only knobs (used when model_cfg.inference == "svgp").
+svgp_n_epochs: 200
+svgp_batch_size: 1024

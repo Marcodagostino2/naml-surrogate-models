@@ -1,12 +1,10 @@
-"""
-Initialization module for src.utils subpackage.
-"""
+"""Shared utilities: config I/O, path resolution, seeding, logging."""
 
 from src.utils.config import (
     load_json,
     load_pickle,
-    load_yaml,
     load_run_configs,
+    load_yaml,
     resolve_device,
     save_json,
     save_pickle,
@@ -15,11 +13,7 @@ from src.utils.config import (
     setup_logger,
     setup_torch_dtype,
 )
-from src.utils.paths import (
-    ModelName,
-    OutputPathResolver,
-    RunType,
-)
+from src.utils.paths import ModelName, OutputPathResolver, RunType
 
 __all__ = [
     "load_yaml",

@@ -25,7 +25,7 @@ search_space:
       high: 3
     block1_hidden_size:
       type: categorical
-      choices: [64, 128, 256, 512, 1024]
+      choices: [16, 32, 64, 128, 256, 512, 1024]
     block1_activation:
       type: categorical
       choices: [relu, tanh]
@@ -35,7 +35,7 @@ search_space:
       high: 3
     block2_hidden_size:
       type: categorical
-      choices: [64, 128, 256, 512, 1024]
+      choices: [16, 32, 64, 128, 256, 512, 1024]
     block2_activation:
       type: categorical
       choices: [relu, tanh]
@@ -45,14 +45,14 @@ search_space:
       high: 3
     block3_hidden_size:
       type: categorical
-      choices: [64, 128, 256, 512, 1024]
+      choices: [16, 32, 64, 128, 256, 512, 1024]
     block3_activation:
       type: categorical
       choices: [relu, tanh]
     dropout:
       type: float
       low: 0.0
-      high: 0.05
+      high: 0.4
   training:
     learning_rate:
       type: float

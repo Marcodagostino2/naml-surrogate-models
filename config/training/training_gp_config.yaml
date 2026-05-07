@@ -1,58 +1,44 @@
-# ============================================================================
-# Gaussian Process (Kriging) Training Configuration
-# ============================================================================
-# Training hyperparameters specific to the standalone GP using GPyTorch.
-#
-# The GP is trained by maximizing the exact marginal log-likelihood (EMLL).
-# Note: "epoch" terminology in shared keys (warmup_epochs, *_patience) refers
-# to optimization steps for this trainer, since GP training is full-batch.
+# GP training (full-batch, EMLL maximization).
+# "epoch" in shared keys (warmup_epochs, *_patience) means optimization step
+# here, since GP training has no mini-batches.
 
-# Optimizer: "adam", "adamw", "sgd", "lbfgs"
+# "adam" | "adamw" | "sgd" | "lbfgs"
 optimizer: "adamw"
-
-# Learning rate for EMLL optimization
 learning_rate: 1.0e-2
-
-# Number of optimization steps (kept large; training stops early when
-# convergence criteria are met)
+# Hard cap; early stopping usually fires first.
 n_training_steps: 700
 
-# ---- Stop policy ----------------------------------------------------------
-# Two criteria are tracked; training stops when EITHER fires (logical OR):
-#
-# 1) Train-loss convergence (scipy.optimize.least_squares-style):
-#    stop when |L_{t-1} - L_t| <= abs_tol + rel_tol * |L_{t-1}|
-#    holds for `train_patience` consecutive steps.
-#
-# 2) Validation patience (Prechelt 1998, "Early Stopping - But When?"):
-#    an improvement counts only if best_val_loss - val_loss
-#                                  > abs_tol + rel_tol * |best_val_loss|.
-#    Stop after `val_patience` consecutive non-improving steps.
-#
-# Tighter `train_patience` than the MLP because GP loss curves are smooth
-# (full-batch EMLL), so a short streak is already meaningful.
+# Early stopping fires when EITHER:
+#   1) |L_{t-1} - L_t| <= abs_tol + rel_tol * |L_{t-1}| for `train_patience`
+#      consecutive steps (Numpy isclose / scipy least_squares style); OR
+#   2) val_loss fails to improve by abs_tol + rel_tol * |best_val_loss| for
+#      `val_patience` consecutive steps (Prechelt 1998).
 rel_tol: 1.0e-4
 abs_tol: 1.0e-6
 train_patience: 50
 val_patience: 50
-warmup_epochs: 20        # named "epochs" for cross-trainer parity; here = steps
+warmup_epochs: 20
 
-# ---- Logging cadence ------------------------------------------------------
-# How often expensive metric dicts (R², MAE, RMSE) are recomputed for logging.
-# Per-step val_loss for the stopping criterion is computed every step
-# regardless of these intervals.
+# Full metric dicts (R^2, MAE, RMSE) only recomputed at these intervals;
+# val_loss for the stop criterion is computed every step.
 train_metrics_log_interval: 10
 validation_check_interval: 10
 
-# Device: "cuda", "cpu", "auto"
+# "cuda" | "cpu" | "auto"
 device: "auto"
 
-# Force exact Cholesky-based GP solves during evaluation/training context.
+# When true: force exact Cholesky solves regardless of matrix size.
+# When false: GPyTorch falls back to CG above max_cholesky_size (default 800).
 force_cholesky: true
+# CG iteration cap, only used when force_cholesky == false.
+cg_max_iterations: 1000
 
-# Cholesky jitter for numerical stability (GPyTorch psd_safe_cholesky)
+# psd_safe_cholesky jitter floors.
 cholesky_jitter_float32: 1.0e-6
 cholesky_jitter_float64: 1.0e-8
 
-# Checkpointing
 save_checkpoint_every_n_steps: 20
+
+# SVGP-only knobs (used when model_cfg.inference == "svgp").
+svgp_n_epochs: 200
+svgp_batch_size: 1024

@@ -1,11 +1,4 @@
-"""
-Shared training pipeline utilities for the aerodynamic surrogate models.
-
-This module centralizes the common training flow used by main.py and optimize.py:
-- model/trainer registry
-- run directory and config persistence
-- unified train_model entry point
-"""
+"""Shared training pipeline: model/trainer factories, run-directory layout, ``train_model`` entry point."""
 
 from __future__ import annotations
 
@@ -18,10 +11,16 @@ import yaml
 
 from src.data import DataBundle
 from src.inference import Predictor
-from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
-from src.visualization.diagnostics import generate_diagnostics
-from src.training import GPTrainer, MLPTrainer, MLPGPTrainer, compute_all_metrics
+from src.models import (
+    GPRegressionModel,
+    MLPGPModel,
+    MLPRegressor,
+    MLPSVGPModel,
+    SVGPRegressionModel,
+)
+from src.training import GPTrainer, MLPGPTrainer, MLPTrainer, SVGPTrainer, compute_all_metrics
 from src.utils import OutputPathResolver, resolve_device, setup_logger
+from src.visualization.diagnostics import generate_diagnostics
 
 logger = setup_logger(__name__)
 
@@ -29,15 +28,21 @@ if TYPE_CHECKING:
     import optuna
 
 
+# (model_class, trainer_class, supports_uncertainty)
 _MODEL_REGISTRY: Dict[str, Tuple[type, type, bool]] = {
     "mlp": (MLPRegressor, MLPTrainer, False),
     "gp": (GPRegressionModel, GPTrainer, True),
     "mlpgp": (MLPGPModel, MLPGPTrainer, True),
 }
 
+# SVGP variants of the GP-family models, picked when model_cfg["inference"] == "svgp".
+_SVGP_CLASSES: Dict[str, type] = {
+    "gp": SVGPRegressionModel,
+    "mlpgp": MLPSVGPModel,
+}
+
 
 def create_run_directory(output_resolver: OutputPathResolver) -> Path:
-    """Create the output directory structure for a single model run."""
     run_dir = output_resolver.root
     run_dir.mkdir(parents=True, exist_ok=True)
     output_resolver.config_dir.mkdir(parents=True, exist_ok=True)
@@ -54,43 +59,55 @@ def save_run_configs(
     training_cfg: Dict[str, Any],
     viz_cfg: Dict[str, Any],
 ) -> None:
-    """Persist the run configuration set under run_dir/config/."""
+    """Persist the per-run config snapshot under ``run_dir/config/``."""
     config_out = output_resolver.config_dir
-    entries: List[Tuple[Path, str, Dict[str, Any]]] = [
+    entries: List[Tuple[Path, str, Optional[Dict[str, Any]]]] = [
         (config_out, "main_config.yaml", None),
         (config_out / "dataset", "dataset_config.yaml", dataset_cfg),
         (config_out / "model", f"{selected_model}_config.yaml", model_cfg),
         (config_out / "training", f"training_{selected_model}_config.yaml", training_cfg),
         (config_out / "visualization", "visualization_config.yaml", viz_cfg),
     ]
-
     patched_main_cfg = {**main_cfg, "model_to_train": selected_model}
-
     for subdir, filename, content in entries:
         subdir.mkdir(parents=True, exist_ok=True)
         payload = patched_main_cfg if filename == "main_config.yaml" else content
         with open(subdir / filename, "w", encoding="utf-8") as fh:
             yaml.dump(payload, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
     logger.debug(f"Run configs saved to {config_out}")
 
 
 def save_summary_row(summary_csv_path: Path, run_info: Dict[str, Any]) -> None:
-    """Append a row to a CSV summary file."""
+    """Append a row to a CSV, creating the file (with header) if missing."""
     summary_csv_path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = summary_csv_path.exists()
-
     with open(summary_csv_path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=sorted(run_info.keys()))
         if not file_exists:
             writer.writeheader()
         writer.writerow(run_info)
-
     logger.debug(f"Summary row appended to {summary_csv_path}")
 
 
+def _resolve_gp_inference(model_name: str, model_cfg: Dict[str, Any]) -> str:
+    """Return ``"exact"`` or ``"svgp"`` from ``model_cfg["inference"]``; raise on typos."""
+    inference = str(model_cfg.get("inference", "exact")).lower()
+    if inference not in {"exact", "svgp"}:
+        raise ValueError(
+            f"Unknown inference mode for {model_name!r}: {inference!r}. Expected 'exact' or 'svgp'."
+        )
+    return inference
+
+
+def _gp_train_tensors(data_bundle: DataBundle) -> Tuple[torch.Tensor, torch.Tensor]:
+    X_train_t = torch.from_numpy(data_bundle.X_train)
+    y_train_t = torch.from_numpy(data_bundle.y_train)
+    if y_train_t.ndim == 2 and y_train_t.shape[1] == 1:
+        y_train_t = y_train_t.squeeze(-1)
+    return X_train_t, y_train_t
+
+
 def _build_model(model_name: str, data_bundle: DataBundle, model_cfg: Dict[str, Any]) -> Any:
-    """Instantiate a model from the registry."""
     if model_name == "mlp":
         return MLPRegressor(
             input_dim=data_bundle.n_inputs,
@@ -98,12 +115,9 @@ def _build_model(model_name: str, data_bundle: DataBundle, model_cfg: Dict[str, 
             model_cfg=model_cfg,
         )
 
-    X_train_t = torch.from_numpy(data_bundle.X_train)
-    y_train_t = torch.from_numpy(data_bundle.y_train)
-    if y_train_t.ndim == 2 and y_train_t.shape[1] == 1:
-        y_train_t = y_train_t.squeeze(-1)
-
-    model_cls = _MODEL_REGISTRY[model_name][0]
+    X_train_t, y_train_t = _gp_train_tensors(data_bundle)
+    inference = _resolve_gp_inference(model_name, model_cfg)
+    model_cls = _SVGP_CLASSES[model_name] if inference == "svgp" else _MODEL_REGISTRY[model_name][0]
     return model_cls(X_train=X_train_t, y_train=y_train_t, model_cfg=model_cfg)
 
 
@@ -116,12 +130,10 @@ def _build_trainer(
     device: torch.device,
     trial: Optional["optuna.Trial"],
 ) -> Any:
-    """Instantiate the correct trainer for the selected model."""
-    trainer_cls = _MODEL_REGISTRY[model_name][1]
-
+    """Pick the trainer for ``model``. SVGP models route to ``SVGPTrainer`` regardless of ``model_name``."""
     if model_name == "mlp":
         batch_size = int(dataset_cfg.get("batch_size", 128))
-        return trainer_cls(
+        return MLPTrainer(
             model=model,
             train_loader=data_bundle.get_train_loader(batch_size=batch_size),
             val_loader=data_bundle.get_val_loader(batch_size=batch_size),
@@ -130,11 +142,19 @@ def _build_trainer(
             trial=trial,
         )
 
-    X_train_t = torch.from_numpy(data_bundle.X_train)
-    y_train_t = torch.from_numpy(data_bundle.y_train)
-    if y_train_t.ndim == 2 and y_train_t.shape[1] == 1:
-        y_train_t = y_train_t.squeeze(-1)
+    if isinstance(model, (SVGPRegressionModel, MLPSVGPModel)):
+        batch_size = int(training_cfg.get("svgp_batch_size", dataset_cfg.get("batch_size", 1024)))
+        return SVGPTrainer(
+            model=model,
+            train_loader=data_bundle.get_train_loader(batch_size=batch_size),
+            val_loader=data_bundle.get_val_loader(batch_size=batch_size),
+            training_cfg=training_cfg,
+            device=device,
+            trial=trial,
+        )
 
+    trainer_cls = _MODEL_REGISTRY[model_name][1]
+    X_train_t, y_train_t = _gp_train_tensors(data_bundle)
     return trainer_cls(
         model=model,
         X_train=X_train_t,
@@ -148,10 +168,8 @@ def _build_trainer(
 
 
 def _predict_split(predictor: Predictor, X: Any, supports_uncertainty: bool) -> Tuple[Any, Optional[Any]]:
-    """Predict a split with or without uncertainty."""
     if supports_uncertainty:
-        y_pred, y_std = predictor.predict(X, return_uncertainty=True)
-        return y_pred, y_std
+        return predictor.predict(X, return_uncertainty=True)
     return predictor.predict(X), None
 
 
@@ -165,7 +183,7 @@ def train_model(
     device: Optional[torch.device] = None,
     trial: Optional["optuna.Trial"] = None,
 ) -> Dict[str, Any]:
-    """Train a model, evaluate it, and save diagnostics/checkpoints."""
+    """Train one model end-to-end: build, fit, evaluate, save diagnostics + checkpoint."""
     if model_name not in _MODEL_REGISTRY:
         raise ValueError(f"Unknown model: {model_name}")
 
@@ -207,8 +225,6 @@ def train_model(
         metrics[split_name] = compute_all_metrics(y_true, y_pred)
 
     logger.info(f"Test R²: {metrics['test']['r2']:.6f}, Test RMSE: {metrics['test']['rmse']:.6f}")
-
-    # Log complete metrics summary
     logger.info("=" * 70)
     logger.info(f"FINAL METRICS SUMMARY ({model_name.upper()})")
     logger.info("=" * 70)

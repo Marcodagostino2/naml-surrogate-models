@@ -86,6 +86,8 @@ scripts/
 tests/
 report/
 uci_csv/
+config_smoke/
+outputs_smoke/
 data/*.csv
 *.mat
 *.pickle

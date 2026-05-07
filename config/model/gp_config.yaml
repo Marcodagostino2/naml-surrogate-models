@@ -1,33 +1,29 @@
-# ============================================================================
-# Gaussian Process (Kriging) Model Configuration
-# ============================================================================
-# Explicit GP kernel configuration.
-#
-# Supported kernels:
-#   - "exponential": Anisotropic generalized exponential (learnable theta, power_exponent)
-#   - "rbf": Radial basis function (RBF) kernel
-#   - "matern": Matern kernel (nu=0.5|1.5|2.5)
-#
-# Exponential kernel:
-#   K(x, x') = tau^2 * k_stationary(x, x')
-#   theta: anisotropy weights per input dimension
-#   power_exponent: exponent per input dimension
-#
-# The likelihood noise is fixed to satisfy GPyTorch internal requirements.
+# GP model configuration.
+# Inference: "exact" (O(N^3) MLL) or "svgp" (sparse variational, O(NM^2 + M^3),
+# mini-batched). Switch to "svgp" when N is too large for exact Cholesky/CG.
+inference: "exact"
 
+# SVGP knobs, ignored when inference == "exact".
+svgp:
+  n_inducing_points: 256
+  learn_inducing_locations: true
+
+# Kernel: "exponential" (anisotropic, learnable theta and power_exponent),
+# "rbf", or "matern" (nu in {0.5, 1.5, 2.5}). All are wrapped in a learnable
+# ScaleKernel (outputscale = tau^2).
 kernel:
-  type: "exponential"       # options: "exponential" | "rbf" | "matern"
+  type: "exponential"
   theta_init: 1.0e-1
   power_exponent_init: 1.99
   tau2_init: 1.0e-2
   likelihood_noise_init: 1.0e-2
-  matern_nu: 2.5           # only used if type="matern" (options: 0.5, 1.5, 2.5)
-  likelihood_noise_floor: 1.0e-6      # minimum noise level
-  likelihood_noise_ceiling: 1.0       # maximum noise level 
-  theta_floor: 1.0e-5      # minimum theta value 
-  theta_ceiling: 1.0e3     # maximum theta value 
-  power_exponent_floor: 1.5  # minimum power exponent
-  power_exponent_ceiling: 2.0  # maximum power exponent
+  matern_nu: 2.5
+  likelihood_noise_floor: 1.0e-6
+  likelihood_noise_ceiling: 1.0
+  theta_floor: 1.0e-5
+  theta_ceiling: 1.0e3
+  power_exponent_floor: 1.5
+  power_exponent_ceiling: 2.0
 
-# Polynomial trend degree (0 = constant, 1 = linear, 2 = quadratic)
-trend_degree: 1
+# Polynomial trend mean degree (0 = constant, 1 = linear, 2 = quadratic, ...)
+trend_degree: 0

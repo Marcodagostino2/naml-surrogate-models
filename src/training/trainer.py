@@ -1,14 +1,7 @@
-"""
-Training routines for MLP, GP, and MLPGP models.
+"""Training loops for MLP, GP, MLPGP, and SVGP models.
 
-Uses large epoch/step budgets with interval-based residual checks on train and
-validation splits for early stopping.
-
-Note on Scheduler Semantics:
-    scheduler.step() is called after each epoch/step (not per batch).
-    CosineAnnealingLR (default): lr decays smoothly from initial lr to eta_min
-    over T_max steps, then restarts. T_max defaults to n_training_steps/n_epochs.
-    StepLR: decays lr by gamma every scheduler_step_size epochs.
+The scheduler steps once per epoch/step (not per batch). For CosineAnnealingLR,
+``T_max`` defaults to ``n_training_steps`` / ``n_epochs``.
 """
 
 from __future__ import annotations
@@ -24,19 +17,15 @@ import torch
 from gpytorch.utils.warnings import GPInputWarning
 from torch.utils.data import DataLoader
 
-from linear_operator.utils.warnings import NumericalWarning
-
-# NotPSDError is raised by linear_operator's psd_safe_cholesky when even the
-# escalated jitter (up to 100x cholesky_jitter) cannot make K positive
-# definite. We handle it as a graceful end-of-training signal rather than a
-# crash.
+# NotPSDError is raised by linear_operator's psd_safe_cholesky when escalated
+# jitter still can't make K PSD; treated as a graceful stop rather than a crash.
 try:
     from linear_operator.utils.errors import NotPSDError as _NotPSDError
     _CHOLESKY_FAIL_EXCEPTIONS: Tuple[type, ...] = (_NotPSDError, RuntimeError)
-except ImportError:  # linear_operator not installed or moved
+except ImportError:
     _CHOLESKY_FAIL_EXCEPTIONS = (RuntimeError,)
 
-from src.models import GPRegressionModel, MLPRegressor, MLPGPModel
+from src.models import GPRegressionModel, MLPRegressor, MLPGPModel, MLPSVGPModel, SVGPRegressionModel
 from src.training.metrics import compute_all_metrics
 from src.utils import resolve_device, setup_logger
 
@@ -46,10 +35,10 @@ logger = setup_logger(__name__)
 def _check_interval(step: int, interval: int) -> bool:
     return interval > 0 and step % interval == 0
 
+
 def _to_prediction_tensor(output: Any) -> torch.Tensor:
-    if hasattr(output, "mean"):
-        return output.mean
-    return output
+    return output.mean if hasattr(output, "mean") else output
+
 
 def _evaluate_regression_model(
     model: Any,
@@ -66,9 +55,7 @@ def _evaluate_regression_model(
         ctx.enter_context(gpytorch.settings.max_cholesky_size(float("inf")))
         ctx.enter_context(
             gpytorch.settings.fast_computations(
-                covar_root_decomposition=False,
-                log_prob=False,
-                solves=False,
+                covar_root_decomposition=False, log_prob=False, solves=False,
             )
         )
     else:
@@ -82,64 +69,44 @@ def _evaluate_regression_model(
         metrics = compute_all_metrics(target.detach().cpu().numpy(), prediction.detach().cpu().numpy())
     return mse_value, metrics
 
+
 def _current_likelihood_noise(model: Any) -> float:
     likelihood = getattr(model, "likelihood", None)
     if likelihood is None or not hasattr(likelihood, "noise"):
         return float("nan")
     return float(likelihood.noise.detach().cpu().item())
 
-def _build_scheduler(optimizer: torch.optim.Optimizer, training_cfg: Dict[str, Any]) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
-    """Build a common LR scheduler from training config.
-
-    Config keys (training_common_config.yaml):
-    - scheduler_type:      "steplr" | "cosine" | "none"  (default: "cosine")
-
-    StepLR keys:
-    - scheduler_step_size: decay LR every N steps         (default: 200)
-    - scheduler_gamma:     multiplicative factor           (default: 0.5)
-
-    Cosine Annealing keys:
-    - scheduler_T_max:     period in steps; null -> n_training_steps or n_epochs (default: null)
-    - scheduler_eta_min:   minimum LR at the trough       (default: 1e-7)
-    """
+def _build_scheduler(
+    optimizer: torch.optim.Optimizer, training_cfg: Dict[str, Any]
+) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
+    """Build the LR scheduler. ``scheduler_type`` is ``"cosine"`` (default), ``"steplr"``, or ``"none"``."""
     scheduler_type = str(training_cfg.get("scheduler_type", "cosine")).lower()
     if scheduler_type == "none":
         return None
-
     if scheduler_type == "steplr":
         return torch.optim.lr_scheduler.StepLR(
             optimizer,
             step_size=int(training_cfg.get("scheduler_step_size", 200)),
             gamma=float(training_cfg.get("scheduler_gamma", 0.5)),
         )
-
     if scheduler_type == "cosine":
         t_max_cfg = training_cfg.get("scheduler_T_max")
-        if t_max_cfg is None:
-            t_max = int(training_cfg.get("n_training_steps", training_cfg.get("n_epochs", 1000)))
-        else:
-            t_max = int(t_max_cfg)
+        t_max = int(t_max_cfg) if t_max_cfg is not None else int(
+            training_cfg.get("n_training_steps", training_cfg.get("n_epochs", 1000))
+        )
         return torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=t_max,
             eta_min=float(training_cfg.get("scheduler_eta_min", 1e-7)),
         )
-
-    raise ValueError(f"Unknown scheduler_type: '{scheduler_type}'. Valid options: 'steplr', 'cosine', 'none'.")
-
+    raise ValueError(f"Unknown scheduler_type: '{scheduler_type}'. Valid: 'steplr', 'cosine', 'none'.")
 
 
 def _is_cholesky_failure(exc: BaseException) -> bool:
-    """Return True if `exc` looks like a Cholesky / non-PSD failure.
-
-    We catch both linear_operator's NotPSDError (clear signal) and torch's
-    plain RuntimeError when its message mentions cholesky / PSD. The string
-    match keeps us from swallowing unrelated RuntimeErrors raised from inside
-    the forward pass (e.g. shape mismatches, CUDA OOM).
-    """
+    """True for linear_operator NotPSDError or RuntimeError whose message mentions cholesky/PSD."""
     if _CHOLESKY_FAIL_EXCEPTIONS and isinstance(exc, _CHOLESKY_FAIL_EXCEPTIONS[0]) \
             and _CHOLESKY_FAIL_EXCEPTIONS[0] is not RuntimeError:
-        return True  # NotPSDError - definitive
+        return True
     msg = str(exc).lower()
     return ("cholesky" in msg) or ("not positive definite" in msg) or ("psd" in msg)
 
@@ -152,23 +119,14 @@ def _handle_cholesky_failure(
     phase: str,
     trial: Optional["optuna.Trial"],
 ) -> None:
-    """Common handling for a Cholesky / non-PSD failure inside training.
+    """Log a Cholesky/non-PSD failure and prune the Optuna trial if one is active.
 
-    Re-raises `exc` if it is not actually a Cholesky failure (so unrelated
-    RuntimeErrors like CUDA OOM are not swallowed).
-
-    If `trial` is provided (Optuna sweep), raise optuna.TrialPruned so the
-    sampler treats this hyperparameter region as unviable rather than scoring
-    the trial by whatever partial best_val_loss it accumulated. Pruned trials
-    are recorded distinctly from completed ones, which keeps Optuna's posterior
-    over the hyperparameter space honest.
-
-    Outside an Optuna trial, just log a warning and return; the caller is
-    expected to `break` out of the training loop. The post-loop logic in each
-    trainer then restores `_best_model_state` as usual.
+    Re-raises ``exc`` if it isn't a Cholesky failure (so unrelated RuntimeErrors
+    like CUDA OOM are not swallowed). Outside an Optuna trial the caller is
+    expected to ``break`` out of the loop; ``_best_model_state`` is restored as usual.
     """
     if not _is_cholesky_failure(exc):
-        raise exc  # unrelated RuntimeError - don't swallow
+        raise exc
 
     logger.warning(
         f"{model_name} {phase} stopped at step {step} due to non-PSD covariance "
@@ -177,77 +135,44 @@ def _handle_cholesky_failure(
 
     if trial is not None:
         import optuna
-        logger.info(
-            f"Pruning Optuna trial: hyperparameters caused a non-PSD covariance "
-            f"at step {step}, marking trial as unviable."
-        )
+        logger.info(f"Pruning Optuna trial at step {step} (non-PSD covariance).")
         raise optuna.TrialPruned()
 
-    # No trial: caller will break and restore best state.
 
 _DEPRECATED_KEYS = {
-    "train_residual_tol": "train_residual_tol no longer used; replaced by rel_tol/abs_tol on the loss",
-    "validation_residual_tol": "validation_residual_tol no longer used; replaced by rel_tol/abs_tol on best_val_loss",
-    "train_residual_check_interval": "train_residual_check_interval no longer used; replaced by train_metrics_log_interval (logging only)",
+    "train_residual_tol": "train_residual_tol replaced by rel_tol/abs_tol on the loss",
+    "validation_residual_tol": "validation_residual_tol replaced by rel_tol/abs_tol on best_val_loss",
+    "train_residual_check_interval": "train_residual_check_interval replaced by train_metrics_log_interval (logging only)",
 }
 
 
 def _warn_deprecated_keys(training_cfg: Dict[str, Any]) -> None:
-    """One-shot deprecation warning for keys whose meaning changed.
-
-    These keys used to control stopping; now the stopping logic lives in
-    `ConvergenceMonitor` and reads different keys. Other unknown keys are
-    silently ignored (consistent with the rest of the trainer's `dict.get`
-    style) — only these specific names get a warning because their meaning
-    changed and silent defaults would be misleading.
-    """
     for key, message in _DEPRECATED_KEYS.items():
         if key in training_cfg:
             logger.warning(f"[deprecated config key] {message}")
 
 
 class ConvergenceMonitor:
-    """Unified convergence + early-stopping monitor shared by all trainers.
+    """Early stopping with two independent criteria; stops as soon as EITHER fires.
 
-    Two independent stopping criteria are tracked; training stops as soon as
-    EITHER fires (logical OR), per the user's spec.
+    1. **Train-loss convergence** — stop when ``|L_{t-1} - L_t| <= abs_tol + rel_tol * |L_{t-1}|``
+       for ``train_patience`` consecutive epochs (same abs+rel form as ``numpy.isclose``).
+    2. **Validation patience** (Prechelt 1998) — an epoch counts as an improvement
+       only if ``best_val_loss - val_loss > abs_tol + rel_tol * |best_val_loss|``.
+       Stop after ``val_patience`` consecutive non-improving epochs.
 
-    1. Train-loss convergence (scipy.optimize.least_squares style)
-       Stop when the loss change between consecutive epochs satisfies
-            |L_{t-1} - L_t| <= abs_tol + rel_tol * |L_{t-1}|
-       for `train_patience` consecutive epochs. The mixed abs+rel form is the
-       standard one used by NumPy's `isclose` and most numerical optimizers;
-       requiring it to hold for k consecutive steps avoids firing on a single
-       noisy step (same idea as L-BFGS' termination history).
+    Both criteria are frozen during ``warmup_epochs`` so initial-epoch noise doesn't
+    accumulate patience counts that would fire immediately after warmup.
 
-    2. Validation-loss patience (Prechelt 1998, "Early Stopping - But When?")
-       Track best_val_loss; an epoch counts as an improvement only if
-            best_val_loss - val_loss > abs_tol + rel_tol * |best_val_loss|
-       Stop after `val_patience` consecutive non-improving epochs. The
-       min-delta is built from the same (abs_tol, rel_tol) pair so the
-       config has a single, consistent meaning of "tolerance".
-
-    Both criteria are skipped during a configurable warmup so noisy initial
-    epochs don't cause premature stops.
-
-    Config keys read from training_cfg:
-        rel_tol         (default 1e-4)
-        abs_tol         (default 1e-6)
-        train_patience  (default 5)
-        val_patience    (default 20)
-        warmup_epochs   (default 10)
+    Config keys: ``rel_tol`` (1e-4), ``abs_tol`` (1e-6), ``train_patience`` (5),
+    ``val_patience`` (20), ``warmup_epochs`` (10).
     """
 
     def __init__(self, training_cfg: Dict[str, Any]) -> None:
-        # Tolerances - shared meaning across both criteria
         self.rel_tol = float(training_cfg.get("rel_tol", 1e-4))
         self.abs_tol = float(training_cfg.get("abs_tol", 1e-6))
-
-        # Per-criterion patience
         self.train_patience = int(training_cfg.get("train_patience", 5))
         self.val_patience = int(training_cfg.get("val_patience", 20))
-
-        # Warmup: don't evaluate either criterion before this epoch/step
         self.warmup_epochs = int(training_cfg.get("warmup_epochs", 10))
 
         if self.rel_tol < 0 or self.abs_tol < 0:
@@ -255,29 +180,18 @@ class ConvergenceMonitor:
         if self.train_patience < 1 or self.val_patience < 1:
             raise ValueError("train_patience and val_patience must be >= 1")
 
-        # State
         self._prev_train_loss: Optional[float] = None
         self._train_converged_streak: int = 0
         self.best_val_loss: float = float("inf")
         self._val_no_improve_streak: int = 0
-
-        # Reason for the stop, set when should_stop() returns True
         self.stop_reason: Optional[str] = None
 
     def _is_close(self, current: float, previous: float) -> bool:
-        """numpy.isclose-style mixed abs+rel tolerance test."""
         return abs(previous - current) <= self.abs_tol + self.rel_tol * abs(previous)
 
     def step(self, epoch: int, train_loss: float, val_loss: Optional[float]) -> bool:
-        """Update state and return True if training should stop.
-
-        Streaks are frozen during warmup so that noisy initial epochs cannot
-        accumulate patience counts that fire immediately after warmup ends.
-        best_val_loss is still updated during warmup for checkpointing purposes.
-        """
         in_warmup = epoch < self.warmup_epochs
 
-        # Train-loss convergence streak — frozen during warmup
         if not in_warmup and self._prev_train_loss is not None and torch.isfinite(torch.tensor(train_loss)):
             if self._is_close(train_loss, self._prev_train_loss):
                 self._train_converged_streak += 1
@@ -285,7 +199,6 @@ class ConvergenceMonitor:
                 self._train_converged_streak = 0
         self._prev_train_loss = train_loss
 
-        # Validation improvement streak — frozen during warmup
         if val_loss is not None and torch.isfinite(torch.tensor(val_loss)):
             if torch.isfinite(torch.tensor(self.best_val_loss)):
                 improvement_threshold = self.abs_tol + self.rel_tol * abs(self.best_val_loss)
@@ -294,14 +207,13 @@ class ConvergenceMonitor:
                     if not in_warmup:
                         self._val_no_improve_streak = 0
                 else:
-                    # Strictly lower but not by min_delta: update best for
-                    # checkpointing without resetting the patience counter.
+                    # Lower but below min_delta: update best for checkpointing,
+                    # don't reset the patience counter.
                     if val_loss < self.best_val_loss:
                         self.best_val_loss = val_loss
                     if not in_warmup:
                         self._val_no_improve_streak += 1
             else:
-                # First finite val_loss seen
                 self.best_val_loss = val_loss
                 self._val_no_improve_streak = 0
 
@@ -317,17 +229,14 @@ class ConvergenceMonitor:
 
         if self._val_no_improve_streak >= self.val_patience:
             self.stop_reason = (
-                f"validation loss did not improve (min_delta = abs_tol + rel_tol*|best|) "
-                f"for {self._val_no_improve_streak} consecutive epochs "
-                f"(best_val_loss={self.best_val_loss:.6e})"
+                f"validation loss did not improve for {self._val_no_improve_streak} "
+                f"consecutive epochs (best_val_loss={self.best_val_loss:.6e})"
             )
             return True
-
         return False
 
     @property
     def state(self) -> Dict[str, Any]:
-        """Diagnostic snapshot, useful for logging."""
         return {
             "train_converged_streak": self._train_converged_streak,
             "val_no_improve_streak": self._val_no_improve_streak,
@@ -339,7 +248,7 @@ if TYPE_CHECKING:
     import optuna
 
 class MLPTrainer:
-    """Trainer for MLP regression models (residual-based early stopping + richer logging)."""
+    """Trainer for ``MLPRegressor`` with mini-batch SGD and convergence-based early stopping."""
 
     def __init__(
         self,
@@ -364,22 +273,17 @@ class MLPTrainer:
         self.weight_decay = float(training_cfg.get("weight_decay", 0.0))
         self.optimizer_name = str(training_cfg.get("optimizer", "adam")).lower()
 
-        # Logging cadence (cheap-to-eval losses are computed every epoch;
-        # full metric dicts only at these intervals, purely for logging).
+        # Per-epoch losses are always computed; full metric dicts only at these intervals.
         self.validation_check_interval = int(training_cfg.get("validation_check_interval", 10))
         self.train_metrics_log_interval = int(training_cfg.get("train_metrics_log_interval", 10))
-
         if self.validation_check_interval <= 0:
             raise ValueError("validation_check_interval must be a positive integer")
         if self.train_metrics_log_interval <= 0:
             raise ValueError("train_metrics_log_interval must be a positive integer")
 
-        # Unified convergence + early-stopping monitor. Reads rel_tol, abs_tol,
-        # train_patience, val_patience, warmup_epochs from training_cfg.
         _warn_deprecated_keys(training_cfg)
         self.convergence_monitor = ConvergenceMonitor(training_cfg)
 
-        # loss function configurabile come in v1
         loss_name = str(training_cfg.get("loss_function", "mse")).lower()
         if loss_name == "mse":
             self.criterion = torch.nn.MSELoss()
@@ -465,17 +369,11 @@ class MLPTrainer:
             train_loss = float(sum(epoch_losses) / max(len(epoch_losses), 1))
             train_losses.append(train_loss)
 
-            # Train-set evaluation: kept only on logging ticks (matches original
-            # `_check_interval` gating; metrics_history entry is None off-tick).
             train_metrics: Optional[Dict[str, float]] = None
             if _check_interval(epoch, self.train_metrics_log_interval):
                 _, train_metrics = self._evaluate_loader(self.train_loader)
             train_metrics_history.append(train_metrics)
 
-            # Validation: a single evaluation per epoch; val_loss is always
-            # collected (needed by ConvergenceMonitor), val_metrics dict is
-            # only retained on logging ticks (same single-call pattern as
-            # original).
             val_loss: Optional[float] = None
             val_metrics: Optional[Dict[str, float]] = None
             if self.val_loader is not None:
@@ -488,10 +386,8 @@ class MLPTrainer:
             val_metrics_history.append(val_metrics)
             val_losses.append(val_loss)
 
-            # Convergence monitor: single source of truth for early stopping.
             should_stop = self.convergence_monitor.step(epoch, train_loss, val_loss)
 
-            # Log training progress every 10 epochs
             if epoch % 10 == 0:
                 state = self.convergence_monitor.state
                 if val_metrics is not None:
@@ -544,42 +440,43 @@ class MLPTrainer:
         }
 
 class _BaseGPTrainer:
+    """Holds Cholesky/CG context-manager shared by exact GP and MLPGP trainers."""
+
     def __init__(self, training_cfg: Dict[str, Any]) -> None:
         self._force_cholesky = bool(training_cfg.get("force_cholesky", True))
-        logger.info(f"Cholesky forced: {self._force_cholesky}")
-
         self._jitter_float32 = float(training_cfg.get("cholesky_jitter_float32", 1e-6))
         self._jitter_float64 = float(training_cfg.get("cholesky_jitter_float64", 1e-8))
+        self._cg_max_iterations = int(training_cfg.get("cg_max_iterations", 1000))
 
         if self._jitter_float32 < 0:
             raise ValueError(f"cholesky_jitter_float32 must be non-negative, got {self._jitter_float32}")
         if self._jitter_float64 < 0:
             raise ValueError(f"cholesky_jitter_float64 must be non-negative, got {self._jitter_float64}")
+        if self._cg_max_iterations < 1:
+            raise ValueError(f"cg_max_iterations must be a positive integer, got {self._cg_max_iterations}")
 
         logger.info(
-            f"Cholesky jitter configured: float32={self._jitter_float32:.2e}, "
-            f"float64={self._jitter_float64:.2e}"
+            f"Cholesky forced: {self._force_cholesky} | jitter f32={self._jitter_float32:.2e} "
+            f"f64={self._jitter_float64:.2e}"
+            + ("" if self._force_cholesky else f" | CG max iter={self._cg_max_iterations}")
         )
 
     @contextlib.contextmanager
     def _cholesky_context(self):
-        jitter_ctx = gpytorch.settings.cholesky_jitter(
-            self._jitter_float32, self._jitter_float64
-        )
-        with warnings.catch_warnings(), jitter_ctx:
-            warnings.filterwarnings("ignore", category=NumericalWarning)
+        # NumericalWarning (Cholesky jitter retries, CG non-convergence) is left
+        # un-silenced for now: debugging knob, re-enable the filter once stable.
+        with gpytorch.settings.cholesky_jitter(self._jitter_float32, self._jitter_float64):
             if self._force_cholesky:
                 with gpytorch.settings.max_cholesky_size(float("inf")), gpytorch.settings.fast_computations(
-                    covar_root_decomposition=False,
-                    log_prob=False,
-                    solves=False,
+                    covar_root_decomposition=False, log_prob=False, solves=False,
                 ):
                     yield
                 return
-            yield
+            with gpytorch.settings.max_cg_iterations(self._cg_max_iterations):
+                yield
 
 class GPTrainer(_BaseGPTrainer):
-    """Trainer for exact GP regression models (EMLL + residual-based early stopping)."""
+    """Exact GP trainer (EMLL maximization, full-batch)."""
 
     def __init__(
         self,
@@ -708,31 +605,17 @@ class GPTrainer(_BaseGPTrainer):
                 mll_value = -loss_value
                 current_noise = _current_likelihood_noise(self.model)
 
-                # Compute eval results into locals first; commit *all* per-step
-                # appends together at the end of the iteration, so a Cholesky
-                # failure inside the eval block leaves every history list at the
-                # same length (=step-1) and plots stay aligned.
                 train_metrics: Optional[Dict[str, float]] = None
                 val_loss: Optional[float] = None
                 val_metrics: Optional[Dict[str, float]] = None
                 try:
-                    # Train-set evaluation: kept only on logging ticks.
                     if _check_interval(step, self.train_metrics_log_interval):
                         _, train_metrics = _evaluate_regression_model(
-                            self.model,
-                            self.X_train,
-                            self.y_train,
-                            force_cholesky=self._force_cholesky,
+                            self.model, self.X_train, self.y_train, force_cholesky=self._force_cholesky,
                         )
-
-                    # Validation: single evaluation per step; val_metrics retained only
-                    # on logging ticks (matches original single-call pattern).
                     if self.X_val is not None and self.y_val is not None:
                         val_loss, raw_val_metrics = _evaluate_regression_model(
-                            self.model,
-                            self.X_val,
-                            self.y_val,
-                            force_cholesky=self._force_cholesky,
+                            self.model, self.X_val, self.y_val, force_cholesky=self._force_cholesky,
                         )
                         if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
                             logger.warning(f"Non-finite GP val_loss at step {step}: {val_loss}")
@@ -740,13 +623,11 @@ class GPTrainer(_BaseGPTrainer):
                         if _check_interval(step, self.validation_check_interval):
                             val_metrics = raw_val_metrics
                 except _CHOLESKY_FAIL_EXCEPTIONS as exc:
-                        _handle_cholesky_failure(
-                            exc, model_name="GP", step=step, phase="evaluation", trial=self.trial
-                        )
-                        break
+                    _handle_cholesky_failure(exc, model_name="GP", step=step, phase="evaluation", trial=self.trial)
+                    break
 
-                # Atomic commit: every list grows by exactly one entry per
-                # successful step.
+                # Commit all per-step appends together so a Cholesky failure
+                # during eval leaves every history list at length=step-1.
                 train_losses.append(loss_value)          # negative MLL
                 self.mll_history.append(mll_value)       # positive MLL
                 self.likelihood_noise_history.append(current_noise)
@@ -817,7 +698,7 @@ class GPTrainer(_BaseGPTrainer):
         }
 
 class MLPGPTrainer(_BaseGPTrainer):
-    """Trainer for end-to-end MLPGP models (EMLL + residual-based early stopping)."""
+    """Joint MLP+GP trainer with separate LRs for the MLP and the GP-side parameters."""
 
     def __init__(
         self,
@@ -947,30 +828,17 @@ class MLPGPTrainer(_BaseGPTrainer):
                 mll_value = -loss_value
                 current_noise = _current_likelihood_noise(self.model)
 
-                # Compute eval results into locals; commit *all* per-step appends
-                # together at the end so a Cholesky failure during eval leaves
-                # every history list at length=step-1.
                 train_metrics: Optional[Dict[str, float]] = None
                 val_loss: Optional[float] = None
                 val_metrics: Optional[Dict[str, float]] = None
                 try:
-                    # Train-set evaluation: kept only on logging ticks.
                     if _check_interval(step, self.train_metrics_log_interval):
                         _, train_metrics = _evaluate_regression_model(
-                            self.model,
-                            self.X_train,
-                            self.y_train,
-                            force_cholesky=self._force_cholesky,
+                            self.model, self.X_train, self.y_train, force_cholesky=self._force_cholesky,
                         )
-
-                    # Validation: single evaluation per step; val_metrics retained only
-                    # on logging ticks.
                     if self.X_val is not None and self.y_val is not None:
                         val_loss, raw_val_metrics = _evaluate_regression_model(
-                            self.model,
-                            self.X_val,
-                            self.y_val,
-                            force_cholesky=self._force_cholesky,
+                            self.model, self.X_val, self.y_val, force_cholesky=self._force_cholesky,
                         )
                         if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
                             logger.warning(f"Non-finite MLPGP val_loss at step {step}: {val_loss}")
@@ -978,14 +846,13 @@ class MLPGPTrainer(_BaseGPTrainer):
                         if _check_interval(step, self.validation_check_interval):
                             val_metrics = raw_val_metrics
                 except _CHOLESKY_FAIL_EXCEPTIONS as exc:
-                    _handle_cholesky_failure(
-                        exc, model_name="MLPGP", step=step, phase="evaluation", trial=self.trial
-                    )
+                    _handle_cholesky_failure(exc, model_name="MLPGP", step=step, phase="evaluation", trial=self.trial)
                     break
 
-                # Atomic commit: every list grows by exactly one entry per step.
-                train_losses.append(loss_value)  # negative mll
-                self.mll_history.append(mll_value)  # positive mll
+                # Commit all per-step appends together so a Cholesky failure
+                # during eval leaves every history list at length=step-1.
+                train_losses.append(loss_value)
+                self.mll_history.append(mll_value)
                 self.likelihood_noise_history.append(current_noise)
                 likelihood_noise_history.append(current_noise)
                 train_metrics_history.append(train_metrics)
@@ -1053,4 +920,234 @@ class MLPGPTrainer(_BaseGPTrainer):
             "elapsed_time": elapsed,
         }
 
-__all__ = ["MLPTrainer", "GPTrainer", "MLPGPTrainer"]
+class SVGPTrainer:
+    """Mini-batch ELBO trainer for ``SVGPRegressionModel`` / ``MLPSVGPModel``.
+
+    No Cholesky context: SVGP solves the M x M inducing block. When the model
+    exposes ``feature_extractor_parameters`` (the joint MLP+GP case) the
+    optimizer uses two groups with distinct LRs, mirroring ``MLPGPTrainer``.
+    """
+
+    def __init__(
+        self,
+        model: "SVGPRegressionModel | MLPSVGPModel",
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader],
+        training_cfg: Dict[str, Any],
+        device: Optional[torch.device] = None,
+        trial: Optional["optuna.Trial"] = None,
+    ) -> None:
+        self.model = model
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.training_cfg = training_cfg
+        self.trial = trial
+
+        self.device = device or resolve_device(str(training_cfg.get("device", "auto")))
+        self.model.to(self.device)
+
+        self.n_epochs = int(training_cfg.get("svgp_n_epochs", 200))
+        self.optimizer_name = str(training_cfg.get("optimizer", "adam")).lower()
+
+        self.has_feature_extractor = hasattr(self.model, "feature_extractor_parameters")
+        self.learning_rate = float(training_cfg.get("learning_rate", 1e-2))
+        self.mlp_learning_rate = float(training_cfg.get("mlp_learning_rate", training_cfg.get("learning_rate", 1e-3)))
+        self.gp_learning_rate = float(training_cfg.get("gp_learning_rate", training_cfg.get("learning_rate", 1e-2)))
+        self.mlp_weight_decay = float(training_cfg.get("mlp_weight_decay", 1e-4))
+
+        self.validation_check_interval = int(training_cfg.get("validation_check_interval", 10))
+        self.train_metrics_log_interval = int(training_cfg.get("train_metrics_log_interval", 10))
+        if self.validation_check_interval <= 0:
+            raise ValueError("validation_check_interval must be a positive integer")
+        if self.train_metrics_log_interval <= 0:
+            raise ValueError("train_metrics_log_interval must be a positive integer")
+
+        _warn_deprecated_keys(training_cfg)
+        self.convergence_monitor = ConvergenceMonitor(training_cfg)
+
+        # ELBO needs num_data = full training set size for correct KL/data weighting.
+        num_data = len(self.train_loader.dataset)
+        self.mll = gpytorch.mlls.VariationalELBO(self.model.likelihood, self.model, num_data=num_data)
+
+        self.optimizer = self._build_optimizer()
+        # Scheduler steps once per epoch; T_max default for SVGP is n_epochs.
+        scheduler_cfg = {**training_cfg, "n_training_steps": self.n_epochs, "n_epochs": self.n_epochs}
+        self.scheduler = _build_scheduler(self.optimizer, scheduler_cfg)
+
+        self.best_val_loss = float("inf")
+        self._best_model_state: Optional[Dict[str, Any]] = None
+
+        logger.info(
+            f"SVGPTrainer initialized on device: {self.device} | "
+            f"n_epochs={self.n_epochs}, batches/epoch={len(self.train_loader)}, "
+            f"num_data={num_data}, joint_mlp={self.has_feature_extractor}"
+        )
+
+    def _build_optimizer(self) -> torch.optim.Optimizer:
+        if self.has_feature_extractor:
+            param_groups = [
+                {
+                    "params": list(self.model.feature_extractor_parameters()),
+                    "lr": self.mlp_learning_rate,
+                    "weight_decay": self.mlp_weight_decay,
+                },
+                {
+                    "params": list(self.model.gp_parameters()),
+                    "lr": self.gp_learning_rate,
+                    "weight_decay": 0.0,
+                },
+            ]
+            if self.optimizer_name == "adam":
+                return torch.optim.Adam(param_groups)
+            if self.optimizer_name == "adamw":
+                return torch.optim.AdamW(param_groups)
+            if self.optimizer_name == "sgd":
+                return torch.optim.SGD(param_groups)
+            raise ValueError(f"Unknown optimizer: {self.optimizer_name}")
+
+        params = self.model.parameters()
+        if self.optimizer_name == "adamw":
+            return torch.optim.AdamW(params, lr=self.learning_rate)
+        if self.optimizer_name == "sgd":
+            return torch.optim.SGD(params, lr=self.learning_rate)
+        if self.optimizer_name == "adam":
+            return torch.optim.Adam(params, lr=self.learning_rate)
+        raise ValueError(f"Unknown optimizer: {self.optimizer_name}")
+
+    def _evaluate_loader(self, loader: DataLoader) -> Tuple[float, Dict[str, float]]:
+        self.model.eval()
+        self.model.likelihood.eval()
+        losses: List[float] = []
+        y_true: List[torch.Tensor] = []
+        y_pred: List[torch.Tensor] = []
+        with torch.no_grad(), warnings.catch_warnings():
+            warnings.simplefilter("ignore", GPInputWarning)
+            for X_batch, y_batch in loader:
+                X_batch = X_batch.to(self.device)
+                y_batch = y_batch.to(self.device)
+                output = self.model(X_batch)
+                prediction = _to_prediction_tensor(output)
+                target = y_batch.view_as(prediction)
+                losses.append(float(torch.nn.functional.mse_loss(prediction, target).item()))
+                y_true.append(target.detach().cpu())
+                y_pred.append(prediction.detach().cpu())
+        y_true_t = torch.cat(y_true, dim=0)
+        y_pred_t = torch.cat(y_pred, dim=0)
+        metrics = compute_all_metrics(y_true_t.numpy(), y_pred_t.numpy())
+        return float(sum(losses) / max(len(losses), 1)), metrics
+
+    def train(self) -> Dict[str, Any]:
+        logger.info(f"Starting SVGP training for up to {self.n_epochs} epochs")
+        start_time = time.time()
+        train_losses: List[float] = []
+        val_losses: List[Optional[float]] = []
+        train_metrics_history: List[Optional[Dict[str, float]]] = []
+        val_metrics_history: List[Optional[Dict[str, float]]] = []
+
+        for epoch in range(1, self.n_epochs + 1):
+            self.model.train()
+            self.model.likelihood.train()
+            epoch_losses: List[float] = []
+            for X_batch, y_batch in self.train_loader:
+                X_batch = X_batch.to(self.device)
+                y_batch = y_batch.to(self.device)
+                self.optimizer.zero_grad()
+                output = self.model(X_batch)
+                # ELBO target must be 1D (one scalar per row); the existing pipeline
+                # already squeezes y, but mini-batch reshapes can re-introduce a
+                # trailing 1, so coerce here.
+                loss = -self.mll(output, y_batch.view(-1))
+                if not torch.isfinite(loss):
+                    logger.warning(f"Non-finite SVGP loss at epoch {epoch}: {loss.item()}")
+                    break
+                loss.backward()
+                self.optimizer.step()
+                epoch_losses.append(float(loss.item()))
+
+            if not epoch_losses:
+                break
+
+            if self.scheduler is not None:
+                try:
+                    self.scheduler.step()
+                except Exception:
+                    logger.warning("Scheduler step failed; disabling scheduler for the rest of training")
+                    self.scheduler = None
+
+            train_loss = float(sum(epoch_losses) / max(len(epoch_losses), 1))
+            train_losses.append(train_loss)
+
+            train_metrics: Optional[Dict[str, float]] = None
+            if _check_interval(epoch, self.train_metrics_log_interval):
+                _, train_metrics = self._evaluate_loader(self.train_loader)
+            train_metrics_history.append(train_metrics)
+
+            val_loss: Optional[float] = None
+            val_metrics: Optional[Dict[str, float]] = None
+            if self.val_loader is not None:
+                val_loss, raw_val_metrics = self._evaluate_loader(self.val_loader)
+                if val_loss is not None and not torch.isfinite(torch.tensor(val_loss)):
+                    logger.warning(f"Non-finite SVGP val_loss at epoch {epoch}: {val_loss}")
+                    val_loss = None
+                if _check_interval(epoch, self.validation_check_interval):
+                    val_metrics = raw_val_metrics
+            val_metrics_history.append(val_metrics)
+            val_losses.append(val_loss)
+
+            should_stop = self.convergence_monitor.step(epoch, train_loss, val_loss)
+
+            if epoch % 10 == 0:
+                state = self.convergence_monitor.state
+                val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
+                if val_metrics is not None:
+                    logger.info(
+                        f"Epoch {epoch}/{self.n_epochs} - "
+                        f"Train ELBO Loss: {train_loss:.6f}, "
+                        f"Val MSE: {val_loss_display}, "
+                        f"Val R²: {val_metrics.get('r2', float('nan')):.4f} | "
+                        f"train_streak={state['train_converged_streak']}, "
+                        f"val_no_improve={state['val_no_improve_streak']}"
+                    )
+                else:
+                    logger.info(
+                        f"Epoch {epoch}/{self.n_epochs} - "
+                        f"Train ELBO Loss: {train_loss:.6f}, "
+                        f"Val MSE: {val_loss_display} | "
+                        f"train_streak={state['train_converged_streak']}, "
+                        f"val_no_improve={state['val_no_improve_streak']}"
+                    )
+
+            if val_loss is not None and val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
+
+            if self.trial is not None and val_loss is not None:
+                self.trial.report(val_loss, step=epoch)
+                if self.trial.should_prune():
+                    import optuna
+                    logger.info(f"SVGP trial pruned at epoch {epoch}")
+                    raise optuna.TrialPruned()
+
+            if should_stop:
+                logger.info(
+                    f"Stopping SVGP training early at epoch {epoch}: "
+                    f"{self.convergence_monitor.stop_reason}"
+                )
+                break
+
+        elapsed = time.time() - start_time
+        logger.info(f"SVGP training completed in {elapsed:.2f} seconds")
+        if self._best_model_state is not None:
+            self.model.load_state_dict(self._best_model_state["model"])
+            logger.info("Restored SVGP model to best validation state")
+
+        return {
+            "train_losses": train_losses,    # negative ELBO, averaged per epoch
+            "val_losses": val_losses,
+            "train_metrics_history": train_metrics_history,
+            "val_metrics_history": val_metrics_history,
+            "elapsed_time": elapsed,
+        }
+
+
+__all__ = ["MLPTrainer", "GPTrainer", "MLPGPTrainer", "SVGPTrainer"]

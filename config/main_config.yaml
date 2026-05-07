@@ -1,31 +1,12 @@
-# ============================================================================
-# Main Configuration Orchestrator
-# ============================================================================
-# This file controls the overall experiment run: workflow mode, model
-# selection, random seed, and precision settings. Specific model/training
-# configs are loaded dynamically based on the selected model.
-
-# Top-level workflow mode used by main.py:
-# - single_run: train/evaluate the configured model(s)
-# - optimization: run hyperparameter optimization
-# - convergence: run split/seed convergence analysis
-mode: "convergence"  
-# Global random seed for reproducibility
+# Workflow mode: "single_run" | "optimization" | "convergence"
+mode: "single_run"
 global_seed: 21
-
-# PyTorch default precision: "float32" or "float64"
-# All tensors and models will use this precision unless explicitly overridden
+# "float32" or "float64"
 precision: "float32"
-
-# Active dataset key from config/dataset/dataset_config.yaml
-dataset: "sml"
-
-# Model selection: "mlp", "gp", "mlpgp", or "all"
-model_to_train: "all"
-
-# Execution mode inside the single_run workflow: "training", "test", or
-# "training+test"
+# Key in config/dataset/dataset_config.yaml
+dataset: "HYDDB_v3"
+# "mlp" | "gp" | "mlpgp" | "all"
+model_to_train: "mlpgp"
+# single_run sub-mode: "training" | "test" | "training+test"
 run_mode: "training"
-
-# Verbose logging
 verbose: true

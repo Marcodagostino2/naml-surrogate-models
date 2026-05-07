@@ -1,4 +1,4 @@
-"""Centralized output path resolution and naming constants."""
+"""Output path resolver: dataset / run-type / model-name folder layout."""
 
 from __future__ import annotations
 
@@ -14,16 +14,12 @@ PLOTS_DIRNAME = "plots"
 
 
 class RunType(str, Enum):
-    """Supported output run-type folders."""
-
     SINGLE_RUN = "single_run"
     OPTIMIZATION = "optimization"
     CONVERGENCE_ANALYSIS = "convergence_analysis"
 
 
 class ModelName(str, Enum):
-    """Supported model-name folders."""
-
     GP = "gp"
     MLP = "mlp"
     MLPGP = "mlpgp"
@@ -42,11 +38,7 @@ ModelNameLike = Literal[ModelName.GP, ModelName.MLP, ModelName.MLPGP, "gp", "mlp
 
 @dataclass(frozen=True)
 class OutputPathResolver:
-    """Resolve all output paths for a dataset, run type, and model.
-
-    All output path arithmetic is centralized in this class to keep callers
-    explicit and free from duplicated folder-building logic.
-    """
+    """Resolve all output paths for a (dataset, run_type, model) tuple."""
 
     dataset_name: str
     run_type: RunTypeLike
@@ -75,35 +67,28 @@ class OutputPathResolver:
 
     @property
     def root(self) -> Path:
-        """Model-level root output directory."""
         return self.output_base_dir / self.dataset_name / self._run_type_value / self._model_name_value
 
     @property
     def config_dir(self) -> Path:
-        """Directory where run/optimization configs are stored."""
         return self.root / CONFIG_DIRNAME
 
     @property
     def plots_dir(self) -> Path:
-        """Directory where plots are stored."""
         return self.root / PLOTS_DIRNAME
 
     @property
     def checkpoint(self) -> Path:
-        """Path of the model checkpoint file."""
         return self.root / "checkpoint.pt"
 
     @property
     def summary_csv(self) -> Path:
-        """Path of the summary CSV file."""
         return self.root / "summary.csv"
 
     @property
     def best_params(self) -> Path:
-        """Path of best hyperparameters JSON file."""
         return self.root / "best_params.json"
 
     @property
     def all_trials_csv(self) -> Path:
-        """Path of the all-trials CSV file."""
         return self.root / "all_trials.csv"

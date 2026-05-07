@@ -1,16 +1,13 @@
-# ============================================================================
-# Shared Training Configuration
-# ============================================================================
-# Common defaults used by all trainers (MLP, GP, MLPGP).
-# Model-specific training files can override only what differs.
+# Defaults shared by all trainers; per-model files override what differs.
 
-# LR scheduler shared across all trainers
-scheduler_type: cosine          # "steplr" | "cosine" | "none"
+# LR scheduler: "steplr" | "cosine" | "none"
+scheduler_type: cosine
 
-# StepLR params (used only when scheduler_type: steplr)
-scheduler_step_size: 200        # halve LR every N epochs/steps
-scheduler_gamma: 0.5            # multiplicative factor
+# StepLR knobs (used when scheduler_type == "steplr")
+scheduler_step_size: 200
+scheduler_gamma: 0.5
 
-# Cosine Annealing params (used only when scheduler_type: cosine)
-scheduler_T_max: null           # defaults to n_training_steps/n_epochs if null
+# Cosine annealing knobs (used when scheduler_type == "cosine")
+# T_max defaults to n_training_steps / n_epochs when null.
+scheduler_T_max: null
 scheduler_eta_min: 1.0e-7

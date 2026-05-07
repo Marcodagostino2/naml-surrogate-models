@@ -157,6 +157,23 @@ datasets:
     batch_size: 32
     description: "Hydrodynamics DB v2"
 
+  HYDDB_v3:
+    csv_path: data/HYDDB_V3.csv
+    input_columns: [sim_machNumberValue, sim_aoaValue, sim_phiValue, sim_altitudeValue, geom_abk_openingPercentage]
+    target_columns: [cfd_cfx_mean]
+    input_display_names: [Mach, Angle of attack, Aerodynamic roll angle, Altitude, Airbrakes opening percentage]
+    input_units: ["-", deg, deg, m, "%"]
+    output_display_name: Axial coefficient
+    output_unit: "-"
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.7
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 32
+    description: "Hydrodynamics DB v3"
+
   AEDB_v1:
     csv_path: data/AEDB_v1_output.csv
     input_columns: [sim_machNumberValue, sim_aoaValue, sim_phiValue, 

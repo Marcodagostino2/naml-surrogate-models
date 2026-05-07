@@ -1,9 +1,4 @@
-"""Convergence analysis implementation moved into package namespace.
-
-This is a copy of the previous top-level `convergence_analysis.py` implementation
-so package-level imports can be used and the top-level script can be removed
-after verification.
-"""
+"""Repeated split/seed analysis: per-(split, model, seed) runs and aggregated stats/plots."""
 
 from __future__ import annotations
 

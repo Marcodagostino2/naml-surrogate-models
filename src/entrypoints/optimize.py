@@ -1,13 +1,8 @@
-"""Entrypoint helpers for optimization mode.
-
-This module mirrors the public API previously exposed by the repository
-root `optimize.py` but lives inside the `src` package so `main.py` can
-delegate to package-level modules. It reuses the existing
-`src.optimization_support` utilities and `src.pipeline` training helpers.
-"""
+"""Optuna-based hyperparameter optimization entrypoint."""
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -22,8 +17,8 @@ from src.optimization_support import (
     save_optimization_results,
 )
 from src.pipeline import save_summary_row
-from src.utils.entrypoints import load_and_initialize_run_configs
-from src.utils import OutputPathResolver, RunType, resolve_device, setup_logger, load_run_configs
+from src.utils import OutputPathResolver, RunType, load_run_configs, resolve_device, setup_logger
+from src.utils.entrypoints import load_and_initialize_run_configs  # noqa: F401
 
 logger = setup_logger(__name__)
 
@@ -35,15 +30,9 @@ def run_optimization(
     n_trials_override: Optional[int] = None,
     timeout_override: Optional[int] = None,
 ) -> None:
-    """Run hyperparameter optimization for a single model.
-
-    This function is adapted from the original top-level `optimize.py` to
-    live under `src` so it can be imported by `main.py` without relying on
-    top-level compatibility wrappers.
-    """
     try:
         import optuna
-    except ImportError as exc:  # pragma: no cover - optional dependency
+    except ImportError as exc:
         raise ModuleNotFoundError("optuna is required to run optimization workflows.") from exc
 
     logger.info("=" * 70)
@@ -75,10 +64,11 @@ def run_optimization(
 
     device = resolve_device(base_training_cfg.get("device", main_cfg.get("device", "auto")))
 
-    sampler = build_sampler(opt_cfg.get("study", {}))
-    pruner = build_pruner(opt_cfg.get("study", {}))
+    study_cfg = opt_cfg.get("study", {})
+    sampler = build_sampler(study_cfg)
+    pruner = build_pruner(study_cfg)
     study = optuna.create_study(
-        direction=opt_cfg.get("study", {}).get("direction", "minimize"),
+        direction=study_cfg.get("direction", "minimize"),
         sampler=sampler,
         pruner=pruner,
     )
@@ -93,17 +83,13 @@ def run_optimization(
         device=device,
     )
 
-    n_trials = int(opt_cfg.get("study", {}).get("n_trials", 1))
-    timeout = opt_cfg.get("study", {}).get("timeout")
-    metric_name = str(opt_cfg.get("study", {}).get("metric", ""))
-    sampler_name = str(opt_cfg.get("study", {}).get("sampler", "tpe"))
-    log_every = int(opt_cfg.get("study", {}).get("log_every_n_trials", 5))
+    n_trials = int(study_cfg.get("n_trials", 1))
+    timeout = study_cfg.get("timeout")
+    metric_name = str(study_cfg.get("metric", ""))
+    sampler_name = str(study_cfg.get("sampler", "tpe"))
+    log_every = int(study_cfg.get("log_every_n_trials", 5))
 
-    logger.info(
-        f"Starting HPO: {model_name} | {n_trials} trials | metric={metric_name} | sampler={sampler_name}"
-    )
-
-    import time
+    logger.info(f"Starting HPO: {model_name} | {n_trials} trials | metric={metric_name} | sampler={sampler_name}")
 
     start_time = time.perf_counter()
     study.optimize(
@@ -138,7 +124,6 @@ def run_optimization(
         base_training_cfg=base_training_cfg,
         model_name=model_name,
     )
-
     generate_optimization_plots(study, output_resolver.plots_dir)
 
     save_summary_row(
@@ -151,7 +136,7 @@ def run_optimization(
             "n_trials_completed": len(study.trials),
             "best_value": study.best_value,
             "best_params": study.best_params,
-            "metric": opt_cfg.get("study", {}).get("metric"),
+            "metric": study_cfg.get("metric"),
             "duration_seconds": duration,
         },
     )

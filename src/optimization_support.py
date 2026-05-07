@@ -1,9 +1,4 @@
-"""
-Shared helpers for hyperparameter optimization.
-
-This module keeps optimize.py thin by hosting the reusable Optuna helpers,
-configuration translation, result persistence and plotting.
-"""
+"""Optuna helpers, search-space translation, result persistence, and plotting for HPO."""
 
 from __future__ import annotations
 

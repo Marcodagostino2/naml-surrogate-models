@@ -1,14 +1,13 @@
-"""Main dispatcher for the aerodynamic surrogate model workflows.
+"""Workflow dispatcher.
 
-The repository now treats this script as the primary entry point for three
-mode-specific runs:
-- ``single_run``: one training/evaluation pass per configured model
-- ``optimization``: hyperparameter search
-- ``convergence``: repeated split/seed analysis
+Three modes (selected via ``--mode`` or ``main_config.yaml: mode``):
 
-The lower-level workflow implementations remain in ``src.pipeline``,
-``optimize.py``, and ``convergence_analysis.py``. This file just parses the
-mode and routes to the right runner.
+- ``single_run`` — one training/evaluation pass per configured model
+- ``optimization`` — Optuna hyperparameter search
+- ``convergence`` — repeated split/seed analysis
+
+Implementations live in ``src.pipeline``, ``src.entrypoints.optimize``, and
+``src.entrypoints.convergence``; this script only routes.
 """
 
 from __future__ import annotations
@@ -28,12 +27,11 @@ from src.utils.entrypoints import load_and_initialize_run_configs
 logger = setup_logger(__name__)
 
 if TYPE_CHECKING:
-    import optuna
+    import optuna  # noqa: F401
 
 
 def _build_viz_data(data_bundle) -> Dict[str, Any]:
-    """Assemble the data dict consumed by ``run_visualization``."""
-
+    """Denormalize data and assemble the dict consumed by ``run_visualization``."""
     return {
         "X_train": data_bundle.X_train * data_bundle.input_scaler_std + data_bundle.input_scaler_mean,
         "y_train": data_bundle.y_train * data_bundle.target_scaler_std + data_bundle.target_scaler_mean,
@@ -55,8 +53,6 @@ def _build_viz_data(data_bundle) -> Dict[str, Any]:
 
 
 def _run_single_run(config_dir: Path, output_dir: Path) -> None:
-    """Run the standard training/evaluation workflow for the configured models."""
-
     logger.info("Loading configurations...")
     loaded_configs = load_and_initialize_run_configs(config_dir, "mlp", include_optimize=False)
 
@@ -81,7 +77,6 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
 
     logger.info("Loading and preprocessing data...")
     data_bundle = load_data_from_config(config_dir.parent, dataset_cfg, global_seed, precision)
-
     logger.debug(
         f"Data shapes: X_train={data_bundle.X_train.shape}, "
         f"X_val={data_bundle.X_val.shape}, X_test={data_bundle.X_test.shape}"
@@ -90,94 +85,97 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
     selected_models = ["mlp", "gp", "mlpgp"] if model_to_train == "all" else [model_to_train]
     trained_models: Dict[str, Any] = {}
 
-    if "training" in run_mode:
-        for selected_model in selected_models:
-            model_configs = load_run_configs(config_dir, selected_model, include_optimize=False)
-            model_cfg = model_configs["model_cfg"]
-            training_cfg = model_configs["training_cfg"]
+    if "training" not in run_mode:
+        logger.info("=" * 60)
+        logger.info("Pipeline Execution Completed Successfully!")
+        logger.info("=" * 60)
+        return
 
-            output_resolver = OutputPathResolver(
+    for selected_model in selected_models:
+        model_configs = load_run_configs(config_dir, selected_model, include_optimize=False)
+        model_cfg = model_configs["model_cfg"]
+        training_cfg = model_configs["training_cfg"]
+
+        output_resolver = OutputPathResolver(
+            dataset_name=dataset_name,
+            run_type=RunType.SINGLE_RUN,
+            model_name=selected_model,
+            output_base_dir=output_dir,
+        )
+
+        run_dir = create_run_directory(output_resolver)
+        logger.debug(f"Run directory created: {run_dir}")
+        save_run_configs(
+            output_resolver=output_resolver,
+            selected_model=selected_model,
+            main_cfg=main_cfg,
+            dataset_cfg=dataset_cfg,
+            model_cfg=model_cfg,
+            training_cfg=training_cfg,
+            viz_cfg=viz_cfg,
+        )
+
+        results = train_model(
+            model_name=selected_model,
+            data_bundle=data_bundle,
+            dataset_cfg=dataset_cfg,
+            model_cfg=model_cfg,
+            training_cfg=training_cfg,
+            output_resolver=output_resolver,
+        )
+        trained_models[selected_model] = results["model"]
+
+        save_summary_row(
+            output_resolver.summary_csv,
+            {
+                "timestamp": datetime.now().isoformat(),
+                "run_dir": str(run_dir),
+                "test_r2": results["test_metrics"]["r2"],
+                "test_rmse": results["test_metrics"]["rmse"],
+                "test_mae": results["test_metrics"]["mae"],
+                "test_mape": results["test_metrics"]["mape"],
+                "val_r2": results["val_metrics"]["r2"],
+                "val_rmse": results["val_metrics"]["rmse"],
+            },
+        )
+
+        from src.visualization import run_visualization
+        from src.visualization.config import VisualizationConfig
+
+        viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(output_resolver.plots_dir))
+        run_visualization(
+            models={selected_model: results["model"]},
+            data=_build_viz_data(data_bundle),
+            config=viz_config,
+            mode="train",
+        )
+        logger.info(f"Training completed. Results saved to {run_dir}")
+
+    if len(trained_models) == len(selected_models):
+        # When all models trained, render a comparison table per model output dir.
+        from src.visualization import run_visualization
+        from src.visualization.config import VisualizationConfig
+
+        for selected_model in selected_models:
+            table_resolver = OutputPathResolver(
                 dataset_name=dataset_name,
                 run_type=RunType.SINGLE_RUN,
                 model_name=selected_model,
                 output_base_dir=output_dir,
             )
-
-            run_dir = create_run_directory(output_resolver)
-            logger.debug(f"Run directory created: {run_dir}")
-
-            save_run_configs(
-                output_resolver=output_resolver,
-                selected_model=selected_model,
-                main_cfg=main_cfg,
-                dataset_cfg=dataset_cfg,
-                model_cfg=model_cfg,
-                training_cfg=training_cfg,
-                viz_cfg=viz_cfg,
+            table_viz_config = VisualizationConfig.from_mapping(
+                viz_cfg, output_dir=str(table_resolver.plots_dir),
             )
-
-            results = train_model(
-                model_name=selected_model,
-                data_bundle=data_bundle,
-                dataset_cfg=dataset_cfg,
-                model_cfg=model_cfg,
-                training_cfg=training_cfg,
-                output_resolver=output_resolver,
-            )
-            trained_models[selected_model] = results["model"]
-
-            save_summary_row(
-                output_resolver.summary_csv,
-                {
-                    "timestamp": datetime.now().isoformat(),
-                    "run_dir": str(run_dir),
-                    "test_r2": results["test_metrics"]["r2"],
-                    "test_rmse": results["test_metrics"]["rmse"],
-                    "test_mae": results["test_metrics"]["mae"],
-                    "test_mape": results["test_metrics"]["mape"],
-                    "val_r2": results["val_metrics"]["r2"],
-                    "val_rmse": results["val_metrics"]["rmse"],
-                },
-            )
-
-            from src.visualization import run_visualization
-            from src.visualization.config import VisualizationConfig
-
-            viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(output_resolver.plots_dir))
+            table_viz_config.parity.enabled = False
+            table_viz_config.surface.enabled = False
+            table_viz_config.uncertainty_gp.enabled = False
+            table_viz_config.table.enabled = True
             run_visualization(
-                models={selected_model: results["model"]},
+                models=trained_models,
                 data=_build_viz_data(data_bundle),
-                config=viz_config,
+                config=table_viz_config,
                 mode="train",
             )
-
-            logger.info(f"Training completed. Results saved to {run_dir}")
-
-        if len(trained_models) == len(selected_models):
-            from src.visualization import run_visualization
-            from src.visualization.config import VisualizationConfig
-
-            for selected_model in selected_models:
-                table_resolver = OutputPathResolver(
-                    dataset_name=dataset_name,
-                    run_type=RunType.SINGLE_RUN,
-                    model_name=selected_model,
-                    output_base_dir=output_dir,
-                )
-                table_viz_config = VisualizationConfig.from_mapping(
-                    viz_cfg,
-                    output_dir=str(table_resolver.plots_dir),
-                )
-                table_viz_config.parity.enabled = False
-                table_viz_config.surface.enabled = False
-                table_viz_config.uncertainty_gp.enabled = False
-                table_viz_config.table.enabled = True
-                run_visualization(
-                    models=trained_models,
-                    data=_build_viz_data(data_bundle),
-                    config=table_viz_config,
-                    mode="train",
-                )
 
     logger.info("=" * 60)
     logger.info("Pipeline Execution Completed Successfully!")
@@ -191,8 +189,6 @@ def _run_optimization(
     n_trials_override: int | None = None,
     timeout_override: int | None = None,
 ) -> None:
-    """Run the optimization workflow through the dedicated optimizer module."""
-
     from src.entrypoints.optimize import run_optimization as run_optimization_workflow
 
     loaded_configs = load_run_configs(config_dir, "mlp", include_optimize=False)
@@ -207,45 +203,34 @@ def _run_optimization(
 
 
 def _run_convergence(config_path: Path) -> None:
-    """Run convergence analysis through the dedicated analysis module."""
-
     from src.entrypoints.convergence import run_analysis
-
     run_analysis(config_path)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Single entry point for surrogate-model workflows.")
     parser.add_argument(
-        "--mode",
-        type=str,
-        default=None,
+        "--mode", type=str, default=None,
         choices=("single_run", "optimization", "convergence"),
-        help="Workflow mode to execute. Defaults to config/main_config.yaml.",
+        help="Workflow mode. Defaults to config/main_config.yaml.",
     )
     parser.add_argument("--config-dir", type=str, default="config", help="Path to the config directory.")
     parser.add_argument("--output-dir", type=str, default="outputs", help="Base output directory.")
     parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
+        "--model", type=str, default=None,
         choices=["mlp", "gp", "mlpgp", "all"],
         help="Override the optimization model selection from config/main_config.yaml.",
     )
     parser.add_argument("--n-trials", type=int, default=None, help="Override the number of optimization trials.")
     parser.add_argument("--timeout", type=int, default=None, help="Override the optimization timeout in seconds.")
     parser.add_argument(
-        "--config-path",
-        type=str,
-        default="config/convergence/convergence_config.yaml",
+        "--config-path", type=str, default="config/convergence/convergence_config.yaml",
         help="Path to the convergence-analysis config file.",
     )
     return parser
 
 
 def main() -> None:
-    """Execute the requested workflow mode."""
-
     args = _build_parser().parse_args()
     project_root = Path(__file__).resolve().parent
     config_dir = project_root / args.config_dir

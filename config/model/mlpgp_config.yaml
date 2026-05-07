@@ -1,22 +1,19 @@
-# ============================================================================
-# Hybrid MLP+Kriging Model Configuration
-# ============================================================================
-# Explicit MLPGP configuration.
+# MLPGP model configuration.
 #
-# Architectures:
-#   - "non_stationary": MLP predicts local sigma(x) and lengthscale l(x) — requires exponential kernel
-#   - "dkl": Deep Kernel Learning — MLP learns low-dim representation for GP kernel
-#
-# feature_extractor controls the MLP that outputs local kernel parameters:
-#   - sigma(x): local amplitude factor
-#   - l(x): local lengthscale (scalar or per-dimension)
-#
-# kernel specifies the kernel type and its hyperparameters:
-#   - type: "exponential" (required for non_stationary) or "exponential", "rbf", "matern" for dkl
-#   - theta, power_exponent (for exponential)
-#   - matern_nu (for matern)
+# Architecture:
+#   - "non_stationary": MLP predicts local sigma(x) and l(x) for the Gibbs
+#     kernel; requires kernel.type == "exponential".
+#   - "dkl": Deep Kernel Learning. MLP maps x to a small feature space, then a
+#     stationary kernel is evaluated on those features.
+architecture_name: "non_stationary"
 
-architecture_name: "non_stationary"   # "dkl" for Deep Kernel Learning, "non_stationary" 
+# Inference: "exact" (O(N^3) MLL) or "svgp" (sparse variational, mini-batched).
+inference: "exact"
+
+# SVGP knobs, ignored when inference == "exact".
+svgp:
+  n_inducing_points: 256
+  learn_inducing_locations: true
 
 dkl_feature_extractor:
   name: "dkl"
@@ -25,40 +22,44 @@ dkl_feature_extractor:
       activation: "tanh"
   dropout: 0.0
   batch_norm: false
-  output_width: 8
+  output_width: 2
   output_activation: "identity"
 
 non_stationary_feature_extractor:
   name: "non_stationary"
   architecture:
-    - layers: [1024, 1024, 1024]
+    - layers: [512]
       activation: "tanh"
-    - layers: [128]
+    - layers: [512]
       activation: "tanh"
-    - layers: [256]
-      activation: "tanh"    
+    - layers: [256, 128]
+      activation: "tanh"
   dropout: 0.0
   batch_norm: false
   output_activation: "identity"
   log_sigma_floor: -4
-  log_sigma_ceiling: 3
+  log_sigma_ceiling: 1
   log_lengthscale_floor: -4
   log_lengthscale_ceiling: 3
   lengthscale_mode: "per_dimension"
 
+# Kernel choices: "exponential" | "rbf" | "matern".
+# "exponential" is required for the non_stationary architecture.
+# theta_init / power_exponent_init / tau2_init only used by "exponential";
+# matern_nu only used by "matern". DKL uses the ScaleKernel outputscale (tau^2);
+# non_stationary encodes amplitude via sigma(x) and ignores tau2_init.
 kernel:
-  type: "exponential"      # options: "exponential" | "rbf" | "matern"
-                           # Note: "exponential" is mandatory for non_stationary architecture
-  theta_init: 1.0e-1            # exponential only
-  power_exponent_init: 1.9      # exponential only
-  likelihood_noise_init: 1.0e-2
-  tau2_init: 1.0e-2             # outputscale (DKL only; non_stationary ignores this)
-  matern_nu: 2.5           # matern only (0.5, 1.5, 2.5)
-  likelihood_noise_floor: 1.0e-6      # minimum noise level
-  likelihood_noise_ceiling: 1.0       # maximum noise level 
-  theta_floor: 1.0e-5      # minimum theta value 
-  theta_ceiling: 1.0e3     # maximum theta value 
-  power_exponent_floor: 1.5  # minimum power exponent
-  power_exponent_ceiling: 2.0  # maximum power exponent
+  type: "exponential"
+  theta_init: 1.0e-3
+  power_exponent_init: 1.9
+  likelihood_noise_init: 1.0e-1
+  tau2_init: 1.0e-3
+  matern_nu: 2.5
+  likelihood_noise_floor: 1.0e-6
+  likelihood_noise_ceiling: 1.0
+  theta_floor: 1.0e-5
+  theta_ceiling: 1.0e3
+  power_exponent_floor: 1.5
+  power_exponent_ceiling: 2.0
 
-trend_degree: 1
+trend_degree: 0
