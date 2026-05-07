@@ -5,6 +5,10 @@
 #     kernel; requires kernel.type == "exponential".
 #   - "dkl": Deep Kernel Learning. MLP maps x to a small feature space, then a
 #     stationary kernel is evaluated on those features.
+#
+# Each feature extractor has a single hidden block with one activation shared
+# across its layers (see src/models/mlp.py for the format). Block activations:
+# relu | leaky_relu | selu | tanh | mish — init is fixed per activation.
 architecture_name: "non_stationary"
 
 # Inference: "exact" (O(N^3) MLL) or "svgp" (sparse variational, mini-batched).
@@ -18,8 +22,8 @@ svgp:
 dkl_feature_extractor:
   name: "dkl"
   architecture:
-    - layers: [1000, 500, 50, 10]
-      activation: "tanh"
+    layers: [1000, 500, 50, 10]
+    activation: "tanh"
   dropout: 0.0
   batch_norm: false
   output_width: 2
@@ -28,12 +32,8 @@ dkl_feature_extractor:
 non_stationary_feature_extractor:
   name: "non_stationary"
   architecture:
-    - layers: [512]
-      activation: "tanh"
-    - layers: [512]
-      activation: "tanh"
-    - layers: [256, 128]
-      activation: "tanh"
+    layers: [512, 512, 256, 128]
+    activation: "tanh"
   dropout: 0.0
   batch_norm: false
   output_activation: "identity"

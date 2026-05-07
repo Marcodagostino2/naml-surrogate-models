@@ -13,50 +13,42 @@ study:
 training_overrides:
   n_training_steps: 2000
 
-architecture_name: "non_stationary"  # options: "non_stationary" | "dkl"
+architecture_name: "non_stationary"  # "non_stationary" | "dkl"
 
-# Kernel selection for optimization
-# - Non-stationary: always uses "exponential" (Gibbs kernel)
-# - DKL: supports "exponential" | "rbf" | "matern"
-kernel_name: "exponential"   # override as needed
+# Kernel for the GP head:
+# - Non-stationary: must be "exponential" (Gibbs kernel).
+# - DKL: any of "exponential" | "rbf" | "matern".
+kernel_name: "exponential"
+
+# Hidden anchor host: not consumed by the loader, only referenced below.
+# Both architectures share the same single-block search (depth + per-layer
+# width + activation + dropout); init is fixed per activation.
+_shared:
+  block: &block
+    n_layers:
+      type: int
+      low: 3
+      high: 9
+    layer1_size: &layer_size
+      type: categorical
+      choices: [16, 32, 64, 128, 256, 512, 1024]
+    layer2_size: *layer_size
+    layer3_size: *layer_size
+    layer4_size: *layer_size
+    layer5_size: *layer_size
+    layer6_size: *layer_size
+    activation:
+      type: categorical
+      choices: [relu, leaky_relu, selu, tanh, mish]
+    dropout:
+      type: float
+      low: 0.0
+      high: 0.0
 
 search_spaces:
   non_stationary:
     model:
-      block1_layers:
-        type: int
-        low: 1
-        high: 3
-      block1_hidden_size:
-        type: categorical
-        choices: [16, 32, 64, 128, 256, 512, 1024]
-      block1_activation:
-        type: categorical
-        choices: [relu, tanh]
-      block2_layers:
-        type: int
-        low: 1
-        high: 3
-      block2_hidden_size:
-        type: categorical
-        choices: [16, 32, 64, 128, 256, 512, 1024]
-      block2_activation:
-        type: categorical
-        choices: [relu, tanh]
-      block3_layers:
-        type: int
-        low: 1
-        high: 3
-      block3_hidden_size:
-        type: categorical
-        choices: [16, 32, 64, 128, 256, 512, 1024]
-      block3_activation:
-        type: categorical
-        choices: [relu, tanh]
-      dropout:
-        type: float
-        low: 0.0
-        high: 0.0
+      <<: *block
       power_exponent_init:
         type: float
         low: 1.5
@@ -71,6 +63,10 @@ search_spaces:
         low: 1.0e-5
         high: 1.0
         log: true
+      trend_degree:
+        type: int
+        low: 0
+        high: 3
     training:
       mlp_learning_rate:
         type: float
@@ -90,40 +86,7 @@ search_spaces:
 
   dkl:
     model:
-      block1_layers:
-        type: int
-        low: 1
-        high: 3
-      block1_hidden_size:
-        type: categorical
-        choices: [16, 32, 64, 128, 256, 512, 1024]
-      block1_activation:
-        type: categorical
-        choices: [relu, tanh]
-      block2_layers:
-        type: int
-        low: 1
-        high: 3
-      block2_hidden_size:
-        type: categorical
-        choices: [16, 32, 64, 128, 256, 512, 1024]
-      block2_activation:
-        type: categorical
-        choices: [relu, tanh]
-      block3_layers:
-        type: int
-        low: 1
-        high: 3
-      block3_hidden_size:
-        type: categorical
-        choices: [16, 32, 64, 128, 256, 512, 1024]
-      block3_activation:
-        type: categorical
-        choices: [relu, tanh]
-      dropout:
-        type: float
-        low: 0.0
-        high: 0.0
+      <<: *block
       batch_norm:
         type: categorical
         choices: [false]
@@ -153,6 +116,10 @@ search_spaces:
         low: 1.0e-5
         high: 1.0
         log: true
+      trend_degree:
+        type: int
+        low: 0
+        high: 3
     training:
       mlp_learning_rate:
         type: float

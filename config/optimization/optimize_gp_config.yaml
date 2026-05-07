@@ -32,6 +32,10 @@ search_space:
       low: 1.0e-5
       high: 1.0e-1
       log: true
+    trend_degree:
+      type: int
+      low: 0
+      high: 3
   training:
     learning_rate:
       type: float

@@ -1,5 +1,5 @@
 # Workflow mode: "single_run" | "optimization" | "convergence"
-mode: "single_run"
+mode: "convergence"
 global_seed: 21
 # "float32" or "float64"
 precision: "float32"

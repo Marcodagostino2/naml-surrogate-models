@@ -158,7 +158,7 @@ datasets:
     description: "Hydrodynamics DB v2"
 
   HYDDB_v3:
-    csv_path: data/HYDDB_V3.csv
+    csv_path: data/HYDDB_v3_output.csv
     input_columns: [sim_machNumberValue, sim_aoaValue, sim_phiValue, sim_altitudeValue, geom_abk_openingPercentage]
     target_columns: [cfd_cfx_mean]
     input_display_names: [Mach, Angle of attack, Aerodynamic roll angle, Altitude, Airbrakes opening percentage]

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import csv
 import json
-import re
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, List, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 import gpytorch
 import matplotlib.pyplot as plt
@@ -36,30 +35,26 @@ plt.rcParams["figure.figsize"] = (12, 6)
 plt.rcParams["font.size"] = 10
 
 
+# Maximum hidden depth surfaced in the search space. ``layer{i}_size`` for
+# ``i > n_layers`` is ignored when building the architecture.
+_MAX_LAYERS = 6
+
+# Hyperparameters that describe the single hidden block, shared by mlp and
+# the feature extractors of mlpgp. Aliased into the registry below.
+_BLOCK_HPS = ("n_layers", "activation", *(f"layer{i}_size" for i in range(1, _MAX_LAYERS + 1)))
+
+
 _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("mlp", "dropout"): "dropout",
-    ("mlp", "block1_layers"): "architecture",
-    ("mlp", "block1_hidden_size"): "architecture",
-    ("mlp", "block1_activation"): "architecture",
-    ("mlp", "block2_layers"): "architecture",
-    ("mlp", "block2_hidden_size"): "architecture",
-    ("mlp", "block2_activation"): "architecture",
-    ("mlp", "block3_layers"): "architecture",
-    ("mlp", "block3_hidden_size"): "architecture",
-    ("mlp", "block3_activation"): "architecture",
+    **{("mlp", hp): "architecture" for hp in _BLOCK_HPS},
+
     ("gp", "tau2_init"): "kernel",
     ("gp", "theta_init"): "kernel",
     ("gp", "power_exponent_init"): "kernel",
     ("gp", "likelihood_noise_init"): "kernel",
-    ("mlpgp", "block1_layers"): "feature_extractor",
-    ("mlpgp", "block1_hidden_size"): "feature_extractor",
-    ("mlpgp", "block1_activation"): "feature_extractor",
-    ("mlpgp", "block2_layers"): "feature_extractor",
-    ("mlpgp", "block2_hidden_size"): "feature_extractor",
-    ("mlpgp", "block2_activation"): "feature_extractor",
-    ("mlpgp", "block3_layers"): "feature_extractor",
-    ("mlpgp", "block3_hidden_size"): "feature_extractor",
-    ("mlpgp", "block3_activation"): "feature_extractor",
+    ("gp", "trend_degree"): "root",
+
+    **{("mlpgp", hp): "feature_extractor" for hp in _BLOCK_HPS},
     ("mlpgp", "dropout"): "feature_extractor",
     ("mlpgp", "batch_norm"): "feature_extractor",
     ("mlpgp", "output_activation"): "feature_extractor",
@@ -71,6 +66,13 @@ _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("mlpgp", "theta_init"): "kernel",
     ("mlpgp", "power_exponent_init"): "kernel",
     ("mlpgp", "likelihood_noise_init"): "kernel",
+    ("mlpgp", "trend_degree"): "root",
+}
+
+# Type coercion for hyperparameters mapped to the "root" destination
+# (top-level model_cfg keys, not nested under kernel/feature_extractor).
+_ROOT_COERCERS: Dict[str, Callable[[Any], Any]] = {
+    "trend_degree": int,
 }
 
 
@@ -240,30 +242,21 @@ def build_pruner(study_cfg: Dict[str, Any]) -> BasePruner:
     raise ValueError(f"Unknown pruner: {pruner_name}")
 
 
-def _build_block_architecture(params: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _build_architecture(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Assemble a single-block architecture spec from ``n_layers`` / ``layer{i}_size``
+    / ``activation``. Returns ``None`` if any required field is missing.
     """
-    Build an architecture list from blockN_layers / blockN_hidden_size /
-    blockN_activation entries in params.
-
-    Each block produces one dict: {"layers": [hidden_size] * n_layers, "activation": ...}.
-    Blocks with n_layers == 0 or missing size/activation are skipped.
-    """
-    block_indices = sorted({
-        int(m.group(1))
-        for key in params
-        if (m := re.fullmatch(r"block(\d+)_(layers|hidden_size|activation)", key))
-    })
-    architecture = []
-    for idx in block_indices:
-        n_layers    = int(params.get(f"block{idx}_layers", 0))
-        hidden_size = params.get(f"block{idx}_hidden_size")
-        activation  = params.get(f"block{idx}_activation")
-        if n_layers > 0 and hidden_size is not None and activation is not None:
-            architecture.append({
-                "layers":     [int(hidden_size)] * n_layers,
-                "activation": str(activation),
-            })
-    return architecture
+    n_layers = int(params.get("n_layers", 0))
+    activation = params.get("activation")
+    if n_layers <= 0 or activation is None:
+        return None
+    layer_sizes = []
+    for i in range(1, n_layers + 1):
+        size = params.get(f"layer{i}_size")
+        if size is None:
+            return None
+        layer_sizes.append(int(size))
+    return {"layers": layer_sizes, "activation": str(activation)}
 
 
 def _apply_hp(model_name: str, params: Dict[str, Any], architecture_name: Optional[str] = None) -> Dict[str, Any]:
@@ -304,16 +297,14 @@ def _apply_hp(model_name: str, params: Dict[str, Any], architecture_name: Option
     patch: Dict[str, Any] = {}
 
     if arch_params := scoped.get("architecture"):
-        arch = _build_block_architecture(arch_params)
-        if arch:
+        if (arch := _build_architecture(arch_params)) is not None:
             patch["architecture"] = arch
 
     if model_name == "mlpgp" and scoped.get("feature_extractor"):
         fe_params = scoped["feature_extractor"]
         feature_patch: Dict[str, Any] = {}
 
-        arch = _build_block_architecture(fe_params)
-        if arch:
+        if (arch := _build_architecture(fe_params)) is not None:
             feature_patch["architecture"] = arch
 
         for key in ["dropout", "batch_norm", "output_activation", "output_width", "sigma_floor", "lengthscale_floor", "lengthscale_mode"]:
@@ -336,6 +327,11 @@ def _apply_hp(model_name: str, params: Dict[str, Any], architecture_name: Option
         kernel = {k: float(v) for k, v in kernel_params.items()}
         if kernel:
             patch["kernel"] = kernel
+
+    if root_params := scoped.get("root"):
+        for key, value in root_params.items():
+            coerce = _ROOT_COERCERS.get(key, lambda x: x)
+            patch[key] = coerce(value)
 
     return patch
 

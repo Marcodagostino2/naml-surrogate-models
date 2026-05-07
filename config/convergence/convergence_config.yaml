@@ -7,14 +7,14 @@ global_seed: 21
 
 # Train split grid.
 # Validation uses a fixed ratio of the training split.
-split_percentages: [0.90]
-validation_train_ratio: 0.18  # 0.07 -> 0.015, 0.10 -> 0.02142857
+split_percentages: [0.40]
+validation_train_ratio: 0.15  # 0.07 -> 0.015, 0.10 -> 0.02142857
 
 # Number of runs to perform for each model.
 # Used for both analysis mode and the post-optimization uncertainty retrains.
 runs_per_model:
   mlp: 5
-  gp: 5
+  gp: 10
   mlpgp: 5
 
 # Random kernel-initialization bounds for the GP-family models.
