@@ -1,4 +1,8 @@
-"""Repeated split/seed analysis: per-(split, model, seed) runs and aggregated stats/plots."""
+"""Repeated split/seed analysis: per-(split, model, seed) runs and aggregated CSVs.
+
+Plotting is delegated to ``src.visualization.suites.convergence`` via the
+top-level ``run_visualization`` dispatcher.
+"""
 
 from __future__ import annotations
 
@@ -8,14 +12,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 from src.data import DataBundle, load_and_preprocess_data
-from src.optimization_support import build_pruner, build_sampler, generate_optimization_plots, make_objective, save_optimization_results
+from src.optimization_support import build_pruner, build_sampler, make_objective, save_optimization_results
 from src.pipeline import train_model
 from src.utils import OutputPathResolver, RunType, load_run_configs, load_yaml, set_global_seed, setup_logger, setup_torch_dtype
+from src.visualization import VisualizationConfig, run_visualization
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_SEQUENCE: Sequence[str] = ("mlp", "gp", "mlpgp")
@@ -366,6 +370,7 @@ def _run_optimization_mode(
                 dataset_cfg=dataset_cfg,
                 opt_cfg=opt_cfg,
                 device=device,
+                seed=seed,
             )
 
             n_trials = int(opt_cfg["study"].get("n_trials", 1))
@@ -380,7 +385,10 @@ def _run_optimization_mode(
                 base_training_cfg=training_cfg,
                 model_name=model_name,
             )
-            generate_optimization_plots(study, output_resolver.plots_dir)
+            opt_viz_config = VisualizationConfig.from_mapping(
+                {}, output_dir=str(output_resolver.plots_dir),
+            )
+            run_visualization("optimization", config=opt_viz_config, study=study)
 
             best_model_cfg = load_yaml(output_resolver.config_dir / "model" / f"{model_name}_config.yaml")
             best_training_cfg = load_yaml(output_resolver.config_dir / "training" / f"training_{model_name}_config.yaml")
@@ -450,89 +458,12 @@ def _run_optimization_mode(
     return metrics_df, histories, analysis_root
 
 
-def _plot_metric_curve(df: pd.DataFrame, metric: str, output_path: Path, title: str, model_name: str | None = None) -> None:
-    """Plot metric curve for a single model or combined models.
-    
-    If model_name is specified, filter to that model. Otherwise plot all models in df.
-    """
-    plt.figure(figsize=(9, 6))
-    if model_name is not None:
-        df = df[df["model"] == model_name]
-    agg = df.groupby("train_split")[metric].agg(["mean", "std"]).reset_index().sort_values("train_split")
-    x = agg["train_split"].to_numpy(dtype=float)
-    y = agg["mean"].to_numpy(dtype=float)
-    yerr = agg["std"].fillna(0.0).to_numpy(dtype=float)
-    plt.plot(x, y, marker="o", linewidth=2)
-    plt.fill_between(x, y - yerr, y + yerr, alpha=0.2)
-
-    plt.xlabel("Train split")
-    plt.ylabel(metric.upper())
-    plt.title(title)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=160)
-    plt.close()
-
-
-def _plot_metric_curve_all_models(df: pd.DataFrame, metric: str, output_path: Path, title: str, model_sequence: Sequence[str] = MODEL_SEQUENCE) -> None:
-    """Plot metric curve showing all models together with uncertainty bands."""
-    plt.figure(figsize=(11, 6))
-    for model_name in model_sequence:
-        subset = df[df["model"] == model_name]
-        if subset.empty:
-            continue
-        agg = subset.groupby("train_split")[metric].agg(["mean", "std"]).reset_index().sort_values("train_split")
-        x = agg["train_split"].to_numpy(dtype=float)
-        y = agg["mean"].to_numpy(dtype=float)
-        yerr = agg["std"].fillna(0.0).to_numpy(dtype=float)
-        plt.plot(x, y, marker="o", linewidth=2.5, label=model_name.upper())
-        plt.fill_between(x, y - yerr, y + yerr, alpha=0.15)
-
-    plt.xlabel("Train split")
-    plt.ylabel(metric.upper())
-    plt.title(title)
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=160)
-    plt.close()
-
-
-def _plot_training_histories(history_records: List[Dict[str, Any]], output_path: Path, title: str, model_name: str | None = None) -> None:
-    """Plot training histories for a single model or all models.
-    
-    If model_name is specified, filter to that model. Otherwise plot all models.
-    """
-    plt.figure(figsize=(10, 6))
-    if model_name is not None:
-        history_records = [record for record in history_records if record["model"] == model_name]
-    for record in sorted(history_records, key=lambda item: (item["train_split"], item.get("run_index", 0))):
-        values = np.asarray(record["history_values"], dtype=float)
-        if values.size == 0:
-            continue
-        x = np.arange(1, values.size + 1)
-        label = f"{record['model']}: split={record['train_split']:.2f}, run={record.get('run_index', 0)}"
-        plt.plot(x, values, linewidth=1.0, alpha=0.75, label=label)
-
-    ylabel = history_records[0]["history_label"] if history_records else "history"
-    plt.xlabel("epoch/step")
-    plt.ylabel(ylabel)
-    plt.title(title)
-    plt.grid(True, alpha=0.3)
-    if history_records:
-        plt.legend(fontsize=6)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=160)
-    plt.close()
-
-
 def _summarize_and_save_outputs(metrics_df: pd.DataFrame, histories: List[Dict[str, Any]], analysis_root: Path, model_sequence: Sequence[str] = MODEL_SEQUENCE) -> None:
     analysis_root.mkdir(parents=True, exist_ok=True)
     metrics_df.to_csv(analysis_root / "all_runs.csv", index=False)
 
     summary_rows: List[Dict[str, Any]] = []
-    
-    # Save per-model results
+
     for model_name in model_sequence:
         subset = metrics_df[metrics_df["model"] == model_name].copy()
         if subset.empty:
@@ -554,12 +485,6 @@ def _summarize_and_save_outputs(metrics_df: pd.DataFrame, histories: List[Dict[s
         ]
         metrics_vs_split.to_csv(model_root / "metrics_vs_split.csv", index=False)
 
-        model_histories = [record for record in histories if record["model"] == model_name]
-        _plot_metric_curve(subset, "r2", model_root / "r2_vs_split.png", f"{model_name.upper()}: R2 vs train split", model_name=None)
-        _plot_metric_curve(subset, "rmse", model_root / "rmse_vs_split.png", f"{model_name.upper()}: RMSE vs train split", model_name=None)
-        _plot_metric_curve(subset, "mae", model_root / "mae_vs_split.png", f"{model_name.upper()}: MAE vs train split", model_name=None)
-        _plot_metric_curve(subset, "mape", model_root / "mape_vs_split.png", f"{model_name.upper()}: MAPE vs train split", model_name=None)
-
         summary_rows.append(
             {
                 "model": model_name,
@@ -575,15 +500,14 @@ def _summarize_and_save_outputs(metrics_df: pd.DataFrame, histories: List[Dict[s
 
     pd.DataFrame(summary_rows).to_csv(analysis_root / "summary.csv", index=False)
 
-    # Create complete folder with combined plots showing all models
-    if len(model_sequence) > 1:
-        complete_root = analysis_root / "complete"
-        complete_root.mkdir(parents=True, exist_ok=True)
-        _plot_metric_curve_all_models(metrics_df, "r2", complete_root / "r2_vs_split.png", "All Models: R² vs train split", model_sequence)
-        _plot_metric_curve_all_models(metrics_df, "rmse", complete_root / "rmse_vs_split.png", "All Models: RMSE vs train split", model_sequence)
-        _plot_metric_curve_all_models(metrics_df, "mae", complete_root / "mae_vs_split.png", "All Models: MAE vs train split", model_sequence)
-        _plot_metric_curve_all_models(metrics_df, "mape", complete_root / "mape_vs_split.png", "All Models: MAPE vs train split", model_sequence)
-        _plot_training_histories(histories, complete_root / "training_history.png", "All Models: training histories across splits", model_name=None)
+    convergence_viz_config = VisualizationConfig.from_mapping(
+        {}, output_dir=str(analysis_root),
+    )
+    run_visualization(
+        "convergence",
+        config=convergence_viz_config,
+        convergence_records=(metrics_df, histories, model_sequence),
+    )
 
     logger.info("=" * 70)
     logger.info("CONVERGENCE ANALYSIS RESULTS")

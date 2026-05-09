@@ -1,82 +1,64 @@
-"""Visualization orchestrator for model diagnostics and summaries."""
+"""Per-workflow-mode visualization dispatcher.
+
+One entry point — ``run_visualization`` — routes to the matching suite under
+``src/visualization/suites/`` based on ``workflow_mode``. Each suite owns its
+own outputs and decides which leaf plots to call.
+
+The optimization and convergence suites are placeholders for now; stages 5/6
+of the refactor move existing plotting code from ``optimization_support.py``
+and ``convergence_analysis.py`` into them.
+"""
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from .config import VisualizationConfig
-from .utils import is_gp_model
 
 logger = logging.getLogger(__name__)
-ALL_MODELS = frozenset({"mlp", "gp", "mlpgp"})
-
-
-def _require_keys(data: dict[str, Any], keys: list[str]) -> None:
-    missing = [key for key in keys if key not in data]
-    if missing:
-        raise KeyError(f"Visualization data is missing required keys: {missing}")
-
-
-def _validate_data(data: dict[str, Any]) -> None:
-    _require_keys(
-        data,
-        [
-            "X_train",
-            "y_train",
-            "X_val",
-            "y_val",
-            "X_test",
-            "y_test",
-            "feature_names",
-            "output_name",
-            "input_scaler_mean",
-            "input_scaler_std",
-            "target_scaler_mean",
-            "target_scaler_std",
-        ],
-    )
 
 
 def run_visualization(
-    models: dict[str, Any],
-    data: dict[str, Any],
+    workflow_mode: str,
+    *,
     config: VisualizationConfig,
-    mode: str,
+    dataset_name: str = "",
+    models: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
+    study: Any = None,
+    convergence_records: Any = None,
 ) -> None:
-    """Dispatch enabled visualization modules for the provided models."""
+    """Dispatch to the per-mode plot suite.
+
+    ``workflow_mode`` is ``"single_run"``, ``"optimization"``, or ``"convergence"``.
+    Mode-specific arguments are validated by the matching suite.
+    """
 
     config.validate()
-    _validate_data(data)
-    os.makedirs(config.output_dir, exist_ok=True)
+    mode = workflow_mode.lower()
 
-    from .modules.parity import run_parity
-    from .modules.surface import run_surface
-    from .modules.table import run_table
-    from .modules.uncertainty_gp import run_uncertainty_gp
+    if mode == "single_run":
+        if models is None or data is None:
+            raise ValueError("single_run visualization requires both 'models' and 'data'")
+        from .suites.single_run import run as run_single_run
+        run_single_run(models, data, config, dataset_name)
+        return
 
-    for model_name, model in models.items():
-        if config.parity.enabled:
-            try:
-                run_parity(model, model_name, data, config, mode)
-            except Exception:
-                logger.exception("Parity visualization failed for model '%s'", model_name)
+    if mode == "optimization":
+        if study is None:
+            raise ValueError("optimization visualization requires 'study'")
+        from .suites.optimization import run as run_optimization
+        run_optimization(study, config)
+        return
 
-        if config.surface.enabled:
-            try:
-                run_surface(model, model_name, data, config, mode)
-            except Exception:
-                logger.exception("Surface visualization failed for model '%s'", model_name)
+    if mode == "convergence":
+        if convergence_records is None:
+            raise ValueError("convergence visualization requires 'convergence_records'")
+        from .suites.convergence import run as run_convergence
+        run_convergence(convergence_records, config)
+        return
 
-        if config.uncertainty_gp.enabled and is_gp_model(model):
-            try:
-                run_uncertainty_gp(model, model_name, data, config, mode)
-            except Exception:
-                logger.exception("Uncertainty visualization failed for model '%s'", model_name)
-
-    if config.table.enabled and set(models.keys()) == ALL_MODELS:
-        try:
-            run_table(models, data, config, mode)
-        except Exception:
-            logger.exception("Summary table visualization failed")
+    raise ValueError(
+        f"Unknown workflow_mode: '{workflow_mode}'. Expected 'single_run', 'optimization', or 'convergence'."
+    )

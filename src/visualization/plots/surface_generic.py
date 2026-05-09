@@ -136,7 +136,6 @@ def _plot_1d_slice(
     model_name: str,
     data: dict[str, Any],
     config: "VisualizationConfig",
-    mode: str,
     feature_index: int,
     locked: np.ndarray,
 ) -> None:
@@ -170,7 +169,7 @@ def _plot_1d_slice(
     _annotate_locked(ax, _locked_annotation(data, locked, [feature_index]))
     ax.legend(loc="best")
     feature_slug = sanitize_filename_component(names[feature_index])
-    finalize_figure(fig, f"surface_1d_{model_name}_{feature_slug}.png", config, mode)
+    finalize_figure(fig, f"surface_1d_{model_name}_{feature_slug}.png", config, subdir="surface")
 
 
 def _plot_2d_heatmap(
@@ -178,7 +177,6 @@ def _plot_2d_heatmap(
     model_name: str,
     data: dict[str, Any],
     config: "VisualizationConfig",
-    mode: str,
     feature_a: int,
     feature_b: int,
     locked: np.ndarray,
@@ -216,7 +214,7 @@ def _plot_2d_heatmap(
     _annotate_locked(ax, _locked_annotation(data, locked, [feature_a, feature_b]))
     feature_a_slug = sanitize_filename_component(names[feature_a])
     feature_b_slug = sanitize_filename_component(names[feature_b])
-    finalize_figure(fig, f"surface_2d_{model_name}_{feature_a_slug}_{feature_b_slug}.png", config, mode)
+    finalize_figure(fig, f"surface_2d_{model_name}_{feature_a_slug}_{feature_b_slug}.png", config, subdir="surface")
 
 
 def _fit_pca(data: dict[str, Any], config: "VisualizationConfig") -> tuple[PCA, np.ndarray]:
@@ -252,7 +250,7 @@ def _sample_pca_coordinates(pca: PCA, x_pca: np.ndarray, rng: np.random.Generato
     return pca.inverse_transform(coordinates)
 
 
-def _plot_pca_1d(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", mode: str, pca: PCA, x_pca: np.ndarray) -> None:
+def _plot_pca_1d(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", pca: PCA, x_pca: np.ndarray) -> None:
     output_name, output_unit = get_output_display(data)
     rng = np.random.default_rng(config.random_seed)
     sweep_values = np.linspace(float(x_pca[:, 0].min()), float(x_pca[:, 0].max()), config.surface.n_grid_points)
@@ -278,10 +276,10 @@ def _plot_pca_1d(model: Any, model_name: str, data: dict[str, Any], config: "Vis
     )
     apply_style(ax, f"PCA 1D Slice — {model_name}", "PC1", axis_label(output_name, output_unit))
     ax.legend()
-    finalize_figure(figure, f"surface_pca_1d_{model_name}.png", config, mode)
+    finalize_figure(figure, f"surface_pca_1d_{model_name}.png", config, subdir="surface")
 
 
-def _plot_pca_2d(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", mode: str, pca: PCA, x_pca: np.ndarray) -> None:
+def _plot_pca_2d(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", pca: PCA, x_pca: np.ndarray) -> None:
     output_name, output_unit = get_output_display(data)
     sweep_a = np.linspace(float(x_pca[:, 0].min()), float(x_pca[:, 0].max()), config.surface.n_grid_points)
     sweep_b = np.linspace(float(x_pca[:, 1].min()), float(x_pca[:, 1].max()), config.surface.n_grid_points)
@@ -308,10 +306,10 @@ def _plot_pca_2d(model: Any, model_name: str, data: dict[str, Any], config: "Vis
         fontsize=int(FIG_STYLE["annotation_size"]),
         bbox={"boxstyle": "round", "facecolor": "white", "edgecolor": PALETTE["band"], "alpha": 0.7},
     )
-    finalize_figure(fig, f"surface_pca_2d_{model_name}.png", config, mode)
+    finalize_figure(fig, f"surface_pca_2d_{model_name}.png", config, subdir="surface")
 
 
-def _plot_pca_3d(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", mode: str, pca: PCA, x_pca: np.ndarray) -> None:
+def _plot_pca_3d(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", pca: PCA, x_pca: np.ndarray) -> None:
     if x_pca.shape[1] < 3:
         raise ValueError("PCA 3D surfaces require at least three principal components")
 
@@ -343,23 +341,23 @@ def _plot_pca_3d(model: Any, model_name: str, data: dict[str, Any], config: "Vis
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
     ax.set_zlabel(axis_label(output_name, output_unit))
-    ax.set_title(f"PCA 3D Surface — {model_name}", fontsize=int(FIG_STYLE["title_size"]), fontweight="bold")
+    ax.set_title(f"PCA 3D Surface — {model_name}", fontsize=int(FIG_STYLE["title_size"]))
     top_k = config.surface.pca_loadings_top_k
     annotation = _pc_loading_text(pca, data, 0, top_k) + "\n" + _pc_loading_text(pca, data, 1, top_k)
     fig.text(0.02, 0.02, annotation, fontsize=int(FIG_STYLE["annotation_size"]), bbox={"boxstyle": "round", "facecolor": "white", "edgecolor": PALETTE["band"], "alpha": 0.7})
-    finalize_figure(fig, f"surface_pca_3d_{model_name}.png", config, mode)
+    finalize_figure(fig, f"surface_pca_3d_{model_name}.png", config, subdir="surface")
 
 
-def run_surface(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", mode: str) -> None:
+def run_surface(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig") -> None:
     """Generate feature-space and PCA surface visualizations for one model."""
 
     locked = _locked_defaults(data, config)
     slice_indices = _resolve_slice_indices(model, data, config, locked)
     for index in slice_indices:
-        _plot_1d_slice(model, model_name, data, config, mode, index, locked)
+        _plot_1d_slice(model, model_name, data, config, index, locked)
     feature_a, feature_b = _resolve_heatmap_pair(data, config, slice_indices)
-    _plot_2d_heatmap(model, model_name, data, config, mode, feature_a, feature_b, locked)
+    _plot_2d_heatmap(model, model_name, data, config, feature_a, feature_b, locked)
     pca, x_pca = _fit_pca(data, config)
-    _plot_pca_1d(model, model_name, data, config, mode, pca, x_pca)
-    _plot_pca_2d(model, model_name, data, config, mode, pca, x_pca)
-    _plot_pca_3d(model, model_name, data, config, mode, pca, x_pca)
+    _plot_pca_1d(model, model_name, data, config, pca, x_pca)
+    _plot_pca_2d(model, model_name, data, config, pca, x_pca)
+    _plot_pca_3d(model, model_name, data, config, pca, x_pca)

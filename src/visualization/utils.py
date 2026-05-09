@@ -69,7 +69,7 @@ def set_plot_style() -> None:
             "mathtext.fontset": "cm",
             "axes.titlesize": int(FIG_STYLE["title_size"]),
             "axes.labelsize": int(FIG_STYLE["label_size"]),
-            "axes.titleweight": "bold",
+            "axes.titleweight": "normal",
             "xtick.labelsize": int(FIG_STYLE["tick_size"]),
             "ytick.labelsize": int(FIG_STYLE["tick_size"]),
             "legend.fontsize": int(FIG_STYLE["annotation_size"]),
@@ -236,18 +236,29 @@ def compute_metrics(y_true: Any, y_pred: Any) -> dict[str, float]:
     }
 
 
-def finalize_figure(fig: plt.Figure, filename: str, config: "VisualizationConfig", mode: str) -> None:
-    """Save and/or show a figure using the shared visualization policy."""
+def finalize_figure(
+    fig: plt.Figure,
+    filename: str,
+    config: "VisualizationConfig",
+    *,
+    subdir: str = "",
+    model_name: str | None = None,
+) -> None:
+    """Save and/or show a figure. ``subdir`` (e.g. "metrics", "surface") is
+    appended to ``config.output_dir``. When ``model_name`` is supplied, a
+    small bottom-right annotation makes the figure self-identifying.
+    """
 
-    if mode not in {"train", "test"}:
-        raise ValueError("mode must be 'train' or 'test'")
+    if model_name:
+        fig.text(0.99, 0.01, str(model_name), ha="right", va="bottom", fontsize=8, alpha=0.5)
 
     if config.save_plots:
-        output_path = Path(config.output_dir) / filename
+        base = Path(config.output_dir)
+        output_path = (base / subdir / filename) if subdir else (base / filename)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output_path, dpi=int(FIG_STYLE["dpi"]), bbox_inches="tight")
 
-    if mode == "test":
+    if config.show_after_save:
         plt.show(block=False)
         plt.pause(0.001)
 
@@ -257,7 +268,7 @@ def finalize_figure(fig: plt.Figure, filename: str, config: "VisualizationConfig
 def apply_style(ax: plt.Axes, title: str, xlabel: str, ylabel: str) -> None:
     """Apply the shared title, labels, grid, and tick styling."""
 
-    ax.set_title(title, fontsize=int(FIG_STYLE["title_size"]), fontweight="bold")
+    ax.set_title(title, fontsize=int(FIG_STYLE["title_size"]))
     ax.set_xlabel(xlabel, fontsize=int(FIG_STYLE["label_size"]))
     ax.set_ylabel(ylabel, fontsize=int(FIG_STYLE["label_size"]))
     ax.tick_params(axis="both", labelsize=int(FIG_STYLE["tick_size"]))

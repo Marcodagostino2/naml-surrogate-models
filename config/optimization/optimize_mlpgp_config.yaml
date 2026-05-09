@@ -21,22 +21,18 @@ architecture_name: "non_stationary"  # "non_stationary" | "dkl"
 kernel_name: "exponential"
 
 # Hidden anchor host: not consumed by the loader, only referenced below.
-# Both architectures share the same single-block search (depth + per-layer
-# width + activation + dropout); init is fixed per activation.
+# Both architectures share the same single-block search: depth (n_layers),
+# per-layer width via the layer_size template (sampled n_layers times at
+# trial time), activation, dropout. Init is fixed per activation.
 _shared:
   block: &block
     n_layers:
       type: int
-      low: 3
-      high: 9
-    layer1_size: &layer_size
+      low: 1
+      high: 10
+    layer_size:
       type: categorical
       choices: [16, 32, 64, 128, 256, 512, 1024]
-    layer2_size: *layer_size
-    layer3_size: *layer_size
-    layer4_size: *layer_size
-    layer5_size: *layer_size
-    layer6_size: *layer_size
     activation:
       type: categorical
       choices: [relu, leaky_relu, selu, tanh, mish]
@@ -93,7 +89,7 @@ search_spaces:
       output_width:
         type: int
         low: 1
-        high: 15
+        high: 10
       output_activation:
         type: categorical
         choices: [identity]

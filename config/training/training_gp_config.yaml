@@ -6,7 +6,7 @@
 optimizer: "adamw"
 learning_rate: 1.0e-2
 # Hard cap; early stopping usually fires first.
-n_training_steps: 700
+n_training_steps: 2000
 
 # Early stopping fires when EITHER:
 #   1) |L_{t-1} - L_t| <= abs_tol + rel_tol * |L_{t-1}| for `train_patience`
@@ -15,9 +15,9 @@ n_training_steps: 700
 #      `val_patience` consecutive steps (Prechelt 1998).
 rel_tol: 1.0e-4
 abs_tol: 1.0e-6
-train_patience: 50
-val_patience: 50
-warmup_epochs: 20
+train_patience: 200
+val_patience: 400
+warmup_epochs: 400
 
 # Full metric dicts (R^2, MAE, RMSE) only recomputed at these intervals;
 # val_loss for the stop criterion is computed every step.

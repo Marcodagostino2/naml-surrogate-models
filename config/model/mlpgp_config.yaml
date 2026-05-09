@@ -22,7 +22,7 @@ svgp:
 dkl_feature_extractor:
   name: "dkl"
   architecture:
-    layers: [1000, 500, 50, 10]
+    layers: [1024, 512, 256, 128, 64, 32, 16]
     activation: "tanh"
   dropout: 0.0
   batch_norm: false
@@ -32,7 +32,7 @@ dkl_feature_extractor:
 non_stationary_feature_extractor:
   name: "non_stationary"
   architecture:
-    layers: [512, 512, 256, 128]
+    layers: [1024, 512, 256, 128, 64, 32, 16]
     activation: "tanh"
   dropout: 0.0
   batch_norm: false

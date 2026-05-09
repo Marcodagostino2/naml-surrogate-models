@@ -144,10 +144,11 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
 
         viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(output_resolver.plots_dir))
         run_visualization(
+            "single_run",
             models={selected_model: results["model"]},
             data=_build_viz_data(data_bundle),
             config=viz_config,
-            mode="train",
+            dataset_name=dataset_name,
         )
         logger.info(f"Training completed. Results saved to {run_dir}")
 
@@ -169,12 +170,14 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
             table_viz_config.parity.enabled = False
             table_viz_config.surface.enabled = False
             table_viz_config.uncertainty_gp.enabled = False
+            table_viz_config.hyddb.enabled = False
             table_viz_config.table.enabled = True
             run_visualization(
+                "single_run",
                 models=trained_models,
                 data=_build_viz_data(data_bundle),
                 config=table_viz_config,
-                mode="train",
+                dataset_name=dataset_name,
             )
 
     logger.info("=" * 60)

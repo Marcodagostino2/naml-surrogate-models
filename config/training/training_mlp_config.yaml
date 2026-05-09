@@ -3,14 +3,14 @@
 optimizer: "adamw"
 learning_rate: 1.0e-4
 weight_decay: 1.0e-4
-n_epochs: 1800
+n_epochs: 2000
 
 # Early-stopping tolerances (see ConvergenceMonitor).
 rel_tol: 1.0e-4
 abs_tol: 1.0e-6
-train_patience: 50
-val_patience: 50
-warmup_epochs: 10
+train_patience: 200
+val_patience: 400
+warmup_epochs: 400
 
 train_metrics_log_interval: 10
 validation_check_interval: 10

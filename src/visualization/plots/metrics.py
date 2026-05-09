@@ -50,7 +50,7 @@ def _annotate_box(ax: plt.Axes, text: str, edge: str, *, position: tuple[float, 
     )
 
 
-def _plot_parity(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", mode: str) -> None:
+def _plot_parity(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig") -> None:
     output_name, output_unit = get_output_display(data)
     label = axis_label(output_name, output_unit)
     fig, ax = plt.subplots(figsize=(float(FIG_STYLE["figure_width"]), float(FIG_STYLE["figure_height"])))
@@ -92,10 +92,10 @@ def _plot_parity(model: Any, model_name: str, data: dict[str, Any], config: "Vis
     )
     apply_style(ax, f"Parity Plot — {model_name}", f"True {label}", f"Predicted {label}")
     ax.legend()
-    finalize_figure(fig, f"parity_{model_name}.png", config, mode)
+    finalize_figure(fig, f"parity_{model_name}.png", config, subdir="metrics")
 
 
-def _plot_residuals(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", mode: str) -> None:
+def _plot_residuals(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig") -> None:
     output_name, output_unit = get_output_display(data)
     residual_label = axis_label(f"Residual ({output_name})", output_unit)
 
@@ -144,12 +144,12 @@ def _plot_residuals(model: Any, model_name: str, data: dict[str, Any], config: "
         _annotate_box(ax, stats, PALETTE[split])
         apply_style(ax, split, residual_label, "Density")
 
-    fig.suptitle(f"Residual Distributions — {model_name}", fontsize=int(FIG_STYLE["title_size"]), fontweight="bold")
+    fig.suptitle(f"Residual Distributions — {model_name}", fontsize=int(FIG_STYLE["title_size"]))
     fig.tight_layout()
-    finalize_figure(fig, f"residuals_{model_name}.png", config, mode)
+    finalize_figure(fig, f"residuals_{model_name}.png", config, subdir="metrics", model_name=model_name)
 
 
-def _plot_mape(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", mode: str) -> None:
+def _plot_mape(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig") -> None:
     """Plot per-sample MAPE distributions for train/val/test as 3 subplots."""
 
     mape_per_split: dict[str, np.ndarray] = {}
@@ -199,16 +199,16 @@ def _plot_mape(model: Any, model_name: str, data: dict[str, Any], config: "Visua
         ax.set_xlim(0.0, upper)
         apply_style(ax, split, "MAPE [%]", "Density")
 
-    fig.suptitle(f"MAPE Distributions — {model_name}", fontsize=int(FIG_STYLE["title_size"]), fontweight="bold")
+    fig.suptitle(f"MAPE Distributions — {model_name}", fontsize=int(FIG_STYLE["title_size"]))
     fig.tight_layout()
-    finalize_figure(fig, f"mape_{model_name}.png", config, mode)
+    finalize_figure(fig, f"mape_{model_name}.png", config, subdir="metrics", model_name=model_name)
 
 
-def run_parity(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", mode: str) -> None:
+def run_parity(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig") -> None:
     """Generate parity, residual, and MAPE-distribution visualizations for one model."""
 
-    _plot_parity(model, model_name, data, config, mode)
+    _plot_parity(model, model_name, data, config)
     if config.parity.show_residuals:
-        _plot_residuals(model, model_name, data, config, mode)
+        _plot_residuals(model, model_name, data, config)
     if config.parity.show_mape:
-        _plot_mape(model, model_name, data, config, mode)
+        _plot_mape(model, model_name, data, config)

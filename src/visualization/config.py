@@ -73,10 +73,32 @@ class ConvergenceConfig:
 
 
 @dataclass(slots=True)
+class HYDDBConfig:
+    """Configuration for the HYDDB physics-driven plot suite.
+
+    ``locked_values`` is a denormalized {column_name: value} map; HYDDB plots
+    raise ``ValueError`` when a required locked value is missing — no median
+    fallback. Sweep / grid resolutions are bounded by ``validate``.
+    """
+
+    enabled: bool = True
+    n_grid_points: int = 60
+    n_sweep_points: int = 80
+    mach_range: tuple = (0.3, 1.8)
+    alpha_range: tuple = (0.0, 10.0)
+    phi_range: tuple = (0.0, 120.0)
+    abk_curves: List[float] = field(default_factory=lambda: [0.0, 20.0, 40.0, 60.0, 80.0, 100.0])
+    mach_curves: List[float] = field(default_factory=lambda: [0.5, 0.8, 1.0, 1.2, 1.5, 1.8])
+    locked_values: Dict[str, float] = field(default_factory=dict)
+    enable_3d: bool = True
+
+
+@dataclass(slots=True)
 class VisualizationConfig:
     """Top-level visualization configuration."""
 
     save_plots: bool = True
+    show_after_save: bool = False
     output_dir: str = "plots/"
     random_seed: int = 42
     parity: ParityConfig = field(default_factory=ParityConfig)
@@ -86,6 +108,7 @@ class VisualizationConfig:
     single_run: SingleRunConfig = field(default_factory=SingleRunConfig)
     optimization: OptimizationConfig = field(default_factory=OptimizationConfig)
     convergence: ConvergenceConfig = field(default_factory=ConvergenceConfig)
+    hyddb: HYDDBConfig = field(default_factory=HYDDBConfig)
 
     @classmethod
     def from_mapping(
@@ -105,6 +128,7 @@ class VisualizationConfig:
         single_raw = raw.get("single_run", {}) if isinstance(raw.get("single_run", {}), Mapping) else {}
         opt_raw = raw.get("optimization", {}) if isinstance(raw.get("optimization", {}), Mapping) else {}
         conv_raw = raw.get("convergence", {}) if isinstance(raw.get("convergence", {}), Mapping) else {}
+        hyddb_raw = raw.get("hyddb", {}) if isinstance(raw.get("hyddb", {}), Mapping) else {}
 
         parity_enabled = bool(parity_raw.get("enabled", plots.get("parity_plot", True)))
         residuals_enabled = bool(parity_raw.get("show_residuals", plots.get("residual_plot", True)))
@@ -118,6 +142,7 @@ class VisualizationConfig:
 
         return cls(
             save_plots=bool(raw.get("save_plots", True)),
+            show_after_save=bool(raw.get("show_after_save", False)),
             output_dir=str(output_dir or raw.get("output_dir", "plots/")),
             random_seed=int(raw.get("random_seed", 42)),
             parity=ParityConfig(
@@ -145,6 +170,21 @@ class VisualizationConfig:
             ),
             optimization=OptimizationConfig(enabled=bool(opt_raw.get("enabled", True))),
             convergence=ConvergenceConfig(enabled=bool(conv_raw.get("enabled", True))),
+            hyddb=HYDDBConfig(
+                enabled=bool(hyddb_raw.get("enabled", True)),
+                n_grid_points=int(hyddb_raw.get("n_grid_points", 60)),
+                n_sweep_points=int(hyddb_raw.get("n_sweep_points", 80)),
+                mach_range=tuple(hyddb_raw.get("mach_range", (0.3, 1.8))),
+                alpha_range=tuple(hyddb_raw.get("alpha_range", (0.0, 10.0))),
+                phi_range=tuple(hyddb_raw.get("phi_range", (0.0, 120.0))),
+                abk_curves=[float(v) for v in hyddb_raw.get("abk_curves", [0.0, 20.0, 40.0, 60.0, 80.0, 100.0])],
+                mach_curves=[float(v) for v in hyddb_raw.get("mach_curves", [0.5, 0.8, 1.0, 1.2, 1.5, 1.8])],
+                locked_values={
+                    str(k): float(v)
+                    for k, v in (hyddb_raw.get("locked_values") or {}).items()
+                },
+                enable_3d=bool(hyddb_raw.get("enable_3d", True)),
+            ),
         )
 
     def validate(self) -> None:
@@ -152,6 +192,8 @@ class VisualizationConfig:
 
         if not isinstance(self.save_plots, bool):
             raise ValueError("save_plots must be a boolean")
+        if not isinstance(self.show_after_save, bool):
+            raise ValueError("show_after_save must be a boolean")
         if not isinstance(self.output_dir, str) or not self.output_dir.strip():
             raise ValueError("output_dir must be a non-empty string")
         if self.random_seed < 0:
@@ -182,3 +224,15 @@ class VisualizationConfig:
             raise ValueError("table.enabled must be a boolean")
         if self.single_run.heatmap_dim_pair and len(self.single_run.heatmap_dim_pair) != 2:
             raise ValueError("single_run.heatmap_dim_pair must contain exactly two names when set")
+        if self.hyddb.enabled:
+            for name, span in (
+                ("mach_range", self.hyddb.mach_range),
+                ("alpha_range", self.hyddb.alpha_range),
+                ("phi_range", self.hyddb.phi_range),
+            ):
+                if len(span) != 2 or float(span[0]) >= float(span[1]):
+                    raise ValueError(f"hyddb.{name} must be (low, high) with low < high")
+            if self.hyddb.n_grid_points < 10:
+                raise ValueError("hyddb.n_grid_points must be >= 10")
+            if self.hyddb.n_sweep_points < 10:
+                raise ValueError("hyddb.n_sweep_points must be >= 10")

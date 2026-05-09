@@ -61,7 +61,7 @@ def _best_row_mask(df: pd.DataFrame, metric: str) -> pd.Series:
     return df[metric] == df[metric].max() if metric == "r2" else df[metric] == df[metric].min()
 
 
-def _plot_table(df: pd.DataFrame, config: "VisualizationConfig", mode: str) -> None:
+def _plot_table(df: pd.DataFrame, config: "VisualizationConfig") -> None:
     fig, ax = plt.subplots(
         figsize=(max(6.0, len(df.index) * float(FIG_STYLE["table_col_width"])), len(df.columns) * float(FIG_STYLE["table_row_height"]) + float(FIG_STYLE["table_height_offset"])),
     )
@@ -77,12 +77,12 @@ def _plot_table(df: pd.DataFrame, config: "VisualizationConfig", mode: str) -> N
                 cell.set_text_props(weight="bold")
                 cell.set_facecolor("#d9f0d3")
     apply_style(ax, "Metrics Table", "Model", "Metric")
-    finalize_figure(fig, "metrics_table_all_models.png", config, mode)
+    finalize_figure(fig, "metrics_table.png", config, subdir="table")
 
 
-def run_table(models: dict[str, Any], data: dict[str, Any], config: "VisualizationConfig", mode: str) -> None:
+def run_table(models: dict[str, Any], data: dict[str, Any], config: "VisualizationConfig") -> None:
     """Print and plot the metrics table when all models are available."""
 
     df = _build_metrics_dataframe(models, data)
     _print_table(df)
-    _plot_table(df, config, mode)
+    _plot_table(df, config)

@@ -12,13 +12,14 @@ from src.optimization_support import (
     _make_logging_callback,
     build_pruner,
     build_sampler,
-    generate_optimization_plots,
     make_objective,
     save_optimization_results,
 )
 from src.pipeline import save_summary_row
 from src.utils import OutputPathResolver, RunType, load_run_configs, resolve_device, setup_logger
 from src.utils.entrypoints import load_and_initialize_run_configs  # noqa: F401
+from src.visualization import run_visualization
+from src.visualization.config import VisualizationConfig
 
 logger = setup_logger(__name__)
 
@@ -81,6 +82,7 @@ def run_optimization(
         dataset_cfg=dataset_cfg,
         opt_cfg=opt_cfg,
         device=device,
+        seed=global_seed,
     )
 
     n_trials = int(study_cfg.get("n_trials", 1))
@@ -124,7 +126,10 @@ def run_optimization(
         base_training_cfg=base_training_cfg,
         model_name=model_name,
     )
-    generate_optimization_plots(study, output_resolver.plots_dir)
+
+    viz_cfg_raw = loaded.get("viz_cfg", {})
+    viz_config = VisualizationConfig.from_mapping(viz_cfg_raw, output_dir=str(output_resolver.plots_dir))
+    run_visualization("optimization", config=viz_config, study=study)
 
     save_summary_row(
         output_resolver.summary_csv,

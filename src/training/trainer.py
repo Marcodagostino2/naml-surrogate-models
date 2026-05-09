@@ -94,11 +94,16 @@ def _build_scheduler(
         t_max = int(t_max_cfg) if t_max_cfg is not None else int(
             training_cfg.get("n_training_steps", training_cfg.get("n_epochs", 1000))
         )
-        return torch.optim.lr_scheduler.CosineAnnealingLR(
+        warmup = int(training_cfg.get("scheduler_warmup_steps", 0))
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=t_max,
+            T_max=max(1, t_max - warmup),
             eta_min=float(training_cfg.get("scheduler_eta_min", 1e-7)),
         )
+        if warmup <= 0:
+            return cosine
+        warmup_sched = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=warmup)
+        return torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup_sched, cosine], milestones=[warmup])
     raise ValueError(f"Unknown scheduler_type: '{scheduler_type}'. Valid: 'steplr', 'cosine', 'none'.")
 
 

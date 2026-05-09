@@ -28,7 +28,7 @@ def _predict_sigma(model: Any, data: dict[str, Any]) -> tuple[np.ndarray, np.nda
     )
 
 
-def _plot_calibration(sigma: np.ndarray, error: np.ndarray, model_name: str, config: "VisualizationConfig", mode: str) -> None:
+def _plot_calibration(sigma: np.ndarray, error: np.ndarray, model_name: str, config: "VisualizationConfig") -> None:
     fig, ax = plt.subplots(figsize=(float(FIG_STYLE["figure_width"]), float(FIG_STYLE["figure_height"])))
     ax.hexbin(sigma, error, gridsize=30, cmap="Blues", mincnt=1)
     ax.scatter(sigma, error, alpha=0.4, color=PALETTE["test"], s=float(FIG_STYLE["marker_size"]))
@@ -54,10 +54,10 @@ def _plot_calibration(sigma: np.ndarray, error: np.ndarray, model_name: str, con
     ax.text(0.02, 0.98, f"Pearson r = {correlation:.3f}\nslope = {slope:.3f}", transform=ax.transAxes, va="top", ha="left", fontsize=int(FIG_STYLE["annotation_size"]), bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.7})
     apply_style(ax, f"Calibration — {model_name}", "Predicted σ", "Absolute error")
     ax.legend()
-    finalize_figure(fig, f"uncertainty_calibration_{model_name}.png", config, mode)
+    finalize_figure(fig, f"uncertainty_calibration_{model_name}.png", config, subdir="uncertainty")
 
 
-def _plot_reliability(sigma: np.ndarray, error: np.ndarray, model_name: str, config: "VisualizationConfig", mode: str) -> None:
+def _plot_reliability(sigma: np.ndarray, error: np.ndarray, model_name: str, config: "VisualizationConfig") -> None:
     alphas = np.linspace(0.05, 0.95, 19)
     expected = 1.0 - alphas
     empirical = np.array([np.mean(error <= norm.ppf(1.0 - alpha / 2.0) * sigma) for alpha in alphas])
@@ -67,10 +67,10 @@ def _plot_reliability(sigma: np.ndarray, error: np.ndarray, model_name: str, con
     ax.fill_between(expected, expected, empirical, color=PALETTE["band"], alpha=float(FIG_STYLE["density_alpha"]))
     apply_style(ax, f"Reliability — {model_name}", "Expected coverage", "Empirical coverage")
     ax.legend()
-    finalize_figure(fig, f"uncertainty_reliability_{model_name}.png", config, mode)
+    finalize_figure(fig, f"uncertainty_reliability_{model_name}.png", config, subdir="uncertainty")
 
 
-def _plot_sigma_vs_error_dist(sigma: np.ndarray, error: np.ndarray, model_name: str, config: "VisualizationConfig", mode: str) -> None:
+def _plot_sigma_vs_error_dist(sigma: np.ndarray, error: np.ndarray, model_name: str, config: "VisualizationConfig") -> None:
     """
     Plot 2D joint distribution of sigma and error with KDE.
     
@@ -95,7 +95,7 @@ def _plot_sigma_vs_error_dist(sigma: np.ndarray, error: np.ndarray, model_name: 
         # Fallback: plot scatter without KDE
         ax.scatter(sigma, error, alpha=0.5, color=PALETTE["test"], s=float(FIG_STYLE["marker_size"]))
         apply_style(ax, f"Σ vs Error Distribution — {model_name}", "Predicted σ", "Absolute error")
-        finalize_figure(fig, f"uncertainty_distributions_{model_name}.png", config, mode)
+        finalize_figure(fig, f"uncertainty_distributions_{model_name}.png", config, subdir="uncertainty")
         return
     
     # Sufficient variance: use 2D KDE
@@ -125,14 +125,14 @@ def _plot_sigma_vs_error_dist(sigma: np.ndarray, error: np.ndarray, model_name: 
     
     apply_style(ax, f"Σ vs Error Distribution — {model_name}", "Predicted σ", "Absolute error")
     ax.legend()
-    finalize_figure(fig, f"uncertainty_distributions_{model_name}.png", config, mode)
+    finalize_figure(fig, f"uncertainty_distributions_{model_name}.png", config, subdir="uncertainty")
 
 
-def run_uncertainty_gp(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig", mode: str) -> None:
+def run_uncertainty_gp(model: Any, model_name: str, data: dict[str, Any], config: "VisualizationConfig") -> None:
     """Generate calibration and uncertainty diagnostics for one GP model."""
 
     y_pred, sigma = _predict_sigma(model, data)
     error = np.abs(y_pred - np.asarray(data["y_test"]).reshape(-1))
-    _plot_calibration(sigma, error, model_name, config, mode)
-    _plot_reliability(sigma, error, model_name, config, mode)
-    _plot_sigma_vs_error_dist(sigma, error, model_name, config, mode)
+    _plot_calibration(sigma, error, model_name, config)
+    _plot_reliability(sigma, error, model_name, config)
+    _plot_sigma_vs_error_dist(sigma, error, model_name, config)

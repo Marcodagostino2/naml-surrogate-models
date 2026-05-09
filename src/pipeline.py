@@ -20,7 +20,7 @@ from src.models import (
 )
 from src.training import GPTrainer, MLPGPTrainer, MLPTrainer, SVGPTrainer, compute_all_metrics
 from src.utils import OutputPathResolver, resolve_device, setup_logger
-from src.visualization.diagnostics import generate_diagnostics
+from src.visualization.plots.diagnostics import generate_diagnostics
 
 logger = setup_logger(__name__)
 
@@ -246,7 +246,7 @@ def train_model(
         val_losses=history.get("val_losses"),
         y_val_std=uncertainties["val"],
         y_test_std=uncertainties["test"],
-        output_dir=output_resolver.plots_dir,
+        output_dir=output_resolver.plots_dir / "diagnostics",
     )
 
     checkpoint_path = output_resolver.checkpoint

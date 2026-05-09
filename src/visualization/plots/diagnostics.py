@@ -109,7 +109,7 @@ def plot_uncertainty_combined(
         np.asarray(y_test_std).squeeze(),
         "Test",
     )
-    fig.suptitle(title, fontweight="bold")
+    fig.suptitle(title)
     fig.tight_layout()
 
     if output_path is not None:

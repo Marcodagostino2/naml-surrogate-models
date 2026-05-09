@@ -9,5 +9,8 @@ scheduler_gamma: 0.5
 
 # Cosine annealing knobs (used when scheduler_type == "cosine")
 # T_max defaults to n_training_steps / n_epochs when null.
+# warmup_steps: linear ramp 1% → 100% of base LR before cosine kicks in (0 = off);
+# subtracted from T_max so the total schedule length stays the same.
 scheduler_T_max: null
-scheduler_eta_min: 1.0e-7
+scheduler_eta_min: 1.0e-6
+scheduler_warmup_steps: 200

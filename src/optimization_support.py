@@ -1,16 +1,19 @@
-"""Optuna helpers, search-space translation, result persistence, and plotting for HPO."""
+"""Optuna helpers, search-space translation, and result persistence for HPO.
+
+Plotting lives in ``src.visualization.suites.optimization`` — this module is
+plot-free.
+"""
 
 from __future__ import annotations
 
 import csv
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 import gpytorch
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
 import yaml
 
@@ -26,22 +29,23 @@ if TYPE_CHECKING:
     from optuna.trial import FrozenTrial
 
 from src.pipeline import train_model
-from src.utils import OutputPathResolver, setup_logger
+from src.utils import OutputPathResolver, set_global_seed, setup_logger
 
 logger = setup_logger(__name__)
 
-plt.style.use("seaborn-v0_8-whitegrid")
-plt.rcParams["figure.figsize"] = (12, 6)
-plt.rcParams["font.size"] = 10
+
+# Static hyperparameters describing the single hidden block, shared by mlp
+# and the feature extractors of mlpgp. ``layer_size`` is a *template*: at
+# trial time exactly ``n_layers`` width params (``layer1_size`` ..
+# ``layer{n_layers}_size``) are suggested dynamically, so the search-space
+# dimensionality reflects the actual depth — no fixed maximum.
+_BLOCK_HPS = ("n_layers", "activation", "layer_size")
+_LAYER_SIZE_TEMPLATE = "layer_size"
+_LAYER_SIZE_RE = re.compile(r"layer\d+_size")
 
 
-# Maximum hidden depth surfaced in the search space. ``layer{i}_size`` for
-# ``i > n_layers`` is ignored when building the architecture.
-_MAX_LAYERS = 6
-
-# Hyperparameters that describe the single hidden block, shared by mlp and
-# the feature extractors of mlpgp. Aliased into the registry below.
-_BLOCK_HPS = ("n_layers", "activation", *(f"layer{i}_size" for i in range(1, _MAX_LAYERS + 1)))
+def _is_dynamic_layer_size(name: str) -> bool:
+    return bool(_LAYER_SIZE_RE.fullmatch(name))
 
 
 _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
@@ -68,6 +72,13 @@ _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("mlpgp", "likelihood_noise_init"): "kernel",
     ("mlpgp", "trend_degree"): "root",
 }
+
+
+def _hp_destination(model_name: str, hp_name: str) -> Optional[str]:
+    """Return the registry destination, mapping ``layer{i}_size`` through the template."""
+    if _is_dynamic_layer_size(hp_name):
+        return _HP_TO_MODEL_CFG.get((model_name, _LAYER_SIZE_TEMPLATE))
+    return _HP_TO_MODEL_CFG.get((model_name, hp_name))
 
 # Type coercion for hyperparameters mapped to the "root" destination
 # (top-level model_cfg keys, not nested under kernel/feature_extractor).
@@ -107,32 +118,52 @@ def _resolve_active_search_space(
     )
 
 
+def _suggest_one(trial: Trial, name: str, spec: Dict[str, Any]) -> Any:
+    param_type = spec.get("type")
+    if param_type == "int":
+        return trial.suggest_int(
+            name,
+            int(spec.get("low", 1)),
+            int(spec.get("high", 10)),
+            step=int(spec.get("step", 1)),
+        )
+    if param_type == "float":
+        return trial.suggest_float(
+            name,
+            float(spec.get("low", 0.0)),
+            float(spec.get("high", 1.0)),
+            log=bool(spec.get("log", False)),
+        )
+    if param_type == "categorical":
+        return trial.suggest_categorical(name, spec.get("choices", []))
+    raise ValueError(f"Unknown parameter type: {param_type}")
+
+
 def suggest_from_config(trial: Trial, search_space: Dict[str, Any], target: str) -> Dict[str, Any]:
-    """Convert a YAML search space section into Optuna suggestions."""
+    """Convert a YAML search space section into Optuna suggestions.
+
+    A ``layer_size`` entry is treated as a template: after sampling
+    ``n_layers``, exactly that many ``layer{i}_size`` params are suggested
+    dynamically using the same spec, so the search-space dimensionality
+    matches the chosen depth.
+    """
     if target not in search_space:
         return {}
 
+    target_space = search_space[target]
     params: Dict[str, Any] = {}
-    for param_name, param_spec in search_space[target].items():
-        param_type = param_spec.get("type")
-        if param_type == "int":
-            params[param_name] = trial.suggest_int(
-                param_name,
-                int(param_spec.get("low", 1)),
-                int(param_spec.get("high", 10)),
-                step=int(param_spec.get("step", 1)),
-            )
-        elif param_type == "float":
-            params[param_name] = trial.suggest_float(
-                param_name,
-                float(param_spec.get("low", 0.0)),
-                float(param_spec.get("high", 1.0)),
-                log=bool(param_spec.get("log", False)),
-            )
-        elif param_type == "categorical":
-            params[param_name] = trial.suggest_categorical(param_name, param_spec.get("choices", []))
-        else:
-            raise ValueError(f"Unknown parameter type: {param_type}")
+    for param_name, param_spec in target_space.items():
+        if param_name == _LAYER_SIZE_TEMPLATE:
+            continue
+        params[param_name] = _suggest_one(trial, param_name, param_spec)
+
+    layer_template = target_space.get(_LAYER_SIZE_TEMPLATE)
+    n_layers = params.get("n_layers")
+    if layer_template is not None and n_layers is not None:
+        for i in range(1, int(n_layers) + 1):
+            name = f"layer{i}_size"
+            params[name] = _suggest_one(trial, name, layer_template)
+
     return params
 
 
@@ -197,7 +228,7 @@ def build_sampler(study_cfg: Dict[str, Any]) -> BaseSampler:
     from optuna.samplers import CmaEsSampler, RandomSampler, TPESampler
 
     if sampler_name == "tpe":
-        return TPESampler(seed=seed, multivariate=study_cfg.get("multivariate", True), n_startup_trials=study_cfg.get("n_startup_trials", 10))
+        return TPESampler(seed=seed, multivariate=study_cfg.get("multivariate", False), n_startup_trials=study_cfg.get("n_startup_trials", 10))
     if sampler_name == "gp":
         from optuna.samplers import GPSampler
         return GPSampler(seed=seed)
@@ -243,20 +274,24 @@ def build_pruner(study_cfg: Dict[str, Any]) -> BasePruner:
 
 
 def _build_architecture(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Assemble a single-block architecture spec from ``n_layers`` / ``layer{i}_size``
-    / ``activation``. Returns ``None`` if any required field is missing.
+    """Build a *partial* architecture patch from the sampled HPs.
+
+    Emits ``layers`` only when ``n_layers`` and the matching
+    ``layer{i}_size`` are all present (always coupled by the dynamic
+    sampler); emits ``activation`` independently. Fields not in the patch
+    are inherited from the base ``architecture`` via ``overlay``'s
+    deep-merge — so the user can vary, e.g., only ``activation`` and
+    keep the layer sizes from ``{model}_config.yaml``.
     """
+    arch: Dict[str, Any] = {}
     n_layers = int(params.get("n_layers", 0))
-    activation = params.get("activation")
-    if n_layers <= 0 or activation is None:
-        return None
-    layer_sizes = []
-    for i in range(1, n_layers + 1):
-        size = params.get(f"layer{i}_size")
-        if size is None:
-            return None
-        layer_sizes.append(int(size))
-    return {"layers": layer_sizes, "activation": str(activation)}
+    if n_layers > 0:
+        layer_sizes = [params.get(f"layer{i}_size") for i in range(1, n_layers + 1)]
+        if all(size is not None for size in layer_sizes):
+            arch["layers"] = [int(size) for size in layer_sizes]
+    if (activation := params.get("activation")) is not None:
+        arch["activation"] = str(activation)
+    return arch or None
 
 
 def _apply_hp(model_name: str, params: Dict[str, Any], architecture_name: Optional[str] = None) -> Dict[str, Any]:
@@ -290,7 +325,7 @@ def _apply_hp(model_name: str, params: Dict[str, Any], architecture_name: Option
     """
     scoped: Dict[str, Dict[str, Any]] = {}
     for hp_name, hp_value in params.items():
-        dest = _HP_TO_MODEL_CFG.get((model_name, hp_name))
+        dest = _hp_destination(model_name, hp_name)
         if dest is not None:
             scoped.setdefault(dest, {})[hp_name] = hp_value
 
@@ -362,12 +397,20 @@ def make_objective(
     dataset_cfg: Dict[str, Any],
     opt_cfg: Dict[str, Any],
     device: torch.device,
+    seed: Optional[int] = None,
 ) -> Callable[[Trial], float]:
-    """Create an Optuna objective bound to the shared training pipeline."""
+    """Create an Optuna objective bound to the shared training pipeline.
+
+    When ``seed`` is provided, every trial re-seeds Python/NumPy/PyTorch
+    before training so that only the sampled HPs vary across trials —
+    init RNG state is not inherited from the previous trial.
+    """
     active_search_space = _resolve_active_search_space(opt_cfg, base_model_cfg)
     architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
 
     def objective(trial: Trial) -> float:
+        if seed is not None:
+            set_global_seed(seed)
         model_params = suggest_from_config(trial, active_search_space, "model")
         training_params = suggest_from_config(trial, active_search_space, "training")
 
@@ -435,10 +478,25 @@ def make_objective(
 
 
 def _extract_best_params(best_params: Dict[str, Any], search_space: Dict[str, Any], target: str) -> Dict[str, Any]:
-    """Extract best parameters for a specific target."""
+    """Extract best parameters for a specific target.
+
+    The ``layer_size`` template is not a real param; the dynamic
+    ``layer{i}_size`` keys actually present in ``best_params`` are pulled
+    in instead.
+    """
     if target not in search_space:
         return {}
-    return {param_name: best_params[param_name] for param_name in search_space[target] if param_name in best_params}
+    target_space = search_space[target]
+    extracted = {
+        name: best_params[name]
+        for name in target_space
+        if name != _LAYER_SIZE_TEMPLATE and name in best_params
+    }
+    if _LAYER_SIZE_TEMPLATE in target_space:
+        for name, value in best_params.items():
+            if _is_dynamic_layer_size(name):
+                extracted[name] = value
+    return extracted
 
 
 def save_optimization_results(
@@ -502,160 +560,6 @@ def save_optimization_results(
 
         logger.debug(f"Best configs saved to {config_dir}")
 
-# Plotting helpers are kept here so optimize.py can stay thin.
-
-def _generate_summary_dashboard(study: Study, plots_dir: Path) -> None:
-    """Generate a 2x3 dashboard with optimization and multi-metric diagnostics."""
-    completed_trials = [
-        t for t in study.trials
-        if t.state == optuna.trial.TrialState.COMPLETE
-        and t.value is not None
-        and np.isfinite(float(t.value))  
-    ]
-    if not completed_trials:
-        logger.warning("Skipping summary dashboard: no completed trials with finite objective.")
-        return
-
-    trial_numbers    = np.asarray([t.number    for t in completed_trials], dtype=int)
-    objective_values = np.asarray([float(t.value) for t in completed_trials], dtype=float)
-    # objective_values è già garantito finito, accumulate è sicuro
-    best_so_far = np.minimum.accumulate(objective_values)
-
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    ax_convergence, ax_metrics, ax_hist = axes[0]
-    ax_improvement, ax_top10, ax_losses = axes[1]
-
-    ax_convergence.plot(trial_numbers, best_so_far, color="tab:blue", linewidth=2)
-    ax_convergence.scatter(trial_numbers, objective_values, color="tab:blue", s=20, alpha=0.45)
-    ax_convergence.set_title("Convergence (best so far)")
-    ax_convergence.set_xlabel("Trial")
-    ax_convergence.set_ylabel("Objective")
-    ax_convergence.grid(alpha=0.3)
-
-    metric_specs = [
-        ("val_rmse", "tab:red",    "RMSE"),
-        ("val_mae",  "tab:orange", "MAE"),
-        ("val_mape", "tab:green",  "MAPE"),
-    ]
-    metric_r2 = np.asarray(
-        [float(t.user_attrs.get("val_r2", np.nan)) for t in completed_trials], dtype=float
-    )
-
-    has_primary = False
-    for key, color, label in metric_specs:
-        vals = np.asarray(
-            [float(t.user_attrs.get(key, np.nan)) for t in completed_trials], dtype=float
-        )
-        finite_mask = np.isfinite(vals)  
-        if finite_mask.any():
-            has_primary = True
-            ax_metrics.plot(
-                trial_numbers[finite_mask], vals[finite_mask],
-                marker="o", linewidth=1.5, color=color, label=label,
-            )
-
-    ax_metrics_r2 = ax_metrics.twinx()
-    r2_mask = np.isfinite(metric_r2)
-    has_r2 = r2_mask.any()
-    if has_r2:
-        ax_metrics_r2.plot(
-            trial_numbers[r2_mask], metric_r2[r2_mask],
-            marker="x", linewidth=1.4, color="tab:purple", label="R2",
-        )
-        ax_metrics_r2.set_ylabel("R2")
-
-    ax_metrics.set_title("Val metrics over trials")
-    ax_metrics.set_xlabel("Trial")
-    ax_metrics.set_ylabel("Error metrics")
-    ax_metrics.grid(alpha=0.3)
-    if has_primary or has_r2:
-        handles_1, labels_1 = ax_metrics.get_legend_handles_labels()
-        handles_2, labels_2 = ax_metrics_r2.get_legend_handles_labels()
-        ax_metrics.legend(handles_1 + handles_2, labels_1 + labels_2, loc="best", fontsize=8)
-    else:
-        ax_metrics.text(0.5, 0.5, "No val_* user attrs", ha="center", va="center",
-                        transform=ax_metrics.transAxes)
-
-    ax_hist.hist(objective_values, bins=min(20, len(objective_values)),
-                 color="tab:cyan", edgecolor="black")
-    best_finite = float(np.min(objective_values))
-    ax_hist.axvline(best_finite, color="tab:red", linestyle="--", linewidth=2)
-    ax_hist.set_title("Distribution of values")
-    ax_hist.set_xlabel("Objective")
-    ax_hist.set_ylabel("Count")
-    ax_hist.grid(alpha=0.3)
-
-    improvement = np.concatenate([[np.nan], np.diff(best_so_far)])
-    ax_improvement.plot(trial_numbers, improvement, color="tab:green", marker="o", linewidth=1.5)
-    ax_improvement.axhline(0.0, color="black", linewidth=1, linestyle=":")
-    ax_improvement.set_title("Incremental improvement")
-    ax_improvement.set_xlabel("Trial")
-    ax_improvement.set_ylabel("Delta best")
-    ax_improvement.grid(alpha=0.3)
-
-    top_trials = sorted(completed_trials, key=lambda t: float(t.value))[:10]
-    table_rows = [
-        [
-            str(t.number),
-            f"{float(t.value):.5f}",
-            f"{float(t.user_attrs.get('val_rmse', np.nan)):.4f}",
-            f"{float(t.user_attrs.get('val_r2',   np.nan)):.4f}",
-        ]
-        for t in top_trials
-    ]
-    ax_top10.axis("off")
-    ax_top10.set_title("Top-10 trials")
-    table = ax_top10.table(
-        cellText=table_rows,
-        colLabels=["Trial", "Objective", "Val RMSE", "Val R2"],
-        loc="center", cellLoc="center",
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(8)
-    table.scale(1.0, 1.2)
-
-    best_trial    = study.best_trial if study.best_trial is not None else None
-    train_losses  = best_trial.user_attrs.get("train_losses") if best_trial is not None else None
-    val_losses    = best_trial.user_attrs.get("val_losses")   if best_trial is not None else None
-
-    if isinstance(train_losses, list) and len(train_losses) > 0:
-        train_arr = np.asarray(train_losses, dtype=float)
-        train_finite = np.isfinite(train_arr)
-        epochs = np.arange(1, len(train_arr) + 1)
-        ax_losses.plot(epochs[train_finite], train_arr[train_finite],
-                       color="tab:blue", linewidth=1.8, label="Train")
-        if isinstance(val_losses, list) and len(val_losses) > 0:
-            val_arr    = np.asarray(val_losses, dtype=float)
-            val_finite = np.isfinite(val_arr)
-            ax_losses.plot(
-                np.arange(1, len(val_arr) + 1)[val_finite], val_arr[val_finite],
-                color="tab:orange", linewidth=1.8, label="Val",
-            )
-        ax_losses.set_title("Train vs Val loss (best trial)")
-        ax_losses.set_xlabel("Epoch")
-        ax_losses.set_ylabel("Loss")
-        ax_losses.grid(alpha=0.3)
-        ax_losses.legend(loc="best", fontsize=8)
-    else:
-        ax_losses.text(0.5, 0.5, "No train/val loss history available",
-                       ha="center", va="center", transform=ax_losses.transAxes)
-        ax_losses.set_title("Train vs Val loss (best trial)")
-        ax_losses.set_xticks([])
-        ax_losses.set_yticks([])
-
-    fig.suptitle("Optimization Summary Dashboard", fontsize=14)
-    fig.tight_layout()
-    dashboard_path = plots_dir / "summary_dashboard.png"
-    fig.savefig(dashboard_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.debug(f"Summary dashboard saved to {dashboard_path}")
-
-
-def generate_optimization_plots(study: Study, plots_dir: Path) -> None:
-    """Generate the optimization dashboard."""
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    _generate_summary_dashboard(study, plots_dir)
-
 
 __all__ = [
     "suggest_from_config",
@@ -666,5 +570,4 @@ __all__ = [
     "build_pruner",
     "make_objective",
     "save_optimization_results",
-    "generate_optimization_plots",
 ]

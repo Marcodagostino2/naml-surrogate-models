@@ -13,9 +13,9 @@ validation_train_ratio: 0.15  # 0.07 -> 0.015, 0.10 -> 0.02142857
 # Number of runs to perform for each model.
 # Used for both analysis mode and the post-optimization uncertainty retrains.
 runs_per_model:
-  mlp: 5
+  mlp: 10
   gp: 10
-  mlpgp: 5
+  mlpgp: 10
 
 # Random kernel-initialization bounds for the GP-family models.
 # The script samples one value per parameter within the configured bounds.
