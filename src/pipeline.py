@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import csv
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 import yaml
 
@@ -167,6 +169,38 @@ def _build_trainer(
     )
 
 
+def _benchmark_inference(
+    predictor: Predictor,
+    X: Any,
+    supports_uncertainty: bool,
+    n_warmup: int = 2,
+    n_runs: int = 5,
+) -> Dict[str, float]:
+    """Mean wall-clock time of ``Predictor.predict`` on ``X`` over ``n_runs``
+    calls, after ``n_warmup`` discarded calls. Reports total + per-sample.
+    """
+    n_samples = int(np.asarray(X).shape[0])
+    if n_samples == 0 or n_runs <= 0:
+        return {"inference_total_seconds": float("nan"), "inference_per_sample_seconds": float("nan"), "n_samples": n_samples}
+    for _ in range(max(0, n_warmup)):
+        _predict_split(predictor, X, supports_uncertainty)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    timings: List[float] = []
+    for _ in range(n_runs):
+        t0 = time.perf_counter()
+        _predict_split(predictor, X, supports_uncertainty)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        timings.append(time.perf_counter() - t0)
+    total_mean = float(np.mean(timings))
+    return {
+        "inference_total_seconds": total_mean,
+        "inference_per_sample_seconds": total_mean / n_samples,
+        "n_samples": n_samples,
+    }
+
+
 def _predict_split(predictor: Predictor, X: Any, supports_uncertainty: bool) -> Tuple[Any, Optional[Any]]:
     if supports_uncertainty:
         return predictor.predict(X, return_uncertainty=True)
@@ -224,6 +258,11 @@ def train_model(
         uncertainties[split_name] = y_std
         metrics[split_name] = compute_all_metrics(y_true, y_pred)
 
+    timings = {
+        "training_seconds": float(history.get("elapsed_time", float("nan"))),
+        **_benchmark_inference(predictor, data_bundle.X_test, supports_uncertainty),
+    }
+
     logger.info(f"Test R²: {metrics['test']['r2']:.6f}, Test RMSE: {metrics['test']['rmse']:.6f}")
     logger.info("=" * 70)
     logger.info(f"FINAL METRICS SUMMARY ({model_name.upper()})")
@@ -235,6 +274,11 @@ def train_model(
             f"MAE={m['mae']:.6f}, MSE={m['mse']:.6f}, RMSE={m['rmse']:.6f}, "
             f"R²={m['r2']:.6f}, MAPE={m['mape']:.2f}%"
         )
+    logger.info(
+        f"TIMING: train={timings['training_seconds']:.2f}s | "
+        f"infer(test, n={timings['n_samples']})={timings['inference_total_seconds'] * 1e3:.2f}ms "
+        f"({timings['inference_per_sample_seconds'] * 1e6:.1f}us/sample)"
+    )
     logger.info("=" * 70)
 
     generate_diagnostics(
@@ -260,6 +304,7 @@ def train_model(
         "train_metrics": metrics["train"],
         "val_metrics": metrics["val"],
         "test_metrics": metrics["test"],
+        "timings": timings,
     }
 
 

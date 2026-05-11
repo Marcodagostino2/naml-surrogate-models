@@ -1,5 +1,5 @@
 study:
-  n_trials: 5
+  n_trials: 150
   timeout: 5400
   direction: minimize
   metric: val_rmse
@@ -29,7 +29,7 @@ _shared:
     n_layers:
       type: int
       low: 1
-      high: 10
+      high: 5
     layer_size:
       type: categorical
       choices: [16, 32, 64, 128, 256, 512, 1024]
@@ -46,39 +46,28 @@ search_spaces:
     model:
       <<: *block
       power_exponent_init:
-        type: float
-        low: 1.5
-        high: 2.0
+        type: categorical
+        choices: [1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
       theta_init:
-        type: float
-        low: 1.0e-3
-        high: 1.0
-        log: true
+        type: categorical
+        choices: [1.0e-3, 1.0e-2, 1.0e-1, 1.0]
       likelihood_noise_init:
-        type: float
-        low: 1.0e-5
-        high: 1.0
-        log: true
+        type: categorical
+        choices: [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1, 1.0]
       trend_degree:
         type: int
         low: 0
         high: 3
     training:
       mlp_learning_rate:
-        type: float
-        low: 1.0e-5
-        high: 1.0
-        log: true
+        type: categorical
+        choices: [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1, 1.0]
       gp_learning_rate:
-        type: float
-        low: 1.0e-5
-        high: 1.0
-        log: true
+        type: categorical
+        choices: [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1, 1.0]
       mlp_weight_decay:
-        type: float
-        low: 1.0e-6
-        high: 1.0
-        log: true
+        type: categorical
+        choices: [1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1, 1.0]
 
   dkl:
     model:
@@ -89,46 +78,33 @@ search_spaces:
       output_width:
         type: int
         low: 1
-        high: 10
+        high: 5
       output_activation:
         type: categorical
         choices: [identity]
       theta_init:
-        type: float
-        low: 1.0e-3
-        high: 1.0
-        log: true
+        type: categorical
+        choices: [1.0e-3, 1.0e-2, 1.0e-1, 1.0]
       power_exponent_init:
-        type: float
-        low: 1.5
-        high: 2.0
+        type: categorical
+        choices: [1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
       tau2_init:
-        type: float
-        low: 1.0e-4
-        high: 1.0e+1
-        log: true
+        type: categorical
+        choices: [1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1, 1.0, 1.0e+1]
       likelihood_noise_init:
-        type: float
-        low: 1.0e-5
-        high: 1.0
-        log: true
+        type: categorical
+        choices: [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1, 1.0]
       trend_degree:
         type: int
         low: 0
         high: 3
     training:
       mlp_learning_rate:
-        type: float
-        low: 1.0e-5
-        high: 1.0e-1
-        log: true
+        type: categorical
+        choices: [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1]
       gp_learning_rate:
-        type: float
-        low: 1.0e-5
-        high: 1.0e-1
-        log: true
+        type: categorical
+        choices: [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1]
       mlp_weight_decay:
-        type: float
-        low: 1.0e-6
-        high: 1.0e-1
-        log: true
+        type: categorical
+        choices: [1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1]

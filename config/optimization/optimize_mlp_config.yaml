@@ -1,5 +1,5 @@
 study:
-  n_trials: 50
+  n_trials: 100
   timeout: 3600
   direction: minimize
   metric: val_rmse        # val_rmse | val_mae | val_nll
@@ -25,8 +25,8 @@ search_space:
   model:
     n_layers:
       type: int
-      low: 3
-      high: 9
+      low: 1
+      high: 5
     layer_size:
       type: categorical
       choices: [16, 32, 64, 128, 256, 512, 1024]
@@ -39,12 +39,8 @@ search_space:
       high: 0.4
   training:
     learning_rate:
-      type: float
-      low: 1.0e-5
-      high: 1.0e-2
-      log: true
+      type: categorical
+      choices: [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1]
     weight_decay:
-      type: float
-      low: 1.0e-6
-      high: 1.0e-1
-      log: true
+      type: categorical
+      choices: [1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1]

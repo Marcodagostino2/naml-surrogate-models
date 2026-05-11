@@ -6,7 +6,7 @@
 # Block activation choices: relu | leaky_relu | selu | tanh | mish.
 # The init scheme is fixed per activation (see src/models/init.py).
 architecture:
-  layers: [1024, 1024, 1024, 128, 256]
+  layers: [128, 64, 32, 16]
   activation: "tanh"
 
 dropout: 0.03

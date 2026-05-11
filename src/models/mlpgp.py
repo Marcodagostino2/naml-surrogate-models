@@ -45,6 +45,9 @@ class NonstationaryFeatureExtractor(torch.nn.Module):
     """MLP that produces positive local ``sigma(x)`` and ``l(x)`` for the Gibbs kernel.
 
     Outputs are mapped to ``[10**floor, 10**ceiling]`` via a sigmoid-of-MLP.
+    When ``output_lengthscale_dim == 0`` the MLP emits only ``sigma(x)`` and
+    ``l(x)`` collapses to ``fixed_lengthscale`` (constant, broadcast across
+    input dims) — drops the exponential amplification on the lengthscale path.
     """
 
     def __init__(self, input_dim: int, output_lengthscale_dim: int, feature_cfg: Dict[str, Any]) -> None:
@@ -52,19 +55,21 @@ class NonstationaryFeatureExtractor(torch.nn.Module):
 
         self.log_sigma_floor = float(feature_cfg.get("log_sigma_floor", -5))
         self.log_sigma_ceiling = float(feature_cfg.get("log_sigma_ceiling", 3))
-        self.log_lengthscale_floor = float(feature_cfg.get("log_lengthscale_floor", -5))
-        self.log_lengthscale_ceiling = float(feature_cfg.get("log_lengthscale_ceiling", 3))
         self.output_lengthscale_dim = int(output_lengthscale_dim)
+        self.fixed_lengthscale = float(feature_cfg.get("fixed_lengthscale", 1.0))
 
         if self.log_sigma_ceiling <= self.log_sigma_floor:
             raise ValueError(
                 f"log_sigma_ceiling ({self.log_sigma_ceiling}) must be > log_sigma_floor ({self.log_sigma_floor})"
             )
-        if self.log_lengthscale_ceiling <= self.log_lengthscale_floor:
-            raise ValueError(
-                f"log_lengthscale_ceiling ({self.log_lengthscale_ceiling}) must be > "
-                f"log_lengthscale_floor ({self.log_lengthscale_floor})"
-            )
+        if self.output_lengthscale_dim > 0:
+            self.log_lengthscale_floor = float(feature_cfg.get("log_lengthscale_floor", -5))
+            self.log_lengthscale_ceiling = float(feature_cfg.get("log_lengthscale_ceiling", 3))
+            if self.log_lengthscale_ceiling <= self.log_lengthscale_floor:
+                raise ValueError(
+                    f"log_lengthscale_ceiling ({self.log_lengthscale_ceiling}) must be > "
+                    f"log_lengthscale_floor ({self.log_lengthscale_floor})"
+                )
 
         self.backbone = MLPRegressor(
             input_dim=input_dim,
@@ -79,11 +84,17 @@ class NonstationaryFeatureExtractor(torch.nn.Module):
             self.log_sigma_floor
             + (self.log_sigma_ceiling - self.log_sigma_floor) * feature_out[..., :1],
         )
-        lengthscale_x = torch.pow(
-            10,
-            self.log_lengthscale_floor
-            + (self.log_lengthscale_ceiling - self.log_lengthscale_floor) * feature_out[..., 1:],
-        )
+        if self.output_lengthscale_dim == 0:
+            lengthscale_x = torch.full(
+                (*sigma_x.shape[:-1], 1), self.fixed_lengthscale,
+                dtype=sigma_x.dtype, device=sigma_x.device,
+            )
+        else:
+            lengthscale_x = torch.pow(
+                10,
+                self.log_lengthscale_floor
+                + (self.log_lengthscale_ceiling - self.log_lengthscale_floor) * feature_out[..., 1:],
+            )
         return sigma_x, lengthscale_x
 
 
@@ -280,9 +291,9 @@ class _MLPGPMixin:
             raise KeyError("Missing 'non_stationary_feature_extractor' section in MLPGP model config.")
 
         lengthscale_mode = str(feature_cfg.get("lengthscale_mode", "per_dimension")).lower()
-        if lengthscale_mode not in {"scalar", "per_dimension"}:
-            raise ValueError("lengthscale_mode must be either 'scalar' or 'per_dimension'.")
-        local_lengthscale_dim = 1 if lengthscale_mode == "scalar" else input_dim
+        if lengthscale_mode not in {"scalar", "per_dimension", "fixed"}:
+            raise ValueError("lengthscale_mode must be 'scalar', 'per_dimension', or 'fixed'.")
+        local_lengthscale_dim = {"fixed": 0, "scalar": 1, "per_dimension": input_dim}[lengthscale_mode]
 
         kernel_cfg = model_cfg.get("kernel", model_cfg)
         base_kernel = ExponentialKernel(

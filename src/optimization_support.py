@@ -10,6 +10,7 @@ import csv
 import json
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
@@ -178,15 +179,35 @@ def overlay(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _format_duration(seconds: float) -> str:
+    """Render a duration as ``Hh MMm SSs`` (compact, drops leading zeros)."""
+    if not (seconds == seconds) or seconds < 0:  # nan or negative
+        return "?"
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
 def _make_logging_callback(
     model_name: str,
     n_trials: int,
     metric_name: str,
     log_every: int = 5,
 ) -> Callable[[Study, FrozenTrial], None]:
-    """Create a compact Optuna callback that prints periodic progress."""
-    # removed: per-trial logger spam, replaced by coarse-grained callback logging.
+    """Create a compact Optuna callback that prints periodic progress + ETA.
+
+    ETA is a moving estimate: ``(n_trials - completed) * (elapsed / completed)``.
+    Anchored on the first trial so the first log line still prints something.
+    """
+    start_time: Dict[str, float] = {}
+
     def callback(study: Study, trial: FrozenTrial) -> None:
+        start_time.setdefault("t0", time.perf_counter())
         if log_every <= 0 or trial.number % log_every != 0:
             return
         try:
@@ -194,10 +215,14 @@ def _make_logging_callback(
         except ValueError:
             best = float("nan")
         current = trial.value if trial.value is not None else float("nan")
-        pct = (trial.number + 1) / max(n_trials, 1) * 100
+        completed = trial.number + 1
+        elapsed = time.perf_counter() - start_time["t0"]
+        eta = (n_trials - completed) * (elapsed / completed) if completed > 0 else float("nan")
+        pct = completed / max(n_trials, 1) * 100
         logger.info(
-            f"[{model_name.upper()}] {trial.number + 1:>3}/{n_trials} ({pct:4.0f}%) | "
-            f"current={current:.5f}  best={best:.5f}"
+            f"[{model_name.upper()}] {completed:>3}/{n_trials} ({pct:4.0f}%) | "
+            f"current={current:.5f}  best={best:.5f} | "
+            f"elapsed {_format_duration(elapsed)} | ETA {_format_duration(eta)}"
         )
 
     return callback

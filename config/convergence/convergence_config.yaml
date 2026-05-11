@@ -5,17 +5,15 @@ mode: "optimization"  # "analysis" or "optimization"
 
 global_seed: 21
 
-# Train split grid.
-# Validation uses a fixed ratio of the training split.
-split_percentages: [0.40]
-validation_train_ratio: 0.15  # 0.07 -> 0.015, 0.10 -> 0.02142857
+split_percentages: [0.7] # Train split grid.
+validation_train_ratio: 0.2  # Validation uses a fixed ratio of the training split.
 
 # Number of runs to perform for each model.
 # Used for both analysis mode and the post-optimization uncertainty retrains.
 runs_per_model:
-  mlp: 10
-  gp: 10
-  mlpgp: 10
+  mlp: 5
+  gp: 5
+  mlpgp: 5
 
 # Random kernel-initialization bounds for the GP-family models.
 # The script samples one value per parameter within the configured bounds.
@@ -39,8 +37,13 @@ kernel_init_bounds:
 # These settings are merged into config/optimization/*.yaml at runtime.
 optimization_overrides:
   study:
-    n_trials: 50
-    timeout: 3600
+    # n_trials accepts either an int (applied to every model) or a dict
+    # per-model with optional 'default' fallback.
+    n_trials:
+      mlp: 100
+      gp: 10
+      mlpgp: 200
+    timeout: 7200
     metric: "val_rmse"
     sampler: "tpe"
     pruner: "median"

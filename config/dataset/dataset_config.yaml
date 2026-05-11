@@ -124,7 +124,7 @@ datasets:
     train_ratio: 0.7
     val_ratio: 0.15
     test_ratio: 0.15
-    batch_size: 64
+    batch_size: 128
     description: "NASA airfoil self-noise dataset (1503 samples, 5 inputs, 1 output)"
 
   concrete_compressive_strength:

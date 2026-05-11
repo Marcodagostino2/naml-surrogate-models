@@ -125,6 +125,7 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
         )
         trained_models[selected_model] = results["model"]
 
+        timings = results.get("timings", {}) or {}
         save_summary_row(
             output_resolver.summary_csv,
             {
@@ -136,6 +137,9 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
                 "test_mape": results["test_metrics"]["mape"],
                 "val_r2": results["val_metrics"]["r2"],
                 "val_rmse": results["val_metrics"]["rmse"],
+                "training_seconds": timings.get("training_seconds"),
+                "inference_total_seconds": timings.get("inference_total_seconds"),
+                "inference_per_sample_seconds": timings.get("inference_per_sample_seconds"),
             },
         )
 

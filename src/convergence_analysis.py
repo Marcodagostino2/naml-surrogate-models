@@ -10,7 +10,7 @@ import json
 import random
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -158,14 +158,27 @@ def _set_kernel_seeded_values(model_cfg: Dict[str, Any], kernel_init: Dict[str, 
     return updated
 
 
-def _analysis_output_resolver(dataset_name: str, model_name: str) -> OutputPathResolver:
-    """Return output resolver for convergence analysis intermediate training outputs.
-    
-    Uses a flattened path structure without split/run tags to avoid cluttering the results directory.
+def _analysis_output_resolver(
+    dataset_name: str,
+    model_name: str,
+    *,
+    split_tag: Optional[str] = None,
+    sub_tag: Optional[str] = None,
+) -> OutputPathResolver:
+    """Return output resolver for a single training under the convergence tree.
+
+    ``split_tag`` and ``sub_tag`` (e.g. ``"hpo"``, ``"run_0"``) are inserted
+    into the path so that artifacts from different splits / runs / phases
+    don't overwrite each other. Final layout:
+    ``outputs/<dataset>/convergence_analysis/<split>/<sub>/<run_type>/<model>/``.
     """
-    synthetic_dataset_name = f"{dataset_name}/{ANALYSIS_ROOT_NAME}/training"
+    parts = [dataset_name, ANALYSIS_ROOT_NAME]
+    if split_tag:
+        parts.append(split_tag)
+    if sub_tag:
+        parts.append(sub_tag)
     return OutputPathResolver(
-        dataset_name=synthetic_dataset_name,
+        dataset_name="/".join(parts),
         run_type=RunType.CONVERGENCE_ANALYSIS,
         model_name=model_name,
         output_base_dir=PROJECT_ROOT / "outputs",
@@ -190,8 +203,12 @@ def _train_best_model(
     dataset_cfg: Dict[str, Any],
     model_cfg: Dict[str, Any],
     training_cfg: Dict[str, Any],
+    split_tag: Optional[str] = None,
+    sub_tag: Optional[str] = None,
 ) -> Dict[str, Any]:
-    output_resolver = _analysis_output_resolver(dataset_name, model_name)
+    output_resolver = _analysis_output_resolver(
+        dataset_name, model_name, split_tag=split_tag, sub_tag=sub_tag,
+    )
     output_resolver.root.mkdir(parents=True, exist_ok=True)
     results = train_model(
         model_name=model_name,
@@ -204,11 +221,15 @@ def _train_best_model(
     history = results.get("history", {}) or {}
     history_label, history_values = _extract_history_values(model_name, history)
 
+    timings = results.get("timings", {}) or {}
     return {
         "model": model_name,
         "history_label": history_label,
         "history_values": history_values,
         "elapsed_time": float(history.get("elapsed_time", np.nan)),
+        "training_seconds": float(timings.get("training_seconds", np.nan)),
+        "inference_total_seconds": float(timings.get("inference_total_seconds", np.nan)),
+        "inference_per_sample_seconds": float(timings.get("inference_per_sample_seconds", np.nan)),
         "train_metrics": {key: float(value) for key, value in results.get("train_metrics", {}).items()},
         "val_metrics": {key: float(value) for key, value in results.get("val_metrics", {}).items()},
         "test_metrics": {key: float(value) for key, value in results.get("test_metrics", {}).items()},
@@ -250,6 +271,7 @@ def _run_analysis_mode(
     analysis_root.mkdir(parents=True, exist_ok=True)
 
     for split_index, train_plus_val_ratio in enumerate(split_grid):
+        split_tag = _split_tag(round(train_plus_val_ratio, 6))
         for model_name in model_cfg_map.keys():
             n_runs = _run_count_for_model(analysis_cfg, "runs_per_model", model_name, default=1)
             for run_index in range(n_runs):
@@ -267,6 +289,8 @@ def _run_analysis_mode(
                     dataset_cfg=dataset_cfg,
                     model_cfg=model_cfg,
                     training_cfg=training_cfg,
+                    split_tag=split_tag,
+                    sub_tag=f"run_{run_index}",
                 )
 
                 train_ratio_actual = float(data_bundle.X_train.shape[0]) / float(data_bundle.X_train.shape[0] + data_bundle.X_val.shape[0] + data_bundle.X_test.shape[0])
@@ -287,6 +311,9 @@ def _run_analysis_mode(
                         "run_index": run_index,
                         "kernel_init": json.dumps(kernel_init, sort_keys=True) if kernel_init is not None else None,
                         "elapsed_time": result["elapsed_time"],
+                        "training_seconds": result["training_seconds"],
+                        "inference_total_seconds": result["inference_total_seconds"],
+                        "inference_per_sample_seconds": result["inference_per_sample_seconds"],
                         "r2": result["test_metrics"].get("r2"),
                         "rmse": result["test_metrics"].get("rmse"),
                         "mae": result["test_metrics"].get("mae"),
@@ -348,6 +375,8 @@ def _run_optimization_mode(
             output_resolver = _analysis_output_resolver(
                 dataset_name=dataset_name,
                 model_name=model_name,
+                split_tag=split_tag,
+                sub_tag="hpo",
             )
             output_resolver.root.mkdir(parents=True, exist_ok=True)
 
@@ -373,7 +402,7 @@ def _run_optimization_mode(
                 seed=seed,
             )
 
-            n_trials = int(opt_cfg["study"].get("n_trials", 1))
+            n_trials = _run_count_for_model(opt_cfg["study"], "n_trials", model_name, default=1)
             timeout = opt_cfg["study"].get("timeout")
             study.optimize(objective, n_trials=n_trials, timeout=timeout, show_progress_bar=False)
 
@@ -413,6 +442,8 @@ def _run_optimization_mode(
                     dataset_cfg=dataset_cfg,
                     model_cfg=retrain_model_cfg,
                     training_cfg=retrain_training_cfg,
+                    split_tag=split_tag,
+                    sub_tag=f"run_{run_index}",
                 )
 
                 histories.append(
@@ -442,6 +473,9 @@ def _run_optimization_mode(
                         "best_trial": int(study.best_trial.number) if study.best_trial is not None else -1,
                         "n_trials_completed": int(len(study.trials)),
                         "elapsed_time": best_result["elapsed_time"],
+                        "training_seconds": best_result["training_seconds"],
+                        "inference_total_seconds": best_result["inference_total_seconds"],
+                        "inference_per_sample_seconds": best_result["inference_per_sample_seconds"],
                         "r2": best_result["test_metrics"].get("r2"),
                         "rmse": best_result["test_metrics"].get("rmse"),
                         "mae": best_result["test_metrics"].get("mae"),

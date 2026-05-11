@@ -24,6 +24,8 @@ kernel:
   theta_ceiling: 1.0e3
   power_exponent_floor: 1.5
   power_exponent_ceiling: 2.0
+  tau2_floor: 1.0e-5
+  tau2_ceiling: 1.0e3
 
 # Polynomial trend mean degree (0 = constant, 1 = linear, 2 = quadratic, ...)
 trend_degree: 0
