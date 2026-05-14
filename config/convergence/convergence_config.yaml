@@ -5,7 +5,7 @@ mode: "optimization"  # "analysis" or "optimization"
 
 global_seed: 21
 
-split_percentages: [0.7] # Train split grid.
+split_percentages: [0.85] # Train split grid.
 validation_train_ratio: 0.2  # Validation uses a fixed ratio of the training split.
 
 # Number of runs to perform for each model.
@@ -33,6 +33,8 @@ kernel_init_bounds:
     likelihood_noise_init: {low: 1.0e-5, high: 1.0e-2}
     matern_nu: {low: 0.5, high: 2.5}
 
+preserve_kernel_if_present: true
+
 # Optional overrides for the optimization mode.
 # These settings are merged into config/optimization/*.yaml at runtime.
 optimization_overrides:
@@ -40,14 +42,14 @@ optimization_overrides:
     # n_trials accepts either an int (applied to every model) or a dict
     # per-model with optional 'default' fallback.
     n_trials:
-      mlp: 100
-      gp: 10
-      mlpgp: 200
+      mlp: 30
+      gp: 5
+      mlpgp: 50
     timeout: 7200
     metric: "val_rmse"
     sampler: "tpe"
     pruner: "median"
-    n_startup_trials: 5
-    n_warmup_steps: 15
+    n_startup_trials: 25
+    n_warmup_steps: 50
     pruner_interval: 5
     log_every_n_trials: 5

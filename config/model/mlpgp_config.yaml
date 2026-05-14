@@ -9,7 +9,7 @@
 # Each feature extractor has a single hidden block with one activation shared
 # across its layers (see src/models/mlp.py for the format). Block activations:
 # relu | leaky_relu | selu | tanh | mish — init is fixed per activation.
-architecture_name: "dkl"
+architecture_name: "non_stationary"
 
 # Inference: "exact" (O(N^3) MLL) or "svgp" (sparse variational, mini-batched).
 inference: "exact"
@@ -22,18 +22,18 @@ svgp:
 dkl_feature_extractor:
   name: "dkl"
   architecture:
-    layers: [512, 32, 512]
-    activation: "tanh"
+    layers: [1024, 512, 128, 64, 32]
+    activation: "relu"
   dropout: 0.0
   batch_norm: false
-  output_width: 3
+  output_width: 4
   output_activation: "identity"
 
 non_stationary_feature_extractor:
   name: "non_stationary"
   architecture:
-    layers: [128, 64, 32, 16]
-    activation: "tanh"
+    layers: [32, 128, 128, 32]
+    activation: "relu"
   dropout: 0.0
   batch_norm: false
   output_activation: "identity"
@@ -41,7 +41,7 @@ non_stationary_feature_extractor:
   log_sigma_ceiling: 1
   log_lengthscale_floor: -4
   log_lengthscale_ceiling: 1
-  lengthscale_mode: "fixed"
+  lengthscale_mode: "per_dimension"
   fixed_lengthscale: 1.0
 
 # Kernel choices: "exponential" | "rbf" | "matern".
@@ -52,7 +52,7 @@ non_stationary_feature_extractor:
 kernel:
   type: "exponential"
   theta_init: 1.0e-3
-  power_exponent_init: 1.5
+  power_exponent_init: 1.8
   likelihood_noise_init: 1.0e-2
   tau2_init: 1.0e-1
   matern_nu: 2.5

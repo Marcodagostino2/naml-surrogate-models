@@ -6,10 +6,10 @@
 # Block activation choices: relu | leaky_relu | selu | tanh | mish.
 # The init scheme is fixed per activation (see src/models/init.py).
 architecture:
-  layers: [128, 64, 32, 16]
-  activation: "tanh"
+  layers: [1024, 512, 128, 64, 32]
+  activation: "mish"
 
-dropout: 0.03
+dropout: 0.0
 batch_norm: false
 # "identity" for regression
 output_activation: "identity"

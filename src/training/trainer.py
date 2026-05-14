@@ -303,6 +303,8 @@ class MLPTrainer:
         self.scheduler = _build_scheduler(self.optimizer, training_cfg)
         self.best_val_loss = float("inf")
         self._best_model_state: Optional[Dict[str, Any]] = None
+        self._last_reported_step: Optional[int] = None
+        self._last_reported_step: Optional[int] = None
 
         logger.info(f"MLPTrainer initialized on device: {self.device}")
 
@@ -417,7 +419,12 @@ class MLPTrainer:
                 self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
 
             if self.trial is not None and val_loss is not None:
-                self.trial.report(val_loss, step=epoch)
+                try:
+                    if self._last_reported_step != epoch:
+                        self.trial.report(val_loss, step=epoch)
+                        self._last_reported_step = epoch
+                except Exception:
+                    logger.debug("Optuna trial.report() failed or was ignored")
                 if self.trial.should_prune():
                     import optuna
                     logger.info(f"Trial pruned at epoch {epoch}")
@@ -550,6 +557,8 @@ class GPTrainer(_BaseGPTrainer):
         self.likelihood_noise_history: List[float] = []
         self.best_val_loss = float("inf")
         self._best_model_state: Optional[Dict[str, Any]] = None
+        self._last_reported_step: Optional[int] = None
+        self._last_reported_step: Optional[int] = None
 
         logger.info(f"GPTrainer initialized on device: {self.device}")
         logger.info(f"Initial GP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
@@ -672,7 +681,12 @@ class GPTrainer(_BaseGPTrainer):
                     self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
 
                 if self.trial is not None and val_loss is not None:
-                    self.trial.report(val_loss, step=step)
+                    try:
+                        if self._last_reported_step != step:
+                            self.trial.report(val_loss, step=step)
+                            self._last_reported_step = step
+                    except Exception:
+                        logger.debug("Optuna trial.report() failed or was ignored")
                     if self.trial.should_prune():
                         import optuna
                         logger.info(f"Trial pruned at step {step}")
@@ -895,7 +909,12 @@ class MLPGPTrainer(_BaseGPTrainer):
                     self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
 
                 if self.trial is not None and val_loss is not None:
-                    self.trial.report(val_loss, step=step)
+                    try:
+                        if self._last_reported_step != step:
+                            self.trial.report(val_loss, step=step)
+                            self._last_reported_step = step
+                    except Exception:
+                        logger.debug("Optuna trial.report() failed or was ignored")
                     if self.trial.should_prune():
                         import optuna
                         logger.info(f"Trial pruned at step {step}")
@@ -1127,7 +1146,12 @@ class SVGPTrainer:
                 self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
 
             if self.trial is not None and val_loss is not None:
-                self.trial.report(val_loss, step=epoch)
+                try:
+                    if self._last_reported_step != epoch:
+                        self.trial.report(val_loss, step=epoch)
+                        self._last_reported_step = epoch
+                except Exception:
+                    logger.debug("Optuna trial.report() failed or was ignored")
                 if self.trial.should_prune():
                     import optuna
                     logger.info(f"SVGP trial pruned at epoch {epoch}")

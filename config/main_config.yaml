@@ -2,9 +2,9 @@
 mode: "convergence"
 global_seed: 21
 # "float32" or "float64"
-precision: "float32"
+precision: "float64"
 # Key in config/dataset/dataset_config.yaml
-dataset: "airfoil_self_noise"
+dataset: "AEDB_v1"
 # "mlp" | "gp" | "mlpgp" | "all"
 model_to_train: "all"
 # single_run sub-mode: "training" | "test" | "training+test"

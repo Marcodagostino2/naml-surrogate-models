@@ -16,7 +16,14 @@ from src.optimization_support import (
     save_optimization_results,
 )
 from src.pipeline import save_summary_row
-from src.utils import OutputPathResolver, RunType, load_run_configs, resolve_device, setup_logger
+from src.utils import (
+    OutputPathResolver,
+    RunType,
+    load_run_configs,
+    resolve_device,
+    setup_logger,
+    setup_torch_dtype,
+)
 from src.utils.entrypoints import load_and_initialize_run_configs  # noqa: F401
 from src.visualization import run_visualization
 from src.visualization.config import VisualizationConfig
@@ -48,6 +55,10 @@ def run_optimization(
     opt_cfg = loaded.get("opt_cfg", {})
     global_seed = int(main_cfg.get("global_seed", 42))
     dataset_name = loaded["dataset_name"]
+    # Must run before any tensor/model construction so newly-built params
+    # match the dtype of the data loaded below (otherwise GP-family forwards
+    # blow up with "expected Double but found Float").
+    setup_torch_dtype(str(main_cfg.get("precision", "float32")))
     logger.info(f"Dataset: {dataset_name} - {dataset_cfg.get('description', '')}")
 
     if n_trials_override is not None:

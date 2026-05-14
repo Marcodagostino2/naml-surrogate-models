@@ -1,11 +1,11 @@
 study:
-  n_trials: 100
+  n_trials: 2
   timeout: 3600
   direction: minimize
   metric: val_rmse        # val_rmse | val_mae | val_nll
   sampler: tpe
   pruner: median
-  n_startup_trials: 5
+  n_startup_trials: 25
   log_every_n_trials: 5
   n_warmup_steps: 20      # warmup steps for the pruner
   pruner_interval: 5      # interval (in epochs) at which the pruner checks
@@ -15,7 +15,7 @@ study:
   reduction_factor: 3
 
 training_overrides:
-  n_epochs: 2000
+  n_epochs: 50
 
 # Single-block MLP: choose depth (n_layers), per-layer width (layer_size
 # template applied dynamically — at trial time exactly n_layers width
@@ -25,22 +25,22 @@ search_space:
   model:
     n_layers:
       type: int
-      low: 1
-      high: 5
+      low: 2
+      high: 6
     layer_size:
       type: categorical
-      choices: [16, 32, 64, 128, 256, 512, 1024]
+      choices: [32, 64, 128, 256, 512]
     activation:
       type: categorical
-      choices: [relu, leaky_relu, selu, tanh, mish]
+      choices: [relu, tanh, mish]
     dropout:
       type: float
       low: 0.0
-      high: 0.4
+      high: 0.0
   training:
     learning_rate:
       type: categorical
-      choices: [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1]
+      choices: [1.0e-3, 1.0e-2, 1.0e-1]
     weight_decay:
       type: categorical
-      choices: [1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1]
+      choices: [1.0e-3, 1.0e-2]

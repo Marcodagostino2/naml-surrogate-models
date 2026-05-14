@@ -12,8 +12,9 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
+import numpy as np
 import gpytorch
 import torch
 import yaml
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from optuna.trial import FrozenTrial
 
 from src.pipeline import train_model
-from src.utils import OutputPathResolver, set_global_seed, setup_logger
+from src.utils import OutputPathResolver, RunType, set_global_seed, setup_logger
 
 logger = setup_logger(__name__)
 
@@ -429,13 +430,15 @@ def make_objective(
     When ``seed`` is provided, every trial re-seeds Python/NumPy/PyTorch
     before training so that only the sampled HPs vary across trials —
     init RNG state is not inherited from the previous trial.
+    
+    Multi-seed robustness: each trial runs the model `n_seeds` times with
+    different seeds and returns mean + std (penalizing high variance).
     """
     active_search_space = _resolve_active_search_space(opt_cfg, base_model_cfg)
     architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
+    n_seeds: int = 3  # Number of seed-based runs per trial for robustness evaluation
 
     def objective(trial: Trial) -> float:
-        if seed is not None:
-            set_global_seed(seed)
         model_params = suggest_from_config(trial, active_search_space, "model")
         training_params = suggest_from_config(trial, active_search_space, "training")
 
@@ -449,55 +452,89 @@ def make_objective(
             if optimizer_name not in {"adam", "adamw", "sgd"}:
                 logger.warning(f"GP optimizer '{optimizer_name}' is not one of adam, adamw, sgd")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            run_dir = Path(tmpdir)
-            try:
-                results = train_model(
-                    model_name=model_name,
-                    data_bundle=data_bundle,
-                    dataset_cfg=dataset_cfg,
-                    model_cfg=model_cfg,
-                    training_cfg=training_cfg,
-                    output_resolver=OutputPathResolver(
-                        dataset_name="tmp",
-                        run_type="single_run",
+        # Multi-seed robustness evaluation: run the model n_seeds times
+        scores: List[float] = []
+        base_seed = seed if seed is not None else 0
+        
+        for seed_idx in range(n_seeds):
+            current_seed = base_seed + seed_idx
+            set_global_seed(current_seed)
+            
+            with tempfile.TemporaryDirectory() as tmpdir:
+                run_dir = Path(tmpdir)
+                try:
+                    results = train_model(
                         model_name=model_name,
-                        output_base_dir=run_dir,
-                    ),
-                    device=device,
-                    trial=trial,
-                )
+                        data_bundle=data_bundle,
+                        dataset_cfg=dataset_cfg,
+                        model_cfg=model_cfg,
+                        training_cfg=training_cfg,
+                        output_resolver=OutputPathResolver(
+                            dataset_name="tmp",
+                            run_type=RunType.SINGLE_RUN,
+                            model_name=model_name,
+                            output_base_dir=run_dir,
+                        ),
+                        device=device,
+                        trial=(trial if seed_idx == 0 else None),
+                    )
 
-                metric_name = str(opt_cfg["study"]["metric"])
-                metric_value = _extract_metric(results, metric_name, data_bundle, results["model"])
-                trial.set_user_attr("objective_metric", metric_name)
-                trial.set_user_attr("objective_value", float(metric_value))
-                trial.set_user_attr(
-                    "val_metrics",
-                    {key: float(value) for key, value in results.get("val_metrics", {}).items()},
-                )
-                trial.set_user_attr(
-                    "test_metrics",
-                    {key: float(value) for key, value in results.get("test_metrics", {}).items()},
-                )
+                    metric_name = str(opt_cfg["study"]["metric"])
+                    metric_value = _extract_metric(results, metric_name, data_bundle, results["model"])
+                    scores.append(float(metric_value))
+                    
+                    # Store metrics from last seed run as trial attributes
+                    if seed_idx == n_seeds - 1:
+                        trial.set_user_attr("objective_metric", metric_name)
+                        trial.set_user_attr("objective_value", float(metric_value))
+                        trial.set_user_attr(
+                            "val_metrics",
+                            {key: float(value) for key, value in results.get("val_metrics", {}).items()},
+                        )
+                        trial.set_user_attr(
+                            "test_metrics",
+                            {key: float(value) for key, value in results.get("test_metrics", {}).items()},
+                        )
 
-                for metric_key, metric_val in results.get("val_metrics", {}).items():
-                    trial.set_user_attr(f"val_{metric_key}", float(metric_val))
-                for metric_key, metric_val in results.get("test_metrics", {}).items():
-                    trial.set_user_attr(f"test_{metric_key}", float(metric_val))
+                        for metric_key, metric_val in results.get("val_metrics", {}).items():
+                            trial.set_user_attr(f"val_{metric_key}", float(metric_val))
+                        for metric_key, metric_val in results.get("test_metrics", {}).items():
+                            trial.set_user_attr(f"test_{metric_key}", float(metric_val))
 
-                history = results.get("history", {})
-                if isinstance(history.get("train_losses"), list):
-                    trial.set_user_attr("train_losses", [float(x) for x in history["train_losses"]])
-                if isinstance(history.get("val_losses"), list):
-                    trial.set_user_attr("val_losses", [float(x) for x in history["val_losses"]])
-                
-                return float(metric_value)
-            except optuna.TrialPruned:
-                raise
-            except Exception as exc:
-                logger.warning(f"Trial {trial.number} failed: {exc}")
-                return float("inf")
+                        history = results.get("history", {})
+                        if isinstance(history.get("train_losses"), list):
+                            trial.set_user_attr("train_losses", [float(x) for x in history["train_losses"]])
+                        if isinstance(history.get("val_losses"), list):
+                            trial.set_user_attr("val_losses", [float(x) for x in history["val_losses"]])
+                            
+                except optuna.TrialPruned:
+                    raise
+                except Exception as exc:
+                    logger.warning(f"Trial {trial.number} seed_idx={seed_idx} failed: {exc}")
+                    scores.append(float("inf"))
+        
+        # Compute mean and std across seeds; return mean + std to penalize variance
+        if not scores or all(s == float("inf") for s in scores):
+            logger.warning(f"Trial {trial.number}: all seed runs failed")
+            return float("inf")
+        
+        valid_scores = [s for s in scores if s != float("inf")]
+        if not valid_scores:
+            logger.warning(f"Trial {trial.number}: no valid seed runs")
+            return float("inf")
+        
+        score_mean = float(np.mean(valid_scores))
+        score_std = float(np.std(valid_scores))
+        robust_score = score_mean + score_std  # Penalize high variance
+        
+        trial.set_user_attr("score_mean", score_mean)
+        trial.set_user_attr("score_std", score_std)
+        trial.set_user_attr("robust_score", robust_score)
+        trial.set_user_attr("n_valid_seeds", len(valid_scores))
+        
+        logger.info(f"Trial {trial.number}: {n_seeds} seeds → mean={score_mean:.6f}, std={score_std:.6f}, robust={robust_score:.6f}")
+        
+        return robust_score
 
     return objective
 

@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+import torch
 
 from src.data import DataBundle, load_and_preprocess_data
 from src.optimization_support import build_pruner, build_sampler, make_objective, save_optimization_results
@@ -111,6 +112,10 @@ def _load_contexts(config_dir: Path, mode: str, model_sequence: Sequence[str] = 
 
 def _prepare_data_bundle(dataset_cfg: Dict[str, Any], train_plus_val_ratio: float, validation_train_ratio: float, seed: int) -> DataBundle:
     train_ratio, val_ratio, test_ratio = _build_validation_ratios(train_plus_val_ratio, validation_train_ratio)
+    # Mirror the global torch default dtype set by ``setup_torch_dtype`` so
+    # NumPy data and model params share precision (otherwise GP-family forwards
+    # raise "expected Float/Double" mismatch errors).
+    default_type = "float64" if torch.get_default_dtype() is torch.float64 else "float32"
     return load_and_preprocess_data(
         csv_path=PROJECT_ROOT / dataset_cfg["csv_path"],
         input_columns=dataset_cfg["input_columns"],
@@ -122,6 +127,7 @@ def _prepare_data_bundle(dataset_cfg: Dict[str, Any], train_plus_val_ratio: floa
         val_ratio=float(val_ratio),
         test_ratio=float(test_ratio),
         random_seed=int(seed),
+        default_type=default_type,
     )
 
 
@@ -146,13 +152,21 @@ def _kernel_init_for_model(analysis_cfg: Dict[str, Any], model_name: str, seed: 
     return sampled
 
 
-def _set_kernel_seeded_values(model_cfg: Dict[str, Any], kernel_init: Dict[str, Any] | None) -> Dict[str, Any]:
+def _set_kernel_seeded_values(
+    model_cfg: Dict[str, Any], kernel_init: Dict[str, Any] | None, *, preserve_existing: bool = False
+) -> Dict[str, Any]:
+    """Return a copy of `model_cfg` with kernel values possibly updated from `kernel_init`.
+
+    If `preserve_existing` is True and `model_cfg` already contains a dict under the
+    "kernel" key, the existing kernel dict is left untouched (useful for analysis runs
+    where the user explicitly provided kernel parameters to keep)."""
     if kernel_init is None:
         return deepcopy(model_cfg)
     updated = deepcopy(model_cfg)
-    kernel_cfg = updated.get("kernel", {})
-    if not isinstance(kernel_cfg, dict):
-        kernel_cfg = {}
+    existing = updated.get("kernel")
+    if preserve_existing and isinstance(existing, dict):
+        return updated
+    kernel_cfg = existing if isinstance(existing, dict) else {}
     kernel_cfg.update(kernel_init)
     updated["kernel"] = kernel_cfg
     return updated
@@ -279,7 +293,8 @@ def _run_analysis_mode(
                 set_global_seed(seed)
                 data_bundle = _prepare_data_bundle(dataset_cfg, train_plus_val_ratio, validation_train_ratio, seed)
                 kernel_init = _kernel_init_for_model(analysis_cfg, model_name, seed)
-                model_cfg = _set_kernel_seeded_values(model_cfg_map[model_name], kernel_init)
+                preserve = bool(analysis_cfg.get("preserve_kernel_if_present", False))
+                model_cfg = _set_kernel_seeded_values(model_cfg_map[model_name], kernel_init, preserve_existing=preserve)
                 training_cfg = deepcopy(training_cfg_map[model_name])
 
                 result = _train_best_model(
@@ -421,6 +436,13 @@ def _run_optimization_mode(
 
             best_model_cfg = load_yaml(output_resolver.config_dir / "model" / f"{model_name}_config.yaml")
             best_training_cfg = load_yaml(output_resolver.config_dir / "training" / f"training_{model_name}_config.yaml")
+            optimized_kernel_cfg = deepcopy(best_model_cfg.get("kernel")) if isinstance(best_model_cfg.get("kernel"), dict) else None
+
+            if analysis_cfg.get("kernel_init_bounds"):
+                logger.debug(
+                    "Ignoring analysis_cfg.kernel_init_bounds in optimization mode; "
+                    "retrain runs use kernel settings from optimized best model config."
+                )
 
             n_retrain_runs = _run_count_for_model(
                 analysis_cfg,
@@ -433,6 +455,8 @@ def _run_optimization_mode(
                 set_global_seed(retrain_seed)
                 retrain_data_bundle = _prepare_data_bundle(dataset_cfg, train_ratio, validation_train_ratio, retrain_seed)
                 retrain_model_cfg = deepcopy(best_model_cfg)
+                if optimized_kernel_cfg is not None:
+                    retrain_model_cfg["kernel"] = deepcopy(optimized_kernel_cfg)
                 retrain_training_cfg = deepcopy(best_training_cfg)
 
                 best_result = _train_best_model(
