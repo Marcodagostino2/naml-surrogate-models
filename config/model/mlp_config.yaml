@@ -1,0 +1,15 @@
+# MLP architecture: a single block with one activation shared across all
+# hidden layers; per-layer width is given by the `layers` list. The output
+# projection (to output_dim) is appended automatically with an
+# activation-agnostic init; its activation is `output_activation`.
+#
+# Block activation choices: relu | leaky_relu | selu | tanh | mish.
+# The init scheme is fixed per activation (see src/models/init.py).
+architecture:
+  layers: [128]
+  activation: "tanh"
+
+dropout: 0.0
+batch_norm: false
+# "identity" for regression
+output_activation: "identity"

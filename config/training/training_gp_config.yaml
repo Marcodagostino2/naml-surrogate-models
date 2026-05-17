@@ -1,0 +1,23 @@
+# GP training (full-batch, EMLL maximization).
+# "epoch" in shared keys (warmup_epochs, *_patience) means optimization step
+# here, since GP training has no mini-batches.
+
+# "adam" | "adamw" | "sgd" | "lbfgs"
+optimizer: "adamw"
+learning_rate: 1.0e-2
+# Hard cap; early stopping (see training_common_config.yaml) usually fires first.
+n_training_steps: 2000
+
+# "cuda" | "cpu" | "auto"
+device: "auto"
+
+# When true: force exact Cholesky solves regardless of matrix size.
+# When false: GPyTorch falls back to CG above max_cholesky_size (default 800).
+force_cholesky: true
+# CG iteration cap, only used when force_cholesky == false.
+cg_max_iterations: 1000
+
+# psd_safe_cholesky jitter floors.
+cholesky_jitter_float32: 1.0e-6
+cholesky_jitter_float64: 1.0e-8
+

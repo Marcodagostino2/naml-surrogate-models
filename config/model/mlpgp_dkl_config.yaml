@@ -1,0 +1,31 @@
+# Deep Kernel Learning MLPGP: an MLP maps x to a small feature space, then a
+# stationary kernel acts on those features. The kernel choice (exponential,
+# rbf, or matern) is honoured by build_kernel; matern_nu is only consumed
+# when kernel.type == "matern".
+
+dkl_feature_extractor:
+  architecture:
+    layers: [32, 64, 32]
+    activation: "tanh"
+  dropout: 0.0
+  batch_norm: false
+  output_width: 3
+  output_activation: "identity"
+
+kernel:
+  type: "exponential"                    # "exponential" | "rbf" | "matern"
+  theta_init: 1.0e-3
+  power_exponent_init: 1.8
+  likelihood_noise_init: 5.0e-4
+  tau2_init: 1.0e-1
+  matern_nu: 2.5
+  likelihood_noise_floor: 1.0e-6
+  likelihood_noise_ceiling: 1.0
+  theta_floor: 1.0e-5
+  theta_ceiling: 1.0e3
+  power_exponent_floor: 1.5
+  power_exponent_ceiling: 2.0
+  tau2_floor: 1.0e-5
+  tau2_ceiling: 1.0e3
+
+trend_degree: 1

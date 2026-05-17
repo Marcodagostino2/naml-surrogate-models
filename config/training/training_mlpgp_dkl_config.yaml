@@ -1,0 +1,22 @@
+# Joint MLP+GP training (full-batch, EMLL maximization).
+# "epoch" in shared keys (warmup_epochs, *_patience) means optimization step
+# here, since training has no mini-batches.
+
+# "adam" | "adamw" | "sgd"
+optimizer: "adamw"
+
+# Distinct learning rates: feature extractor typically wants a faster LR than
+# kernel hyperparameters; weight decay only applied to the MLP side.
+mlp_learning_rate: 1.0e-1
+gp_learning_rate: 1.0e-2
+mlp_weight_decay: 1.0e-1
+
+n_training_steps: 3000
+
+device: "auto"
+
+force_cholesky: true
+cg_max_iterations: 1000
+cholesky_jitter_float32: 1.0e-6
+cholesky_jitter_float64: 1.0e-8
+
