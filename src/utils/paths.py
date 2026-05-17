@@ -17,7 +17,6 @@ RUNS_DIRNAME = "runs"
 
 class RunType(str, Enum):
     SINGLE_RUN = "single_run"
-    OPTIMIZATION = "optimization"
     CONVERGENCE_ANALYSIS = "convergence_analysis"
     TESTING = "testing"
 
@@ -31,11 +30,9 @@ class ModelName(str, Enum):
 
 RunTypeLike = Literal[
     RunType.SINGLE_RUN,
-    RunType.OPTIMIZATION,
     RunType.CONVERGENCE_ANALYSIS,
     RunType.TESTING,
     "single_run",
-    "optimization",
     "convergence_analysis",
     "testing",
 ]

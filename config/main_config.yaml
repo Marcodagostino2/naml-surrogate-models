@@ -1,4 +1,4 @@
-# Workflow mode: "single_run" | "optimization" | "convergence"
+# Workflow mode: "single_run" | "convergence" (HPO lives inside convergence).
 mode: "single_run"
 global_seed: 21
 # "float32" or "float64"

@@ -151,9 +151,11 @@ def save_run_artifacts(
         "summary_csv": str(output_resolver.summary_csv),
         "history_json": str(history_path),
     }
-    if output_resolver._run_type_value == "optimization":
-        artifacts["best_params"] = str(output_resolver.best_params)
-        artifacts["all_trials_csv"] = str(output_resolver.all_trials_csv)
+    if output_resolver._run_type_value == "convergence_analysis":
+        if output_resolver.best_params.exists():
+            artifacts["best_params"] = str(output_resolver.best_params)
+        if output_resolver.all_trials_csv.exists():
+            artifacts["all_trials_csv"] = str(output_resolver.all_trials_csv)
 
     manifest = {
         "timestamp": datetime.now().isoformat(),

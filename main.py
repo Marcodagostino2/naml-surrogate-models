@@ -1,13 +1,13 @@
 """Workflow dispatcher.
 
-Three modes (selected via ``--mode`` or ``main_config.yaml: mode``):
+Two modes (selected via ``--mode`` or ``main_config.yaml: mode``):
 
 - ``single_run`` — one training/evaluation pass per configured model
-- ``optimization`` — Optuna hyperparameter search
-- ``convergence`` — repeated split/seed analysis
+- ``convergence`` — repeated split/seed analysis (also hosts HPO via
+  ``convergence_config.yaml: mode: optimization``)
 
-Implementations live in ``src.pipeline``, ``src.entrypoints.optimize``, and
-``src.entrypoints.convergence``; this script only routes.
+Implementations live in ``src.pipeline`` and ``src.entrypoints.convergence``;
+this script only routes.
 """
 
 from __future__ import annotations
@@ -363,35 +363,6 @@ def _run_single_run(
     logger.info("=" * 60)
 
 
-def _run_optimization(
-    config_dir: Path,
-    output_dir: Path,
-    model_override: str | None = None,
-    n_trials_override: int | None = None,
-    timeout_override: int | None = None,
-    run_id_override: str | None = None,
-) -> None:
-    from src.entrypoints.optimize import run_optimization as run_optimization_workflow
-
-    loaded_configs = load_run_configs(config_dir, "mlp", include_optimize=False)
-    main_cfg = loaded_configs["main_cfg"]
-    _check_legacy_model_key(main_cfg)
-    cli_override = model_override if model_override else None
-    selected_models = parse_models_list(cli_override if cli_override is not None else main_cfg.get("models_to_train"))
-    run_id = str(run_id_override or main_cfg.get("run_id", "")).strip() or make_run_id("opt")
-    logger.info(f"Optimization run_id: {run_id}")
-
-    for selected_model in selected_models:
-        run_optimization_workflow(
-            config_dir,
-            selected_model,
-            output_dir,
-            n_trials_override,
-            timeout_override,
-            run_id,
-        )
-
-
 def _run_convergence(config_path: Path) -> None:
     from src.entrypoints.convergence import run_analysis
     run_analysis(config_path)
@@ -401,8 +372,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Single entry point for surrogate-model workflows.")
     parser.add_argument(
         "--mode", type=str, default=None,
-        choices=("single_run", "optimization", "convergence"),
-        help="Workflow mode. Defaults to config/main_config.yaml.",
+        choices=("single_run", "convergence"),
+        help="Workflow mode. Defaults to config/main_config.yaml. HPO is invoked "
+             "via `--mode convergence` with `convergence_config.mode: optimization`.",
     )
     parser.add_argument("--config-dir", type=str, default="config", help="Path to the config directory.")
     parser.add_argument("--output-dir", type=str, default="outputs", help="Base output directory.")
@@ -411,8 +383,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Comma-separated model list (e.g. 'mlp,gp,mlpgp_ns'); 'all' expands to "
              "mlp,gp,mlpgp_ns,mlpgp_dkl. Overrides main_config.yaml: models_to_train.",
     )
-    parser.add_argument("--n-trials", type=int, default=None, help="Override the number of optimization trials.")
-    parser.add_argument("--timeout", type=int, default=None, help="Override the optimization timeout in seconds.")
     parser.add_argument(
         "--run-id",
         type=str,
@@ -440,10 +410,13 @@ def main() -> None:
     workflow_cfg = load_run_configs(config_dir, "mlp", include_optimize=False)["main_cfg"]
     workflow_mode = str(args.mode or workflow_cfg.get("mode", "single_run")).lower()
 
+    if workflow_mode == "optimization":
+        raise ValueError(
+            "Top-level mode 'optimization' has been retired. HPO now runs via "
+            "`mode: convergence` with `convergence_config.yaml: mode: optimization`."
+        )
     if workflow_mode == "single_run":
         _run_single_run(config_dir, output_dir, args.run_id, args.resume_run_id)
-    elif workflow_mode == "optimization":
-        _run_optimization(config_dir, output_dir, args.models, args.n_trials, args.timeout, args.run_id)
     elif workflow_mode == "convergence":
         _run_convergence(project_root / args.config_path)
     else:
