@@ -25,7 +25,6 @@
       "mape": 27.350881576538086
     }
   },
-  "manifest_source": "outputs_baseline_single_run_mlpgp_ns\\yacht_hydrodynamics\\single_run\\mlpgp\\runs\\single_20260517_151126\\results_manifest.json",
   "combo_id": "single_run.mlpgp_ns",
   "spec": {
     "mode": "single_run",

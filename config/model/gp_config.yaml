@@ -1,13 +1,4 @@
 # GP model configuration.
-# Inference: "exact" (O(N^3) MLL) or "svgp" (sparse variational, O(NM^2 + M^3),
-# mini-batched). Switch to "svgp" when N is too large for exact Cholesky/CG.
-inference: "exact"
-
-# SVGP knobs, ignored when inference == "exact".
-svgp:
-  n_inducing_points: 256
-  learn_inducing_locations: true
-
 # Kernel: "exponential" (anisotropic, learnable theta and power_exponent),
 # "rbf", or "matern" (nu in {0.5, 1.5, 2.5}). All are wrapped in a learnable
 # ScaleKernel (outputscale = tau^2).

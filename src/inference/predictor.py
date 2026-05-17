@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from gpytorch.utils.warnings import GPInputWarning
 
-from src.models import GPRegressionModel, MLPGPModel, MLPRegressor, MLPSVGPModel, SVGPRegressionModel
+from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
 from src.utils import resolve_device, setup_logger
 
 logger = setup_logger(__name__)
@@ -32,7 +32,7 @@ class Predictor:
 
     def __init__(
         self,
-        model: MLPRegressor | GPRegressionModel | MLPGPModel | SVGPRegressionModel | MLPSVGPModel,
+        model: MLPRegressor | GPRegressionModel | MLPGPModel,
         target_scaler_mean: np.ndarray,
         target_scaler_std: np.ndarray,
         device: Optional[torch.device] = None,
@@ -76,7 +76,7 @@ class Predictor:
         """Auto-dispatch on model type. ``return_uncertainty`` only meaningful for GP-family models."""
         if isinstance(self.model, MLPRegressor):
             return self.predict_mlp(X, denormalize=denormalize)
-        if isinstance(self.model, (GPRegressionModel, MLPGPModel, SVGPRegressionModel, MLPSVGPModel)):
+        if isinstance(self.model, (GPRegressionModel, MLPGPModel)):
             mean, std = self.predict_gp(X, denormalize=denormalize)
             return (mean, std) if return_uncertainty else mean
         raise TypeError(f"Unknown model type: {type(self.model)}")

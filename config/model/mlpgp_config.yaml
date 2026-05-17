@@ -11,14 +11,6 @@
 # relu | leaky_relu | selu | tanh | mish — init is fixed per activation.
 architecture_name: "non_stationary"
 
-# Inference: "exact" (O(N^3) MLL) or "svgp" (sparse variational, mini-batched).
-inference: "exact"
-
-# SVGP knobs, ignored when inference == "exact".
-svgp:
-  n_inducing_points: 256
-  learn_inducing_locations: true
-
 dkl_feature_extractor:
   name: "dkl"
   architecture:

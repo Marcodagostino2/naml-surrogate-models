@@ -1,8 +1,4 @@
-"""GP regression models: ``GPRegressionModel`` (exact) and ``SVGPRegressionModel`` (sparse variational).
-
-Both share a polynomial trend mean and a kernel built by :func:`build_kernel`.
-The variant is selected via ``model_cfg["inference"]`` in the pipeline.
-"""
+"""Exact ``GPRegressionModel`` with a polynomial trend mean and a kernel built by :func:`build_kernel`."""
 
 from __future__ import annotations
 
@@ -14,8 +10,7 @@ import torch
 from gpytorch.constraints import Interval
 from gpytorch.distributions import MultivariateNormal
 from gpytorch.means import Mean
-from gpytorch.models import ApproximateGP, ExactGP
-from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy
+from gpytorch.models import ExactGP
 
 from src.models.gp_utils import (
     build_kernel,
@@ -59,21 +54,6 @@ def _build_likelihood_from_cfg(model_cfg: Dict[str, Any]) -> gpytorch.likelihood
     return _build_gaussian_likelihood(initial, floor, ceiling)
 
 
-def _select_inducing_points(X_train: torch.Tensor, n_inducing: int) -> torch.Tensor:
-    """Random subset of ``X_train`` for SVGP inducing-point initialization."""
-    n_train = int(X_train.shape[0])
-    n_inducing = int(n_inducing)
-    if n_inducing < 1:
-        raise ValueError(f"n_inducing_points must be >= 1, got {n_inducing}")
-    if n_inducing >= n_train:
-        logger.warning(
-            f"n_inducing_points ({n_inducing}) >= n_train ({n_train}); using full training set."
-        )
-        return X_train.detach().clone()
-    perm = torch.randperm(n_train, device=X_train.device)[:n_inducing]
-    return X_train[perm].detach().clone()
-
-
 class PolynomialTrendMean(Mean):
     """Polynomial trend mean with all monomials up to ``degree``."""
 
@@ -109,7 +89,7 @@ class PolynomialTrendMean(Mean):
 
 
 class _GPRegressionMixin:
-    """Shared mean+kernel setup and ``forward`` for the exact and SV variants."""
+    """Shared mean+kernel setup and ``forward`` for GP-family exact models."""
 
     def _setup_mean_and_kernel(self, X_train: torch.Tensor, model_cfg: Dict[str, Any]) -> None:
         kernel_cfg = model_cfg.get("kernel", model_cfg)
@@ -140,43 +120,3 @@ class GPRegressionModel(_GPRegressionMixin, ExactGP):
             likelihood = _build_likelihood_from_cfg(model_cfg)
         super().__init__(X_train, y_train, likelihood)
         self._setup_mean_and_kernel(X_train, model_cfg)
-
-
-class SVGPRegressionModel(_GPRegressionMixin, ApproximateGP):
-    """Sparse Variational GP (Hensman 2013/2015) with inducing points from a subset of ``X_train``.
-
-    ``ApproximateGP`` does not own a likelihood; we attach it as a submodule so
-    its parameters are picked up by ``self.parameters()``.
-    """
-
-    def __init__(
-        self,
-        X_train: torch.Tensor,
-        y_train: torch.Tensor,
-        model_cfg: Dict,
-        likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
-    ) -> None:
-        del y_train  # targets enter via the ELBO at training time
-
-        if likelihood is None:
-            likelihood = _build_likelihood_from_cfg(model_cfg)
-
-        svgp_cfg = model_cfg.get("svgp", {}) or {}
-        n_inducing = int(svgp_cfg.get("n_inducing_points", 256))
-        learn_inducing_locations = bool(svgp_cfg.get("learn_inducing_locations", True))
-
-        inducing_points = _select_inducing_points(X_train, n_inducing)
-        variational_strategy = VariationalStrategy(
-            self,
-            inducing_points,
-            CholeskyVariationalDistribution(inducing_points.size(0)),
-            learn_inducing_locations=learn_inducing_locations,
-        )
-        super().__init__(variational_strategy)
-        self.likelihood = likelihood
-        self._setup_mean_and_kernel(X_train, model_cfg)
-
-        logger.info(
-            f"SVGPRegressionModel initialized with {inducing_points.size(0)} inducing points "
-            f"(learn_inducing_locations={learn_inducing_locations})"
-        )

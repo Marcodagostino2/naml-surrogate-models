@@ -15,14 +15,8 @@ import yaml
 
 from src.data import DataBundle
 from src.inference import Predictor
-from src.models import (
-    GPRegressionModel,
-    MLPGPModel,
-    MLPRegressor,
-    MLPSVGPModel,
-    SVGPRegressionModel,
-)
-from src.training import GPTrainer, MLPGPTrainer, MLPTrainer, SVGPTrainer, compute_all_metrics
+from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
+from src.training import GPTrainer, MLPGPTrainer, MLPTrainer, compute_all_metrics
 from src.utils import OutputPathResolver, resolve_device, setup_logger
 from src.visualization.plots.diagnostics import generate_diagnostics
 
@@ -37,12 +31,6 @@ _MODEL_REGISTRY: Dict[str, Tuple[type, type, bool]] = {
     "mlp": (MLPRegressor, MLPTrainer, False),
     "gp": (GPRegressionModel, GPTrainer, True),
     "mlpgp": (MLPGPModel, MLPGPTrainer, True),
-}
-
-# SVGP variants of the GP-family models, picked when model_cfg["inference"] == "svgp".
-_SVGP_CLASSES: Dict[str, type] = {
-    "gp": SVGPRegressionModel,
-    "mlpgp": MLPSVGPModel,
 }
 
 
@@ -182,16 +170,6 @@ def save_run_artifacts(
     logger.debug(f"Run artifacts saved: {manifest_path}, {history_path}")
 
 
-def _resolve_gp_inference(model_name: str, model_cfg: Dict[str, Any]) -> str:
-    """Return ``"exact"`` or ``"svgp"`` from ``model_cfg["inference"]``; raise on typos."""
-    inference = str(model_cfg.get("inference", "exact")).lower()
-    if inference not in {"exact", "svgp"}:
-        raise ValueError(
-            f"Unknown inference mode for {model_name!r}: {inference!r}. Expected 'exact' or 'svgp'."
-        )
-    return inference
-
-
 def _gp_train_tensors(data_bundle: DataBundle) -> Tuple[torch.Tensor, torch.Tensor]:
     X_train_t = torch.from_numpy(data_bundle.X_train)
     y_train_t = torch.from_numpy(data_bundle.y_train)
@@ -209,8 +187,7 @@ def _build_model(model_name: str, data_bundle: DataBundle, model_cfg: Dict[str, 
         )
 
     X_train_t, y_train_t = _gp_train_tensors(data_bundle)
-    inference = _resolve_gp_inference(model_name, model_cfg)
-    model_cls = _SVGP_CLASSES[model_name] if inference == "svgp" else _MODEL_REGISTRY[model_name][0]
+    model_cls = _MODEL_REGISTRY[model_name][0]
     return model_cls(X_train=X_train_t, y_train=y_train_t, model_cfg=model_cfg)
 
 
@@ -223,21 +200,10 @@ def _build_trainer(
     device: torch.device,
     trial: Optional["optuna.Trial"],
 ) -> Any:
-    """Pick the trainer for ``model``. SVGP models route to ``SVGPTrainer`` regardless of ``model_name``."""
+    """Pick the trainer for ``model`` based on ``model_name``."""
     if model_name == "mlp":
         batch_size = int(dataset_cfg.get("batch_size", 128))
         return MLPTrainer(
-            model=model,
-            train_loader=data_bundle.get_train_loader(batch_size=batch_size),
-            val_loader=data_bundle.get_val_loader(batch_size=batch_size),
-            training_cfg=training_cfg,
-            device=device,
-            trial=trial,
-        )
-
-    if isinstance(model, (SVGPRegressionModel, MLPSVGPModel)):
-        batch_size = int(training_cfg.get("svgp_batch_size", dataset_cfg.get("batch_size", 1024)))
-        return SVGPTrainer(
             model=model,
             train_loader=data_bundle.get_train_loader(batch_size=batch_size),
             val_loader=data_bundle.get_val_loader(batch_size=batch_size),

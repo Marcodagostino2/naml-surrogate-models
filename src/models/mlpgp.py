@@ -1,8 +1,4 @@
-"""MLPGP models: ``MLPGPModel`` (exact) and ``MLPSVGPModel`` (sparse variational).
-
-Both architectures share an MLP-driven feature/parameter extractor, the same
-covariance modules, and the same ``forward`` (factored into ``_MLPGPMixin``).
-Selection is driven by ``model_cfg["inference"]`` in the pipeline.
+"""Exact ``MLPGPModel`` with an MLP-driven feature/parameter extractor.
 
 Two architecture variants:
 
@@ -19,14 +15,12 @@ from typing import Any, Dict, Iterator, Optional, Tuple
 import gpytorch
 import torch
 from gpytorch.distributions import MultivariateNormal
-from gpytorch.models import ApproximateGP, ExactGP
-from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy
+from gpytorch.models import ExactGP
 
 from src.models.gp import (
     PolynomialTrendMean,
     _build_gaussian_likelihood,
     _parse_noise_cfg,
-    _select_inducing_points,
 )
 from src.models.gp_utils import (
     ExponentialKernel,
@@ -244,9 +238,8 @@ class DKLKernel(gpytorch.kernels.Kernel):
 
 
 class _MLPGPMixin:
-    """Shared kernel/feature setup, parameter helpers, and ``forward`` for the
-    exact and SV variants. No ``__init__`` so each variant calls its own parent
-    (``ExactGP`` / ``ApproximateGP``) initializer.
+    """Kernel/feature setup, parameter helpers, and ``forward`` for MLPGP. No
+    ``__init__`` so the concrete model calls ``ExactGP.__init__`` itself.
     """
 
     def _init_mlpgp(
@@ -382,45 +375,3 @@ class MLPGPModel(_MLPGPMixin, ExactGP):
         self._init_mlpgp(X_train, model_cfg, initial_likelihood_noise)
 
 
-class MLPSVGPModel(_MLPGPMixin, ApproximateGP):
-    """Sparse Variational MLPGP. Inducing points are kept in raw input space so
-    the existing kernel modules apply the MLP feature/parameter extractor on
-    them via their normal forward pass.
-    """
-
-    def __init__(
-        self,
-        X_train: torch.Tensor,
-        y_train: torch.Tensor,
-        model_cfg: Dict,
-        likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
-    ) -> None:
-        del y_train  # targets enter via the ELBO at training time
-
-        kernel_cfg = model_cfg.get("kernel", model_cfg)
-        initial_likelihood_noise, noise_floor, noise_ceiling = _parse_noise_cfg(kernel_cfg)
-        if likelihood is None:
-            likelihood = _build_gaussian_likelihood(initial_likelihood_noise, noise_floor, noise_ceiling)
-
-        svgp_cfg = model_cfg.get("svgp", {}) or {}
-        n_inducing = int(svgp_cfg.get("n_inducing_points", 256))
-        learn_inducing_locations = bool(svgp_cfg.get("learn_inducing_locations", True))
-
-        inducing_points = _select_inducing_points(X_train, n_inducing)
-        variational_strategy = VariationalStrategy(
-            self,
-            inducing_points,
-            CholeskyVariationalDistribution(inducing_points.size(0)),
-            learn_inducing_locations=learn_inducing_locations,
-        )
-        super().__init__(variational_strategy)
-        # ApproximateGP doesn't own a likelihood — attach it so its parameters
-        # are picked up by self.parameters() and trained jointly.
-        self.likelihood = likelihood
-
-        self._init_mlpgp(X_train, model_cfg, initial_likelihood_noise)
-
-        logger.info(
-            f"MLPSVGPModel: {inducing_points.size(0)} inducing points "
-            f"(learn_inducing_locations={learn_inducing_locations})"
-        )

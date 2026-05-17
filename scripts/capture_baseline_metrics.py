@@ -117,7 +117,6 @@ def _extract_metrics(manifest_path: Path) -> dict[str, Any]:
         "mode": manifest.get("mode"),
         "model": manifest.get("model"),
         "metrics": manifest.get("metrics", {}),
-        "manifest_source": str(manifest_path.relative_to(PROJECT_ROOT)),
     }
 
 
