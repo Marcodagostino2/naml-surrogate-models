@@ -1,0 +1,41 @@
+{
+  "dataset": "yacht_hydrodynamics",
+  "mode": "single_run",
+  "model": "mlp",
+  "metrics": {
+    "train": {
+      "mse": 7.589569091796875,
+      "mae": 1.5201160907745361,
+      "rmse": 2.7549171447753906,
+      "r2": 0.9691607356071472,
+      "mape": 167.5082244873047
+    },
+    "val": {
+      "mse": 12.435991287231445,
+      "mae": 2.542673349380493,
+      "rmse": 3.526470184326172,
+      "r2": 0.9453606605529785,
+      "mape": 80.2658920288086
+    },
+    "test": {
+      "mse": 7.828321933746338,
+      "mae": 1.8364073038101196,
+      "rmse": 2.7979137897491455,
+      "r2": 0.9474455714225769,
+      "mape": 271.5499572753906
+    }
+  },
+  "manifest_source": "outputs_baseline_single_run_mlp\\yacht_hydrodynamics\\single_run\\mlp\\runs\\single_20260517_151029\\results_manifest.json",
+  "combo_id": "single_run.mlp",
+  "spec": {
+    "mode": "single_run",
+    "model": "mlp",
+    "main_patch": {
+      "dataset": "yacht_hydrodynamics",
+      "precision": "float32",
+      "mode": "single_run",
+      "model_to_train": "mlp",
+      "run_mode": "training"
+    }
+  }
+}
