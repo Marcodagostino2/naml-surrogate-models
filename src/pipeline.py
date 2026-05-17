@@ -61,7 +61,8 @@ def save_run_configs(
         (config_out / "training", f"training_{selected_model}_config.yaml", training_cfg),
         (config_out / "visualization", "visualization_config.yaml", viz_cfg),
     ]
-    patched_main_cfg = {**main_cfg, "model_to_train": selected_model}
+    patched_main_cfg = {**main_cfg, "models_to_train": [selected_model]}
+    patched_main_cfg.pop("model_to_train", None)
     for subdir, filename, content in entries:
         subdir.mkdir(parents=True, exist_ok=True)
         payload = patched_main_cfg if filename == "main_config.yaml" else content

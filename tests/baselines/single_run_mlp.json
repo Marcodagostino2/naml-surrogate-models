@@ -33,7 +33,9 @@
       "dataset": "yacht_hydrodynamics",
       "precision": "float32",
       "mode": "single_run",
-      "model_to_train": "mlp",
+      "models_to_train": [
+        "mlp"
+      ],
       "run_mode": "training"
     }
   }

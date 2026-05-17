@@ -86,17 +86,24 @@ def _split_tag(train_ratio: float) -> str:
 
 
 def _get_models_to_train(main_cfg: Dict[str, Any], all_models: Sequence[str] = MODEL_SEQUENCE) -> Sequence[str]:
-    """Filter models to train based on main_cfg model_to_train setting.
-    
-    If model_to_train is 'all', return all models. Otherwise return just the specified model.
-    """
-    model_to_train = str(main_cfg.get("model_to_train", "all")).lower()
-    if model_to_train == "all":
-        return all_models
-    if model_to_train in all_models:
-        return (model_to_train,)
-    logger.warning(f"Invalid model_to_train '{model_to_train}'. Using all models instead.")
-    return all_models
+    """Filter convergence models against ``main_cfg["models_to_train"]`` (list, comma-string, or ``"all"``)."""
+    if "model_to_train" in main_cfg:
+        raise ValueError(
+            "`model_to_train` was renamed to `models_to_train` (list). Update main_config.yaml."
+        )
+    raw = main_cfg.get("models_to_train", ["all"])
+    if isinstance(raw, str):
+        items = [v.strip().lower() for v in raw.split(",") if v.strip()]
+    elif isinstance(raw, (list, tuple)):
+        items = [str(v).strip().lower() for v in raw if str(v).strip()]
+    else:
+        raise ValueError(f"models_to_train must be a string or list, got {type(raw).__name__}")
+    if not items or "all" in items:
+        return tuple(all_models)
+    invalid = [name for name in items if name not in all_models]
+    if invalid:
+        raise ValueError(f"Unknown model(s) in models_to_train: {invalid}. Valid: {list(all_models)} or 'all'.")
+    return tuple(items)
 
 
 def _load_contexts(config_dir: Path, mode: str, model_sequence: Sequence[str] = MODEL_SEQUENCE) -> Dict[str, Dict[str, Any]]:

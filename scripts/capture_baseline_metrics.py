@@ -47,22 +47,22 @@ CONFIG_MATRIX: dict[str, dict[str, Any]] = {
     "single_run.mlp": {
         "mode": "single_run",
         "model": "mlp",
-        "main_patch": _main_patch({"mode": "single_run", "model_to_train": "mlp", "run_mode": "training"}),
+        "main_patch": _main_patch({"mode": "single_run", "models_to_train": ["mlp"], "run_mode": "training"}),
     },
     "single_run.gp": {
         "mode": "single_run",
         "model": "gp",
-        "main_patch": _main_patch({"mode": "single_run", "model_to_train": "gp", "run_mode": "training"}),
+        "main_patch": _main_patch({"mode": "single_run", "models_to_train": ["gp"], "run_mode": "training"}),
     },
     "single_run.mlpgp_ns": {
         "mode": "single_run",
         "model": "mlpgp_ns",
-        "main_patch": _main_patch({"mode": "single_run", "model_to_train": "mlpgp_ns", "run_mode": "training"}),
+        "main_patch": _main_patch({"mode": "single_run", "models_to_train": ["mlpgp_ns"], "run_mode": "training"}),
     },
     "single_run.mlpgp_dkl": {
         "mode": "single_run",
         "model": "mlpgp_dkl",
-        "main_patch": _main_patch({"mode": "single_run", "model_to_train": "mlpgp_dkl", "run_mode": "training"}),
+        "main_patch": _main_patch({"mode": "single_run", "models_to_train": ["mlpgp_dkl"], "run_mode": "training"}),
     },
     # Optimization + convergence baselines deliberately omitted from --all:
     # optimization legacy mode is going away in Stage 7 (no long-term baseline value),

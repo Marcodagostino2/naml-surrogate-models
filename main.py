@@ -36,6 +36,42 @@ if TYPE_CHECKING:
     import optuna  # noqa: F401
 
 
+CANONICAL_MODELS = ("mlp", "gp", "mlpgp_ns", "mlpgp_dkl")
+
+
+def parse_models_list(value: Any) -> list[str]:
+    """Accept a list, a comma-separated string, or the ``"all"`` alias; return the canonical list."""
+    if value is None:
+        return list(CANONICAL_MODELS)
+    if isinstance(value, str):
+        items = [item.strip().lower() for item in value.split(",") if item.strip()]
+    elif isinstance(value, (list, tuple)):
+        items = [str(item).strip().lower() for item in value if str(item).strip()]
+    else:
+        raise ValueError(f"models_to_train must be a list or string, got {type(value).__name__}")
+    if not items:
+        return list(CANONICAL_MODELS)
+    if "all" in items:
+        return list(CANONICAL_MODELS)
+    unknown = [name for name in items if name not in CANONICAL_MODELS]
+    if unknown:
+        raise ValueError(
+            f"Unknown model(s) in models_to_train: {unknown}. "
+            f"Valid entries: {list(CANONICAL_MODELS)} or 'all'."
+        )
+    return items
+
+
+def _check_legacy_model_key(main_cfg: Dict[str, Any]) -> None:
+    """Reject the legacy ``model_to_train`` scalar with a migration hint."""
+    if "model_to_train" in main_cfg:
+        raise ValueError(
+            "`model_to_train` was renamed to `models_to_train` (list). Update "
+            "config/main_config.yaml — e.g. `models_to_train: [\"gp\"]` or "
+            "`models_to_train: [\"all\"]`."
+        )
+
+
 def _build_viz_data(data_bundle) -> Dict[str, Any]:
     """Denormalize data and assemble the dict consumed by ``run_visualization``."""
     return {
@@ -107,7 +143,8 @@ def _run_single_run(
     dataset_name = loaded_configs["dataset_name"]
     viz_cfg = loaded_configs["viz_cfg"]
 
-    model_to_train = str(main_cfg.get("model_to_train", "mlp")).lower()
+    _check_legacy_model_key(main_cfg)
+    selected_models = parse_models_list(main_cfg.get("models_to_train"))
     run_mode = str(main_cfg.get("run_mode", "training")).lower()
     run_id_cfg = str(run_id_override or main_cfg.get("run_id", "")).strip() or None
     resume_run_id = str(resume_run_id_override or main_cfg.get("resume_run_id", "")).strip() or None
@@ -117,7 +154,7 @@ def _run_single_run(
     logger.info(f"Global seed set to {global_seed}")
     logger.info(f"PyTorch default dtype set to {torch.get_default_dtype()}")
     logger.info(f"Dataset: {dataset_name} - {dataset_cfg.get('description', '')}")
-    logger.info(f"Model to train: {model_to_train.upper()}")
+    logger.info(f"Models to train: {', '.join(model.upper() for model in selected_models)}")
     logger.info(f"Run mode: {run_mode.upper()}")
 
     normalized_mode = run_mode.replace("+", "_")
@@ -126,17 +163,12 @@ def _run_single_run(
     if not training_enabled and not testing_enabled:
         raise ValueError("run_mode must include 'training', 'test', or 'training+test'.")
 
-    if model_to_train not in {"mlp", "gp", "mlpgp_ns", "mlpgp_dkl", "all"}:
-        raise ValueError(f"Unknown model_to_train: {model_to_train}")
-
     logger.info("Loading and preprocessing data...")
     data_bundle = load_data_from_config(config_dir.parent, dataset_cfg, global_seed, precision)
     logger.debug(
         f"Data shapes: X_train={data_bundle.X_train.shape}, "
         f"X_val={data_bundle.X_val.shape}, X_test={data_bundle.X_test.shape}"
     )
-
-    selected_models = ["mlp", "gp", "mlpgp_ns", "mlpgp_dkl"] if model_to_train == "all" else [model_to_train]
     trained_models: Dict[str, Any] = {}
 
     train_run_id = run_id_cfg or make_run_id("single")
@@ -343,24 +375,16 @@ def _run_optimization(
 
     loaded_configs = load_run_configs(config_dir, "mlp", include_optimize=False)
     main_cfg = loaded_configs["main_cfg"]
-    model_to_train = str(model_override or main_cfg.get("model_to_train", "mlp")).lower()
+    _check_legacy_model_key(main_cfg)
+    cli_override = model_override if model_override else None
+    selected_models = parse_models_list(cli_override if cli_override is not None else main_cfg.get("models_to_train"))
     run_id = str(run_id_override or main_cfg.get("run_id", "")).strip() or make_run_id("opt")
     logger.info(f"Optimization run_id: {run_id}")
 
-    if model_to_train == "all":
-        for selected_model in ["mlp", "gp", "mlpgp_ns", "mlpgp_dkl"]:
-            run_optimization_workflow(
-                config_dir,
-                selected_model,
-                output_dir,
-                n_trials_override,
-                timeout_override,
-                run_id,
-            )
-    else:
+    for selected_model in selected_models:
         run_optimization_workflow(
             config_dir,
-            model_to_train,
+            selected_model,
             output_dir,
             n_trials_override,
             timeout_override,
@@ -383,9 +407,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config-dir", type=str, default="config", help="Path to the config directory.")
     parser.add_argument("--output-dir", type=str, default="outputs", help="Base output directory.")
     parser.add_argument(
-        "--model", type=str, default=None,
-        choices=["mlp", "gp", "mlpgp_ns", "mlpgp_dkl", "all"],
-        help="Override the optimization model selection from config/main_config.yaml.",
+        "--models", type=str, default=None,
+        help="Comma-separated model list (e.g. 'mlp,gp,mlpgp_ns'); 'all' expands to "
+             "mlp,gp,mlpgp_ns,mlpgp_dkl. Overrides main_config.yaml: models_to_train.",
     )
     parser.add_argument("--n-trials", type=int, default=None, help="Override the number of optimization trials.")
     parser.add_argument("--timeout", type=int, default=None, help="Override the optimization timeout in seconds.")
@@ -419,7 +443,7 @@ def main() -> None:
     if workflow_mode == "single_run":
         _run_single_run(config_dir, output_dir, args.run_id, args.resume_run_id)
     elif workflow_mode == "optimization":
-        _run_optimization(config_dir, output_dir, args.model, args.n_trials, args.timeout, args.run_id)
+        _run_optimization(config_dir, output_dir, args.models, args.n_trials, args.timeout, args.run_id)
     elif workflow_mode == "convergence":
         _run_convergence(project_root / args.config_path)
     else:
