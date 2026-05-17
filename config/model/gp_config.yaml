@@ -4,10 +4,10 @@
 # ScaleKernel (outputscale = tau^2).
 kernel:
   type: "exponential"
-  theta_init: 1.0e-1
-  power_exponent_init: 1.99
-  tau2_init: 1.0e-2
-  likelihood_noise_init: 1.0e-3
+  theta_init: 1.0e-2
+  power_exponent_init: 1.8
+  tau2_init: 1.0e-1
+  likelihood_noise_init: 1.0e-2
   matern_nu: 2.5
   likelihood_noise_floor: 1.0e-6
   likelihood_noise_ceiling: 1.0
@@ -19,4 +19,4 @@ kernel:
   tau2_ceiling: 1.0e3
 
 # Polynomial trend mean degree (0 = constant, 1 = linear, 2 = quadratic, ...)
-trend_degree: 0
+trend_degree: 1

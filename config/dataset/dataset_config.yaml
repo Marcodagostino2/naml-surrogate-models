@@ -140,6 +140,23 @@ datasets:
     batch_size: 64
     description: "Concrete compressive strength (1030 samples, 8 inputs, 1 output)"
 
+  HYDDB:
+    csv_path: data/HYDDB.csv
+    input_columns: [sim_machNumberValue, sim_aoaValue, sim_phiValue, sim_altitudeValue, geom_abk_openingPercentage]
+    target_columns: [cfd_cfx_mean]
+    input_display_names: [Mach, Angle of attack, Aerodynamic roll angle, Altitude, Airbrakes opening percentage]
+    input_units: ["-", deg, deg, m, "%"]
+    output_display_name: Axial coefficient
+    output_unit: "-"
+    dropna: true
+    normalize_inputs: true
+    normalize_targets: true
+    train_ratio: 0.7
+    val_ratio: 0.15
+    test_ratio: 0.15
+    batch_size: 32
+    description: "Hydrodynamics DB canonical (500 samples, 5 inputs, 1 output)"
+
   HYDDB_v2:
     csv_path: data/HYDDB_v2_output.csv
     input_columns: [sim_machNumberValue, sim_aoaValue, sim_phiValue, sim_altitudeValue, geom_abk_openingPercentage]

@@ -1,8 +1,8 @@
 # MLP training (mini-batch SGD).
 
 optimizer: "adamw"
-learning_rate: 1.0e-4
-weight_decay: 1.0e-4
+learning_rate: 1.0e-2
+weight_decay: 1.0e-2
 n_epochs: 2000
 
 # "mse" | "mae" | "huber"

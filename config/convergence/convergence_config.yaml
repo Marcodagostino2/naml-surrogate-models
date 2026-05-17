@@ -23,8 +23,8 @@ optimization_overrides:
     # n_trials accepts either an int (applied to every model) or a dict
     # per-model with optional 'default' fallback.
     n_trials:
-      mlp: 15
-      gp: 5
+      mlp: 30
+      gp: 10
       mlpgp_ns: 30
       mlpgp_dkl: 30
     # n_seeds: how many re-trainings per HP-set Optuna runs to estimate

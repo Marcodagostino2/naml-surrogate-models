@@ -22,10 +22,10 @@ search_space:
     n_layers:
       type: int
       low: 1
-      high: 6
+      high: 5
     layer_size:
       type: categorical
-      choices: [16, 32, 64, 128, 256, 512]
+      choices: [8, 16, 32, 64, 128, 256]
     activation:
       type: categorical
       choices: [relu, tanh, mish]
@@ -36,7 +36,7 @@ search_space:
   training:
     learning_rate:
       type: categorical
-      choices: [1.0e-3, 1.0e-2, 1.0e-1]
+      choices: [1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1]
     weight_decay:
       type: categorical
-      choices: [1.0e-3, 1.0e-2]
+      choices: [1.0e-4, 1.0e-3, 1.0e-2]
