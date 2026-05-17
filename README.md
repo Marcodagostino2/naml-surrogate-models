@@ -142,23 +142,11 @@ python main.py --mode convergence
 │   ├── airfoil_self_noise.csv
 │   └── ...
 │
-├── outputs/                         # Run outputs (timestamped)
-│   ├── <dataset>/
-│   │   ├── single_run/
-│   │   ├── testing/
-│   │   └── convergence_analysis/
-│
-├── report/
-│   └── codebase_map/               # Bootstrap docs for future sessions
-│       ├── README.md
-│       ├── overview.md
-│       ├── entrypoints_and_flow.md
-│       ├── modules_and_responsibilities.md
-│       ├── configs_outputs_and_conventions.md
-│       └── src/README.md
-│
-└── scripts/
-    └── import_smoke_test.py        # Verify modules load without optuna
+└── outputs/                         # Run outputs (timestamped, gitignored)
+    └── <dataset>/
+        ├── single_run/
+        ├── testing/
+        └── convergence_analysis/
 ```
 
 ## Configuration Guide
@@ -283,14 +271,6 @@ Wrapped in ScaleKernel with learnable outputscale (tau2).
 - Global seed controls NumPy, PyTorch, and Python random
 - Deterministic training via `torch.backends.cudnn.deterministic=True`
 - All configs saved to output directory for run reconstruction
-
-## Documentation
-
-For detailed architecture and workflow info, see:
-- [report/codebase_map/README.md](report/codebase_map/README.md) - Bootstrap guide for future sessions
-- [report/codebase_map/overview.md](report/codebase_map/overview.md) - High-level overview
-- [report/codebase_map/entrypoints_and_flow.md](report/codebase_map/entrypoints_and_flow.md) - Workflow dispatcher
-- [report/codebase_map/modules_and_responsibilities.md](report/codebase_map/modules_and_responsibilities.md) - Module purposes
 
 ## References
 
