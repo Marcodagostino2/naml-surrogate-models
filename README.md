@@ -1,22 +1,22 @@
 # NAML Aerodynamic Surrogate Models
 
-A unified, production-ready Python framework for training, optimizing, and evaluating surrogate models for aerodynamic coefficient prediction using:
+A unified Python framework for training, optimizing, and evaluating surrogate models for aerodynamic coefficient prediction. Four canonical models:
 
-1. **MLP** - Multi-Layer Perceptron (block-based, dynamic architecture)
-2. **GP** - Gaussian Process (Kriging) with learnable exponential kernel
-3. **MLPGP** - Hybrid architecture combining MLP feature extraction with non-stationary Gaussian Processes (two variants: DKL and Gibbs kernel)
+1. **mlp** — Multi-Layer Perceptron (single hidden block, activation-driven init)
+2. **gp** — Gaussian Process (Kriging) with learnable exponential kernel
+3. **mlpgp_ns** — MLP + non-stationary (Gibbs) GP kernel; MLP predicts local σ(x), ℓ(x)
+4. **mlpgp_dkl** — MLP + Deep Kernel Learning; MLP maps inputs to a small feature space, then a stationary kernel acts on the features
 
 ## Features
 
-- **Unified CLI**: Single entry point (`main.py`) supporting three workflow modes: `single_run`, `optimization`, `convergence`
-- **Modular Architecture**: Clean separation across data, models, training, inference, and visualization modules
-- **Dynamic YAML Configuration**: Hierarchical, composable config system for easy experimentation
-- **Learnable Kernels**: Exponential kernel with ARD-scaled theta and power exponent parameters (both constrained)
-- **Hyperparameter Optimization**: Optuna integration for automated tuning (optional dependency)
-- **Uncertainty Quantification**: GP/MLPGP provide predictive uncertainty via variance estimates
-- **Comprehensive Diagnostics**: Parity plots, residuals, training curves, uncertainty bands, convergence analysis
-- **Reproducibility**: Config snapshots, deterministic training, global seed management
-- **Output Management**: Timestamped runs with checkpoints, config copies, plots, and aggregated metrics
+- **Unified CLI**: Single entry point (`main.py`) with two workflow modes — `single_run` and `convergence` (HPO is hosted inside convergence via `convergence_config.yaml: mode: optimization`).
+- **Modular architecture**: Clean separation across data, models, training, inference, and visualization.
+- **YAML configuration**: Hierarchical composable configs; `training_common_config.yaml` holds defaults shared across trainers.
+- **Learnable kernels**: ARD exponential kernel with constrained power exponent.
+- **Hyperparameter optimization**: Optuna integration (optional dependency) invoked through convergence sub-mode.
+- **Uncertainty quantification**: GP / MLPGP variants emit posterior std at inference time.
+- **Two-level error boundary**: failures in a single model don't crash the batch.
+- **Reproducibility**: Config snapshots, deterministic training, global seed management.
 
 ## Installation
 
@@ -40,33 +40,39 @@ pip install optuna
 
 ## Quick Start
 
-### Single Training Run
+### Single training run
 
 ```bash
-# Configure model and dataset in config/main_config.yaml
+# Configure dataset and models in config/main_config.yaml (`models_to_train: [...]`).
 python main.py --mode single_run
+
+# Override the model list from the CLI (comma-separated, "all" allowed):
+python main.py --mode single_run --models mlp,gp,mlpgp_ns
 ```
 
-### Hyperparameter Optimization
+### Convergence analysis (repeated split/seed sweep)
 
 ```bash
-python main.py --mode optimization --model mlp --n-trials 50
-```
-
-### Convergence Analysis
-
-```bash
+# Set convergence_config.yaml: mode: analysis
 python main.py --mode convergence
 ```
 
-### Entry Point Help
+### Hyperparameter optimization (HPO is a convergence sub-mode)
 
 ```bash
-python main.py --help
-python main.py --mode single_run --help
-python main.py --mode optimization --help
-python main.py --mode convergence --help
+# Set convergence_config.yaml: mode: optimization, then run convergence.
+python main.py --mode convergence
 ```
+
+### Migration from the previous release
+
+- Top-level `--mode optimization` has been retired. Set
+  `convergence_config.yaml: mode: optimization` and run `--mode convergence` instead.
+- `model_to_train: "mlp"` → `models_to_train: ["mlp"]`. `"all"` still works as a one-element alias for
+  `["mlp", "gp", "mlpgp_ns", "mlpgp_dkl"]`.
+- The single `mlpgp` model name is gone — pick `mlpgp_ns` (Gibbs kernel) or `mlpgp_dkl` (DKL) explicitly.
+  Old checkpoints under `outputs/<dataset>/single_run/mlpgp/...` are not auto-migrated.
+- SVGP variants and the legacy Hyperband knobs in `optimize_*_config.yaml` have been removed.
 
 ## Project Structure
 
@@ -76,18 +82,17 @@ python main.py --mode convergence --help
 ├── main.py                          # Unified mode dispatcher
 │
 ├── src/
-│   ├── convergence_analysis.py      # Convergence analysis implementation
+│   ├── convergence_analysis.py      # Convergence analysis + HPO orchestration
 │   ├── entrypoints/
-│   │   ├── convergence.py           # Package-level convergence entrypoint
-│   │   └── optimize.py              # Package-level optimization entrypoint
+│   │   └── convergence.py           # Package-level convergence entrypoint
 │   ├── pipeline.py                  # Shared train_model() and model/trainer building
 │   ├── optimization_support.py      # Objective functions and HPO utilities
 │   ├── data/
 │   │   └── dataset.py              # Data loading, preprocessing, splitting
 │   ├── models/
-│   │   ├── mlp.py                  # Block-based MLP
+│   │   ├── mlp.py                  # Single-block MLP regressor
 │   │   ├── gp.py                   # Exact GP with exponential kernel
-│   │   ├── mlpgp.py                # Hybrid MLPGP (DKL and Gibbs variants)
+│   │   ├── mlpgp.py                # MLPGPModel + MLPGPNonStationaryModel + MLPGPDeepKernelModel
 │   │   └── gp_utils.py             # Kernel factories and shared helpers
 │   ├── training/
 │   │   ├── trainer.py              # MLPTrainer, GPTrainer, MLPGPTrainer
@@ -95,11 +100,11 @@ python main.py --mode convergence --help
 │   ├── inference/
 │   │   └── predictor.py            # Unified prediction interface
 │   ├── visualization/
-│   │   ├── runner.py               # Main visualization dispatcher
-│   │   ├── diagnostics.py          # Diagnostic plots
-│   │   ├── config.py               # Visualization config schema
-│   │   ├── utils.py                # Plotting utilities
-│   │   └── modules/                # Parity, surface, uncertainty, table plots
+│   │   ├── runner.py               # Per-mode dispatcher
+│   │   ├── plots/                  # Leaf plot functions (diagnostics, metrics, surface, …)
+│   │   ├── suites/                 # Per-mode orchestration (single_run, optimization, convergence)
+│   │   ├── datasets/               # Dataset-specific physics suites (HYDDB)
+│   │   ├── config.py / labels.py / utils.py
 │   └── utils/
 │       ├── config.py               # YAML I/O, device resolution
 │       ├── paths.py                # Path resolution and output structure
@@ -107,24 +112,27 @@ python main.py --mode convergence --help
 │       └── __init__.py             # setup_logger, set_global_seed, etc.
 │
 ├── config/                          # All configs are YAML-based
-│   ├── main_config.yaml            # Top-level: mode, model, seed, precision
+│   ├── main_config.yaml            # Top-level: mode, models_to_train (list), seed, precision
 │   ├── dataset/
 │   │   └── dataset_config.yaml     # All datasets with metadata
 │   ├── model/
 │   │   ├── mlp_config.yaml
 │   │   ├── gp_config.yaml
-│   │   └── mlpgp_config.yaml
+│   │   ├── mlpgp_ns_config.yaml
+│   │   └── mlpgp_dkl_config.yaml
 │   ├── training/
-│   │   ├── training_common_config.yaml
+│   │   ├── training_common_config.yaml   # Shared scheduler, early-stopping, log cadence
 │   │   ├── training_mlp_config.yaml
 │   │   ├── training_gp_config.yaml
-│   │   └── training_mlpgp_config.yaml
+│   │   ├── training_mlpgp_ns_config.yaml
+│   │   └── training_mlpgp_dkl_config.yaml
 │   ├── optimization/
 │   │   ├── optimize_mlp_config.yaml
 │   │   ├── optimize_gp_config.yaml
-│   │   └── optimize_mlpgp_config.yaml
+│   │   ├── optimize_mlpgp_ns_config.yaml
+│   │   └── optimize_mlpgp_dkl_config.yaml
 │   ├── convergence/
-│   │   └── convergence_config.yaml
+│   │   └── convergence_config.yaml       # `mode: analysis | optimization` selects sub-mode
 │   └── visualization/
 │       └── visualization_config.yaml
 │
@@ -137,7 +145,7 @@ python main.py --mode convergence --help
 ├── outputs/                         # Run outputs (timestamped)
 │   ├── <dataset>/
 │   │   ├── single_run/
-│   │   ├── optimization/
+│   │   ├── testing/
 │   │   └── convergence_analysis/
 │
 ├── report/
@@ -158,9 +166,9 @@ python main.py --mode convergence --help
 ### Main Orchestrator (`config/main_config.yaml`)
 
 ```yaml
-mode: "single_run"          # "single_run", "optimization", or "convergence"
+mode: "single_run"          # "single_run" or "convergence" (HPO lives inside convergence)
 dataset: "HYDDB_v2"         # Dataset key from dataset_config.yaml
-model_to_train: "mlp"       # "mlp", "gp", "mlpgp", or "all"
+models_to_train: ["mlp"]    # Any subset of [mlp, gp, mlpgp_ns, mlpgp_dkl]; ["all"] is an alias
 run_mode: "training"        # "training", "test", or "training+test"
 global_seed: 21
 precision: "float32"        # "float32" or "float64"
@@ -198,19 +206,28 @@ device: "auto"              # "cuda", "cpu", or "auto"
 
 ## Usage Examples
 
-### Train MLP with Custom Config
+### Train MLP with custom config
 
 ```bash
-python main.py --mode single_run --model mlp --output-dir outputs
+python main.py --mode single_run --models mlp --output-dir outputs
 ```
 
-### Optimize GP Hyperparameters
+### Train all canonical models in a single batch
 
 ```bash
-python main.py --mode optimization --model gp --n-trials 100 --timeout 3600
+python main.py --mode single_run --models all
 ```
 
-### Run Convergence Analysis
+### Optimize GP hyperparameters
+
+Set `convergence_config.yaml: mode: optimization` and adjust `optimization_overrides.study.n_trials[gp]`,
+then run:
+
+```bash
+python main.py --mode convergence
+```
+
+### Run convergence analysis
 
 ```bash
 python main.py --mode convergence --config-path config/convergence/convergence_config.yaml
