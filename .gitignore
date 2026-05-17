@@ -87,6 +87,8 @@ tests/
 report/
 uci_csv/
 config_smoke/
+config_smoke_quick/
+outputs_smoke_quick/
 outputs_smoke/
 data/*.csv
 *.mat

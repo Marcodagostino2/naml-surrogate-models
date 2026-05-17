@@ -1,5 +1,5 @@
 study:
-  n_trials: 2
+  n_trials: 100
   timeout: 3600
   direction: minimize
   metric: val_rmse        # val_rmse | val_mae | val_nll
@@ -15,7 +15,7 @@ study:
   reduction_factor: 3
 
 training_overrides:
-  n_epochs: 50
+  n_epochs: 2000
 
 # Single-block MLP: choose depth (n_layers), per-layer width (layer_size
 # template applied dynamically — at trial time exactly n_layers width
@@ -25,11 +25,11 @@ search_space:
   model:
     n_layers:
       type: int
-      low: 2
+      low: 1
       high: 6
     layer_size:
       type: categorical
-      choices: [32, 64, 128, 256, 512]
+      choices: [16, 32, 64, 128, 256, 512]
     activation:
       type: categorical
       choices: [relu, tanh, mish]

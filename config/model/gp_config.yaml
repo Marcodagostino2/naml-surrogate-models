@@ -16,7 +16,7 @@ kernel:
   theta_init: 1.0e-1
   power_exponent_init: 1.99
   tau2_init: 1.0e-2
-  likelihood_noise_init: 1.0e-2
+  likelihood_noise_init: 1.0e-3
   matern_nu: 2.5
   likelihood_noise_floor: 1.0e-6
   likelihood_noise_ceiling: 1.0

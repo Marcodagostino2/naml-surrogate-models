@@ -17,9 +17,15 @@ import pandas as pd
 import torch
 
 from src.data import DataBundle, load_and_preprocess_data
-from src.optimization_support import build_pruner, build_sampler, make_objective, save_optimization_results
+from src.optimization_support import (
+    _make_logging_callback,
+    build_pruner,
+    build_sampler,
+    make_objective,
+    save_optimization_results,
+)
 from src.pipeline import train_model
-from src.utils import OutputPathResolver, RunType, load_run_configs, load_yaml, set_global_seed, setup_logger, setup_torch_dtype
+from src.utils import OutputPathResolver, RunType, load_run_configs, load_yaml, make_run_id, set_global_seed, setup_logger, setup_torch_dtype
 from src.visualization import VisualizationConfig, run_visualization
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -175,6 +181,7 @@ def _set_kernel_seeded_values(
 def _analysis_output_resolver(
     dataset_name: str,
     model_name: str,
+    analysis_run_id: str,
     *,
     split_tag: Optional[str] = None,
     sub_tag: Optional[str] = None,
@@ -196,6 +203,7 @@ def _analysis_output_resolver(
         run_type=RunType.CONVERGENCE_ANALYSIS,
         model_name=model_name,
         output_base_dir=PROJECT_ROOT / "outputs",
+        run_id=analysis_run_id,
     )
 
 
@@ -217,19 +225,29 @@ def _train_best_model(
     dataset_cfg: Dict[str, Any],
     model_cfg: Dict[str, Any],
     training_cfg: Dict[str, Any],
+    analysis_run_id: str,
     split_tag: Optional[str] = None,
     sub_tag: Optional[str] = None,
 ) -> Dict[str, Any]:
     output_resolver = _analysis_output_resolver(
-        dataset_name, model_name, split_tag=split_tag, sub_tag=sub_tag,
+        dataset_name, model_name, analysis_run_id, split_tag=split_tag, sub_tag=sub_tag,
     )
     output_resolver.root.mkdir(parents=True, exist_ok=True)
+    contextual_training_cfg = deepcopy(training_cfg)
+    contextual_training_cfg["run_mode"] = "convergence"
+    contextual_training_cfg["run_phase"] = "analysis"
+    contextual_training_cfg["run_model"] = model_name
+    if split_tag is not None:
+        contextual_training_cfg["run_split_tag"] = split_tag
+    if sub_tag is not None:
+        contextual_training_cfg["run_index"] = sub_tag
+
     results = train_model(
         model_name=model_name,
         data_bundle=data_bundle,
         dataset_cfg=dataset_cfg,
         model_cfg=model_cfg,
-        training_cfg=training_cfg,
+        training_cfg=contextual_training_cfg,
         output_resolver=output_resolver,
     )
     history = results.get("history", {}) or {}
@@ -274,6 +292,7 @@ def _run_analysis_mode(
     dataset_name: str,
     model_cfg_map: Dict[str, Dict[str, Any]],
     training_cfg_map: Dict[str, Dict[str, Any]],
+    analysis_run_id: str,
 ) -> tuple[pd.DataFrame, List[Dict[str, Any]], Path]:
     split_grid = _build_split_grid(analysis_cfg.get("split_percentages", [0.7]))
     validation_train_ratio = float(analysis_cfg.get("validation_train_ratio", 0.21428571428571427))
@@ -281,7 +300,7 @@ def _run_analysis_mode(
 
     metrics_rows: List[Dict[str, Any]] = []
     histories: List[Dict[str, Any]] = []
-    analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME
+    analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME / "runs" / analysis_run_id
     analysis_root.mkdir(parents=True, exist_ok=True)
 
     for split_index, train_plus_val_ratio in enumerate(split_grid):
@@ -304,6 +323,7 @@ def _run_analysis_mode(
                     dataset_cfg=dataset_cfg,
                     model_cfg=model_cfg,
                     training_cfg=training_cfg,
+                    analysis_run_id=analysis_run_id,
                     split_tag=split_tag,
                     sub_tag=f"run_{run_index}",
                 )
@@ -362,6 +382,7 @@ def _run_optimization_mode(
     model_cfg_map: Dict[str, Dict[str, Any]],
     training_cfg_map: Dict[str, Dict[str, Any]],
     opt_cfg_map: Dict[str, Dict[str, Any]],
+    analysis_run_id: str,
 ) -> tuple[pd.DataFrame, List[Dict[str, Any]], Path]:
     try:
         import optuna
@@ -374,7 +395,7 @@ def _run_optimization_mode(
 
     metrics_rows: List[Dict[str, Any]] = []
     histories: List[Dict[str, Any]] = []
-    analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME
+    analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME / "runs" / analysis_run_id
     analysis_root.mkdir(parents=True, exist_ok=True)
 
     for split_index, train_ratio in enumerate(split_grid):
@@ -390,6 +411,7 @@ def _run_optimization_mode(
             output_resolver = _analysis_output_resolver(
                 dataset_name=dataset_name,
                 model_name=model_name,
+                analysis_run_id=analysis_run_id,
                 split_tag=split_tag,
                 sub_tag="hpo",
             )
@@ -415,11 +437,21 @@ def _run_optimization_mode(
                 opt_cfg=opt_cfg,
                 device=device,
                 seed=seed,
+                n_seeds=_run_count_for_model(opt_cfg["study"], "n_seeds", model_name, default=3),
             )
 
             n_trials = _run_count_for_model(opt_cfg["study"], "n_trials", model_name, default=1)
             timeout = opt_cfg["study"].get("timeout")
-            study.optimize(objective, n_trials=n_trials, timeout=timeout, show_progress_bar=False)
+            metric_name = str(opt_cfg.get("study", {}).get("metric", "objective"))
+            callback_model_name = f"{model_name}|{split_tag}"
+            log_every = int(opt_cfg.get("study", {}).get("log_every_n_trials", 5))
+            study.optimize(
+                objective,
+                n_trials=n_trials,
+                timeout=timeout,
+                show_progress_bar=False,
+                callbacks=[_make_logging_callback(callback_model_name, n_trials, metric_name, log_every)],
+            )
 
             save_optimization_results(
                 study=study,
@@ -466,6 +498,7 @@ def _run_optimization_mode(
                     dataset_cfg=dataset_cfg,
                     model_cfg=retrain_model_cfg,
                     training_cfg=retrain_training_cfg,
+                    analysis_run_id=analysis_run_id,
                     split_tag=split_tag,
                     sub_tag=f"run_{run_index}",
                 )
@@ -595,6 +628,8 @@ def run_analysis(config_path: Path) -> None:
     analysis_cfg = load_yaml(config_path)
     config_dir = PROJECT_ROOT / "config"
     mode = str(analysis_cfg.get("mode", "analysis")).lower()
+    analysis_run_id = str(analysis_cfg.get("run_id", "")).strip() or make_run_id("conv")
+    logger.info(f"Convergence run_id: {analysis_run_id}")
     if mode not in {"analysis", "optimization"}:
         raise ValueError("mode must be either 'analysis' or 'optimization'.")
 
@@ -621,6 +656,7 @@ def run_analysis(config_path: Path) -> None:
             dataset_name=dataset_name,
             model_cfg_map=model_cfg_map,
             training_cfg_map=training_cfg_map,
+            analysis_run_id=analysis_run_id,
         )
     else:
         metrics_df, histories, analysis_root = _run_optimization_mode(
@@ -631,6 +667,7 @@ def run_analysis(config_path: Path) -> None:
             model_cfg_map=model_cfg_map,
             training_cfg_map=training_cfg_map,
             opt_cfg_map=opt_cfg_map,
+            analysis_run_id=analysis_run_id,
         )
 
     _summarize_and_save_outputs(metrics_df, histories, analysis_root, models_to_train)

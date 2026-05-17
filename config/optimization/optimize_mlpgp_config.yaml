@@ -1,17 +1,17 @@
 study:
-  n_trials: 2
+  n_trials: 150
   timeout: 5400
   direction: minimize
   metric: val_rmse
   sampler: tpe
   pruner: median
   n_startup_trials: 25
-  n_warmup_steps: 15
+  n_warmup_steps: 200
   pruner_interval: 5
   log_every_n_trials: 5
 
 training_overrides:
-  n_training_steps: 50
+  n_training_steps: 2000
 
 architecture_name: "dkl"  # "non_stationary" | "dkl"
 
@@ -28,11 +28,11 @@ _shared:
   block: &block
     n_layers:
       type: int
-      low: 2
-      high: 6
+      low: 1
+      high: 4
     layer_size:
       type: categorical
-      choices: [16, 32, 64, 128, 256, 512]
+      choices: [8, 16, 32, 64]
     activation:
       type: categorical
       choices: [relu, tanh, mish]
@@ -47,17 +47,17 @@ search_spaces:
       <<: *block
       power_exponent_init:
         type: categorical
-        choices: [1.6, 1.8, 2.0]
+        choices: [1.8]
       theta_init:
         type: categorical
-        choices: [1.0e-3, 1.0e-2, 1.0e-1]
+        choices: [1.0e-3]
       likelihood_noise_init:
         type: categorical
-        choices: [1.0e-4, 1.0e-3, 1.0e-2]
+        choices: [5.0e-5, 1.0e-4, 5.0e-4, 1.0e-3]
       trend_degree:
         type: int
         low: 0
-        high: 1
+        high: 2
     training:
       mlp_learning_rate:
         type: categorical
@@ -77,23 +77,23 @@ search_spaces:
         choices: [false]
       output_width:
         type: int
-        low: 2
-        high: 5
+        low: 5
+        high: 10
       output_activation:
         type: categorical
         choices: [identity]
       theta_init:
         type: categorical
-        choices: [1.0e-3, 1.0e-2, 1.0e-1]
+        choices: [1.0e-3]
       power_exponent_init:
         type: categorical
-        choices: [1.6, 1.8, 2.0]
+        choices: [1.8]
       tau2_init:
         type: categorical
-        choices: [1.0e-3, 1.0e-2, 1.0e-1]
+        choices: [1.0e-2]
       likelihood_noise_init:
         type: categorical
-        choices: [1.0e-4, 1.0e-3, 1.0e-2]
+        choices: [5.0e-5, 1.0e-4, 5.0e-4, 1.0e-3, 5.0e-3]
       trend_degree:
         type: int
         low: 0

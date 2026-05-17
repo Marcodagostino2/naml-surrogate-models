@@ -20,8 +20,14 @@ from typing import TYPE_CHECKING, Any, Dict
 import torch
 
 from src.data import load_data_from_config
-from src.pipeline import create_run_directory, save_run_configs, save_summary_row, train_model
-from src.utils import OutputPathResolver, RunType, load_run_configs, setup_logger
+from src.pipeline import (
+    create_run_directory,
+    save_run_configs,
+    save_summary_row,
+    test_model_from_checkpoint,
+    train_model,
+)
+from src.utils import OutputPathResolver, RunType, load_run_configs, load_yaml, make_run_id, setup_logger
 from src.utils.entrypoints import load_and_initialize_run_configs
 
 logger = setup_logger(__name__)
@@ -52,7 +58,47 @@ def _build_viz_data(data_bundle) -> Dict[str, Any]:
     }
 
 
-def _run_single_run(config_dir: Path, output_dir: Path) -> None:
+def _resolve_checkpoint_source(
+    output_dir: Path,
+    dataset_name: str,
+    model_name: str,
+    run_id: str | None,
+) -> tuple[Path, str]:
+    resolver = OutputPathResolver(
+        dataset_name=dataset_name,
+        run_type=RunType.SINGLE_RUN,
+        model_name=model_name,
+        output_base_dir=output_dir,
+    )
+
+    if run_id is not None:
+        run_checkpoint = resolver.runs_root / run_id / "checkpoint.pt"
+        if not run_checkpoint.exists():
+            raise FileNotFoundError(f"Checkpoint not found for run_id='{run_id}' at {run_checkpoint}")
+        return run_checkpoint, run_id
+
+    if resolver.runs_root.exists():
+        run_dirs = sorted([path for path in resolver.runs_root.iterdir() if path.is_dir()])
+        for run_dir in reversed(run_dirs):
+            candidate = run_dir / "checkpoint.pt"
+            if candidate.exists():
+                return candidate, run_dir.name
+
+    legacy_checkpoint = resolver.model_root / "checkpoint.pt"
+    if legacy_checkpoint.exists():
+        return legacy_checkpoint, "legacy"
+
+    raise FileNotFoundError(
+        f"No checkpoint found for model='{model_name}' under {resolver.model_root}"
+    )
+
+
+def _run_single_run(
+    config_dir: Path,
+    output_dir: Path,
+    run_id_override: str | None = None,
+    resume_run_id_override: str | None = None,
+) -> None:
     logger.info("Loading configurations...")
     loaded_configs = load_and_initialize_run_configs(config_dir, "mlp", include_optimize=False)
 
@@ -63,6 +109,8 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
 
     model_to_train = str(main_cfg.get("model_to_train", "mlp")).lower()
     run_mode = str(main_cfg.get("run_mode", "training")).lower()
+    run_id_cfg = str(run_id_override or main_cfg.get("run_id", "")).strip() or None
+    resume_run_id = str(resume_run_id_override or main_cfg.get("resume_run_id", "")).strip() or None
     global_seed = int(main_cfg.get("global_seed", 42))
     precision = str(main_cfg.get("precision", "float32")).lower()
 
@@ -71,6 +119,12 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
     logger.info(f"Dataset: {dataset_name} - {dataset_cfg.get('description', '')}")
     logger.info(f"Model to train: {model_to_train.upper()}")
     logger.info(f"Run mode: {run_mode.upper()}")
+
+    normalized_mode = run_mode.replace("+", "_")
+    training_enabled = "training" in normalized_mode
+    testing_enabled = ("test" in normalized_mode) or ("testing" in normalized_mode)
+    if not training_enabled and not testing_enabled:
+        raise ValueError("run_mode must include 'training', 'test', or 'training+test'.")
 
     if model_to_train not in {"mlp", "gp", "mlpgp", "all"}:
         raise ValueError(f"Unknown model_to_train: {model_to_train}")
@@ -85,78 +139,165 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
     selected_models = ["mlp", "gp", "mlpgp"] if model_to_train == "all" else [model_to_train]
     trained_models: Dict[str, Any] = {}
 
-    if "training" not in run_mode:
-        logger.info("=" * 60)
-        logger.info("Pipeline Execution Completed Successfully!")
-        logger.info("=" * 60)
-        return
+    train_run_id = run_id_cfg or make_run_id("single")
+    test_run_id = make_run_id("test")
+    if training_enabled:
+        logger.info(f"Training run_id: {train_run_id}")
+    if testing_enabled and not training_enabled:
+        logger.info(f"Testing run_id: {test_run_id}")
 
     for selected_model in selected_models:
         model_configs = load_run_configs(config_dir, selected_model, include_optimize=False)
         model_cfg = model_configs["model_cfg"]
         training_cfg = model_configs["training_cfg"]
 
-        output_resolver = OutputPathResolver(
-            dataset_name=dataset_name,
-            run_type=RunType.SINGLE_RUN,
-            model_name=selected_model,
-            output_base_dir=output_dir,
-        )
+        if training_enabled:
+            output_resolver = OutputPathResolver(
+                dataset_name=dataset_name,
+                run_type=RunType.SINGLE_RUN,
+                model_name=selected_model,
+                output_base_dir=output_dir,
+                run_id=train_run_id,
+            )
 
-        run_dir = create_run_directory(output_resolver)
-        logger.debug(f"Run directory created: {run_dir}")
-        save_run_configs(
-            output_resolver=output_resolver,
-            selected_model=selected_model,
-            main_cfg=main_cfg,
-            dataset_cfg=dataset_cfg,
-            model_cfg=model_cfg,
-            training_cfg=training_cfg,
-            viz_cfg=viz_cfg,
-        )
+            run_dir = create_run_directory(output_resolver)
+            logger.debug(f"Run directory created: {run_dir}")
+            contextual_training_cfg = {
+                **training_cfg,
+                "run_mode": "single_run",
+                "run_phase": "training",
+                "run_model": selected_model,
+            }
+            save_run_configs(
+                output_resolver=output_resolver,
+                selected_model=selected_model,
+                main_cfg=main_cfg,
+                dataset_cfg=dataset_cfg,
+                model_cfg=model_cfg,
+                training_cfg=contextual_training_cfg,
+                viz_cfg=viz_cfg,
+            )
 
-        results = train_model(
-            model_name=selected_model,
-            data_bundle=data_bundle,
-            dataset_cfg=dataset_cfg,
-            model_cfg=model_cfg,
-            training_cfg=training_cfg,
-            output_resolver=output_resolver,
-        )
-        trained_models[selected_model] = results["model"]
+            results = train_model(
+                model_name=selected_model,
+                data_bundle=data_bundle,
+                dataset_cfg=dataset_cfg,
+                model_cfg=model_cfg,
+                training_cfg=contextual_training_cfg,
+                output_resolver=output_resolver,
+            )
+            trained_models[selected_model] = results["model"]
 
-        timings = results.get("timings", {}) or {}
-        save_summary_row(
-            output_resolver.summary_csv,
-            {
-                "timestamp": datetime.now().isoformat(),
-                "run_dir": str(run_dir),
-                "test_r2": results["test_metrics"]["r2"],
-                "test_rmse": results["test_metrics"]["rmse"],
-                "test_mae": results["test_metrics"]["mae"],
-                "test_mape": results["test_metrics"]["mape"],
-                "val_r2": results["val_metrics"]["r2"],
-                "val_rmse": results["val_metrics"]["rmse"],
-                "training_seconds": timings.get("training_seconds"),
-                "inference_total_seconds": timings.get("inference_total_seconds"),
-                "inference_per_sample_seconds": timings.get("inference_per_sample_seconds"),
-            },
-        )
+            timings = results.get("timings", {}) or {}
+            save_summary_row(
+                output_resolver.summary_csv,
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "run_id": train_run_id,
+                    "run_dir": str(run_dir),
+                    "test_r2": results["test_metrics"]["r2"],
+                    "test_rmse": results["test_metrics"]["rmse"],
+                    "test_mae": results["test_metrics"]["mae"],
+                    "test_mape": results["test_metrics"]["mape"],
+                    "val_r2": results["val_metrics"]["r2"],
+                    "val_rmse": results["val_metrics"]["rmse"],
+                    "training_seconds": timings.get("training_seconds"),
+                    "inference_total_seconds": timings.get("inference_total_seconds"),
+                    "inference_per_sample_seconds": timings.get("inference_per_sample_seconds"),
+                },
+            )
 
-        from src.visualization import run_visualization
-        from src.visualization.config import VisualizationConfig
+            from src.visualization import run_visualization
+            from src.visualization.config import VisualizationConfig
 
-        viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(output_resolver.plots_dir))
-        run_visualization(
-            "single_run",
-            models={selected_model: results["model"]},
-            data=_build_viz_data(data_bundle),
-            config=viz_config,
-            dataset_name=dataset_name,
-        )
-        logger.info(f"Training completed. Results saved to {run_dir}")
+            viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(output_resolver.plots_dir))
+            run_visualization(
+                "single_run",
+                models={selected_model: results["model"]},
+                data=_build_viz_data(data_bundle),
+                config=viz_config,
+                dataset_name=dataset_name,
+            )
+            logger.info(f"Training completed. Results saved to {run_dir}")
 
-    if len(trained_models) == len(selected_models):
+        if testing_enabled and not training_enabled:
+            checkpoint_path, source_run_id = _resolve_checkpoint_source(
+                output_dir=output_dir,
+                dataset_name=dataset_name,
+                model_name=selected_model,
+                run_id=resume_run_id,
+            )
+
+            source_model_cfg_path = checkpoint_path.parent / "config" / "model" / f"{selected_model}_config.yaml"
+            source_training_cfg_path = checkpoint_path.parent / "config" / "training" / f"training_{selected_model}_config.yaml"
+            source_model_cfg = load_yaml(source_model_cfg_path) if source_model_cfg_path.exists() else model_cfg
+            source_training_cfg = load_yaml(source_training_cfg_path) if source_training_cfg_path.exists() else training_cfg
+
+            test_resolver = OutputPathResolver(
+                dataset_name=dataset_name,
+                run_type=RunType.TESTING,
+                model_name=selected_model,
+                output_base_dir=output_dir,
+                run_id=test_run_id,
+            )
+            create_run_directory(test_resolver)
+            save_run_configs(
+                output_resolver=test_resolver,
+                selected_model=selected_model,
+                main_cfg=main_cfg,
+                dataset_cfg=dataset_cfg,
+                model_cfg=source_model_cfg,
+                training_cfg=source_training_cfg,
+                viz_cfg=viz_cfg,
+            )
+
+            test_results = test_model_from_checkpoint(
+                model_name=selected_model,
+                data_bundle=data_bundle,
+                dataset_cfg=dataset_cfg,
+                model_cfg=source_model_cfg,
+                checkpoint_path=checkpoint_path,
+                output_resolver=test_resolver,
+            )
+
+            from src.visualization import run_visualization
+            from src.visualization.config import VisualizationConfig
+
+            viz_config = VisualizationConfig.from_mapping(viz_cfg, output_dir=str(test_resolver.plots_dir))
+            run_visualization(
+                "single_run",
+                models={selected_model: test_results["model"]},
+                data=_build_viz_data(data_bundle),
+                config=viz_config,
+                dataset_name=dataset_name,
+            )
+
+            timings = test_results.get("timings", {}) or {}
+            save_summary_row(
+                test_resolver.summary_csv,
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "run_id": test_run_id,
+                    "source_run_id": source_run_id,
+                    "run_dir": str(test_resolver.root),
+                    "source_checkpoint": str(checkpoint_path),
+                    "test_r2": test_results["test_metrics"]["r2"],
+                    "test_rmse": test_results["test_metrics"]["rmse"],
+                    "test_mae": test_results["test_metrics"]["mae"],
+                    "test_mape": test_results["test_metrics"]["mape"],
+                    "val_r2": test_results["val_metrics"]["r2"],
+                    "val_rmse": test_results["val_metrics"]["rmse"],
+                    "training_seconds": timings.get("training_seconds"),
+                    "inference_total_seconds": timings.get("inference_total_seconds"),
+                    "inference_per_sample_seconds": timings.get("inference_per_sample_seconds"),
+                },
+            )
+            logger.info(
+                f"Testing completed for {selected_model.upper()} from run '{source_run_id}'. "
+                f"Results saved to {test_resolver.root}"
+            )
+
+    if training_enabled and len(trained_models) == len(selected_models):
         # When all models trained, render a comparison table per model output dir.
         from src.visualization import run_visualization
         from src.visualization.config import VisualizationConfig
@@ -167,6 +308,7 @@ def _run_single_run(config_dir: Path, output_dir: Path) -> None:
                 run_type=RunType.SINGLE_RUN,
                 model_name=selected_model,
                 output_base_dir=output_dir,
+                run_id=train_run_id,
             )
             table_viz_config = VisualizationConfig.from_mapping(
                 viz_cfg, output_dir=str(table_resolver.plots_dir),
@@ -195,18 +337,35 @@ def _run_optimization(
     model_override: str | None = None,
     n_trials_override: int | None = None,
     timeout_override: int | None = None,
+    run_id_override: str | None = None,
 ) -> None:
     from src.entrypoints.optimize import run_optimization as run_optimization_workflow
 
     loaded_configs = load_run_configs(config_dir, "mlp", include_optimize=False)
     main_cfg = loaded_configs["main_cfg"]
     model_to_train = str(model_override or main_cfg.get("model_to_train", "mlp")).lower()
+    run_id = str(run_id_override or main_cfg.get("run_id", "")).strip() or make_run_id("opt")
+    logger.info(f"Optimization run_id: {run_id}")
 
     if model_to_train == "all":
         for selected_model in ["mlp", "gp", "mlpgp"]:
-            run_optimization_workflow(config_dir, selected_model, output_dir, n_trials_override, timeout_override)
+            run_optimization_workflow(
+                config_dir,
+                selected_model,
+                output_dir,
+                n_trials_override,
+                timeout_override,
+                run_id,
+            )
     else:
-        run_optimization_workflow(config_dir, model_to_train, output_dir, n_trials_override, timeout_override)
+        run_optimization_workflow(
+            config_dir,
+            model_to_train,
+            output_dir,
+            n_trials_override,
+            timeout_override,
+            run_id,
+        )
 
 
 def _run_convergence(config_path: Path) -> None:
@@ -231,6 +390,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-trials", type=int, default=None, help="Override the number of optimization trials.")
     parser.add_argument("--timeout", type=int, default=None, help="Override the optimization timeout in seconds.")
     parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Optional run identifier for output folder naming (otherwise timestamp-generated).",
+    )
+    parser.add_argument(
+        "--resume-run-id",
+        type=str,
+        default=None,
+        help="For single_run test mode: explicit source run_id to load checkpoint from.",
+    )
+    parser.add_argument(
         "--config-path", type=str, default="config/convergence/convergence_config.yaml",
         help="Path to the convergence-analysis config file.",
     )
@@ -246,9 +417,9 @@ def main() -> None:
     workflow_mode = str(args.mode or workflow_cfg.get("mode", "single_run")).lower()
 
     if workflow_mode == "single_run":
-        _run_single_run(config_dir, output_dir)
+        _run_single_run(config_dir, output_dir, args.run_id, args.resume_run_id)
     elif workflow_mode == "optimization":
-        _run_optimization(config_dir, output_dir, args.model, args.n_trials, args.timeout)
+        _run_optimization(config_dir, output_dir, args.model, args.n_trials, args.timeout, args.run_id)
     elif workflow_mode == "convergence":
         _run_convergence(project_root / args.config_path)
     else:

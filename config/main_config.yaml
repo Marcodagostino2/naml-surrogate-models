@@ -1,12 +1,12 @@
 # Workflow mode: "single_run" | "optimization" | "convergence"
-mode: "convergence"
+mode: "single_run"
 global_seed: 21
 # "float32" or "float64"
-precision: "float64"
+precision: "float32"
 # Key in config/dataset/dataset_config.yaml
-dataset: "AEDB_v1"
+dataset: "HYDDB_v3"
 # "mlp" | "gp" | "mlpgp" | "all"
-model_to_train: "all"
+model_to_train: "gp"
 # single_run sub-mode: "training" | "test" | "training+test"
 run_mode: "training"
 verbose: true

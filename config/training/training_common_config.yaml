@@ -14,3 +14,6 @@ scheduler_gamma: 0.5
 scheduler_T_max: null
 scheduler_eta_min: 1.0e-6
 scheduler_warmup_steps: 200
+
+# Periodic trainer progress log cadence (epoch/step based, model-dependent).
+progress_log_interval: 30

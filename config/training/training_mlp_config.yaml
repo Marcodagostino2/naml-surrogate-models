@@ -3,7 +3,7 @@
 optimizer: "adamw"
 learning_rate: 1.0e-4
 weight_decay: 1.0e-4
-n_epochs: 3000
+n_epochs: 2000
 
 # Early-stopping tolerances (see ConvergenceMonitor).
 rel_tol: 1.0e-4

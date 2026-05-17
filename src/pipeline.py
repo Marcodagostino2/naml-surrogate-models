@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import json
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -89,6 +91,95 @@ def save_summary_row(summary_csv_path: Path, run_info: Dict[str, Any]) -> None:
             writer.writeheader()
         writer.writerow(run_info)
     logger.debug(f"Summary row appended to {summary_csv_path}")
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, (np.floating, float)):
+        numeric = float(value)
+        return numeric if np.isfinite(numeric) else None
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if isinstance(value, (np.bool_, bool)):
+        return bool(value)
+    return value
+
+
+def _history_summary(history: Dict[str, Any]) -> Dict[str, Any]:
+    train_losses = [float(x) for x in history.get("train_losses", []) if x is not None]
+    val_losses_raw = history.get("val_losses", [])
+    val_losses = [float(v) if v is not None else None for v in val_losses_raw]
+
+    best_val_loss = None
+    best_val_step = None
+    finite_pairs = [
+        (idx + 1, float(v)) for idx, v in enumerate(val_losses)
+        if v is not None and np.isfinite(float(v))
+    ]
+    if finite_pairs:
+        best_val_step, best_val_loss = min(finite_pairs, key=lambda item: item[1])
+
+    return {
+        "n_train_points": len(train_losses),
+        "n_val_points": len(val_losses),
+        "train_loss_final": train_losses[-1] if train_losses else None,
+        "val_loss_final": next((v for v in reversed(val_losses) if v is not None), None),
+        "best_val_loss": best_val_loss,
+        "best_val_step": best_val_step,
+    }
+
+
+def save_run_artifacts(
+    output_resolver: OutputPathResolver,
+    *,
+    mode: str,
+    model_name: str,
+    history: Optional[Dict[str, Any]] = None,
+    metrics: Optional[Dict[str, Any]] = None,
+    timings: Optional[Dict[str, Any]] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    run_root = output_resolver.root
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    history_payload = _json_safe(history or {})
+    history_path = run_root / "history.json"
+    with open(history_path, "w", encoding="utf-8") as f_history:
+        json.dump(history_payload, f_history, indent=2)
+
+    artifacts = {
+        "config_dir": str(output_resolver.config_dir),
+        "plots_dir": str(output_resolver.plots_dir),
+        "checkpoint": str(output_resolver.checkpoint),
+        "summary_csv": str(output_resolver.summary_csv),
+        "history_json": str(history_path),
+    }
+    if output_resolver._run_type_value == "optimization":
+        artifacts["best_params"] = str(output_resolver.best_params)
+        artifacts["all_trials_csv"] = str(output_resolver.all_trials_csv)
+
+    manifest = {
+        "timestamp": datetime.now().isoformat(),
+        "dataset": output_resolver.dataset_name,
+        "mode": str(mode),
+        "model": str(model_name),
+        "metrics": _json_safe(metrics or {}),
+        "timings": _json_safe(timings or {}),
+        "history_summary": _history_summary(history or {}),
+        "artifacts": artifacts,
+        "extra": _json_safe(extra or {}),
+    }
+    manifest_path = run_root / "results_manifest.json"
+    with open(manifest_path, "w", encoding="utf-8") as f_manifest:
+        json.dump(manifest, f_manifest, indent=2)
+    logger.debug(f"Run artifacts saved: {manifest_path}, {history_path}")
 
 
 def _resolve_gp_inference(model_name: str, model_cfg: Dict[str, Any]) -> str:
@@ -207,30 +298,16 @@ def _predict_split(predictor: Predictor, X: Any, supports_uncertainty: bool) -> 
     return predictor.predict(X), None
 
 
-def train_model(
+def _evaluate_model(
+    *,
+    model: Any,
     model_name: str,
     data_bundle: DataBundle,
-    dataset_cfg: Dict[str, Any],
-    model_cfg: Dict[str, Any],
-    training_cfg: Dict[str, Any],
     output_resolver: OutputPathResolver,
-    device: Optional[torch.device] = None,
-    trial: Optional["optuna.Trial"] = None,
+    device: torch.device,
+    supports_uncertainty: bool,
+    history: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Train one model end-to-end: build, fit, evaluate, save diagnostics + checkpoint."""
-    if model_name not in _MODEL_REGISTRY:
-        raise ValueError(f"Unknown model: {model_name}")
-
-    _, _, supports_uncertainty = _MODEL_REGISTRY[model_name]
-    logger.info("=" * 60)
-    logger.info(f"Training {model_name.upper()} Model")
-    logger.info("=" * 60)
-
-    device = device or resolve_device(training_cfg.get("device", "auto"))
-    model = _build_model(model_name, data_bundle, model_cfg)
-    trainer = _build_trainer(model_name, model, data_bundle, dataset_cfg, training_cfg, device, trial)
-    history = trainer.train()
-
     logger.info(f"Evaluating {model_name.upper()} on test set...")
     predictor = Predictor(
         model=model,
@@ -258,8 +335,9 @@ def train_model(
         uncertainties[split_name] = y_std
         metrics[split_name] = compute_all_metrics(y_true, y_pred)
 
+    train_elapsed = float((history or {}).get("elapsed_time", float("nan")))
     timings = {
-        "training_seconds": float(history.get("elapsed_time", float("nan"))),
+        "training_seconds": train_elapsed,
         **_benchmark_inference(predictor, data_bundle.X_test, supports_uncertainty),
     }
 
@@ -286,21 +364,17 @@ def train_model(
         y_val_pred=predictions["val"],
         y_test_true=splits["test"][1] * y_scale_std + y_scale_mean,
         y_test_pred=predictions["test"],
-        train_losses=history.get("train_losses"),
-        val_losses=history.get("val_losses"),
+        train_losses=(history or {}).get("train_losses"),
+        val_losses=(history or {}).get("val_losses"),
         y_val_std=uncertainties["val"],
         y_test_std=uncertainties["test"],
         output_dir=output_resolver.plots_dir / "diagnostics",
     )
 
-    checkpoint_path = output_resolver.checkpoint
-    torch.save(model.state_dict(), checkpoint_path)
-    logger.debug(f"Model checkpoint saved to {checkpoint_path}")
-
     return {
         "model": model,
         "predictor": predictor,
-        "history": history,
+        "history": history or {},
         "train_metrics": metrics["train"],
         "val_metrics": metrics["val"],
         "test_metrics": metrics["test"],
@@ -308,9 +382,131 @@ def train_model(
     }
 
 
+def train_model(
+    model_name: str,
+    data_bundle: DataBundle,
+    dataset_cfg: Dict[str, Any],
+    model_cfg: Dict[str, Any],
+    training_cfg: Dict[str, Any],
+    output_resolver: OutputPathResolver,
+    device: Optional[torch.device] = None,
+    trial: Optional["optuna.Trial"] = None,
+) -> Dict[str, Any]:
+    """Train one model end-to-end: build, fit, evaluate, save diagnostics + checkpoint."""
+    if model_name not in _MODEL_REGISTRY:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    _, _, supports_uncertainty = _MODEL_REGISTRY[model_name]
+    logger.info("=" * 60)
+    logger.info(f"Training {model_name.upper()} Model")
+    logger.info("=" * 60)
+
+    run_mode = output_resolver._run_type_value
+    training_cfg_effective = dict(training_cfg)
+    training_cfg_effective.setdefault("run_mode", run_mode)
+    training_cfg_effective.setdefault("run_model", model_name)
+    if trial is not None and hasattr(trial, "number"):
+        training_cfg_effective["run_trial_number"] = int(trial.number) + 1
+
+    device = device or resolve_device(training_cfg_effective.get("device", "auto"))
+    model = _build_model(model_name, data_bundle, model_cfg)
+    trainer = _build_trainer(
+        model_name, model, data_bundle, dataset_cfg, training_cfg_effective, device, trial,
+    )
+    history = trainer.train()
+
+    eval_results = _evaluate_model(
+        model=model,
+        model_name=model_name,
+        data_bundle=data_bundle,
+        output_resolver=output_resolver,
+        device=device,
+        supports_uncertainty=supports_uncertainty,
+        history=history,
+    )
+
+    checkpoint_path = output_resolver.checkpoint
+    torch.save(model.state_dict(), checkpoint_path)
+    logger.debug(f"Model checkpoint saved to {checkpoint_path}")
+
+    save_run_artifacts(
+        output_resolver,
+        mode=run_mode,
+        model_name=model_name,
+        history=history,
+        metrics={
+            "train": eval_results["train_metrics"],
+            "val": eval_results["val_metrics"],
+            "test": eval_results["test_metrics"],
+        },
+        timings=eval_results["timings"],
+        extra={"supports_uncertainty": supports_uncertainty},
+    )
+    eval_results["history"] = history
+    return eval_results
+
+
+def test_model_from_checkpoint(
+    model_name: str,
+    data_bundle: DataBundle,
+    dataset_cfg: Dict[str, Any],
+    model_cfg: Dict[str, Any],
+    checkpoint_path: Path,
+    output_resolver: OutputPathResolver,
+    device: Optional[torch.device] = None,
+) -> Dict[str, Any]:
+    """Load a checkpoint and run test/evaluation without re-training."""
+    del dataset_cfg
+    if model_name not in _MODEL_REGISTRY:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    _, _, supports_uncertainty = _MODEL_REGISTRY[model_name]
+    logger.info("=" * 60)
+    logger.info(f"Testing {model_name.upper()} Model from checkpoint")
+    logger.info(f"Checkpoint: {checkpoint_path}")
+    logger.info("=" * 60)
+
+    device = device or resolve_device("auto")
+    model = _build_model(model_name, data_bundle, model_cfg)
+    state_dict = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model.to(device)
+
+    eval_results = _evaluate_model(
+        model=model,
+        model_name=model_name,
+        data_bundle=data_bundle,
+        output_resolver=output_resolver,
+        device=device,
+        supports_uncertainty=supports_uncertainty,
+        history={},
+    )
+
+    save_run_artifacts(
+        output_resolver,
+        mode=output_resolver._run_type_value,
+        model_name=model_name,
+        history={},
+        metrics={
+            "train": eval_results["train_metrics"],
+            "val": eval_results["val_metrics"],
+            "test": eval_results["test_metrics"],
+        },
+        timings=eval_results["timings"],
+        extra={
+            "supports_uncertainty": supports_uncertainty,
+            "source_checkpoint": str(checkpoint_path),
+            "tested_without_training": True,
+        },
+    )
+    return eval_results
+
+
 __all__ = [
     "create_run_directory",
     "save_run_configs",
+    "save_run_artifacts",
     "save_summary_row",
+    "test_model_from_checkpoint",
     "train_model",
 ]

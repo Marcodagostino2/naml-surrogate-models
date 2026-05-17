@@ -22,18 +22,18 @@ svgp:
 dkl_feature_extractor:
   name: "dkl"
   architecture:
-    layers: [1024, 512, 128, 64, 32]
-    activation: "relu"
+    layers: [128, 128, 32, 32]
+    activation: "mish"
   dropout: 0.0
   batch_norm: false
-  output_width: 4
+  output_width: 2
   output_activation: "identity"
 
 non_stationary_feature_extractor:
   name: "non_stationary"
   architecture:
-    layers: [32, 128, 128, 32]
-    activation: "relu"
+    layers: [32, 64, 32]
+    activation: "tanh"
   dropout: 0.0
   batch_norm: false
   output_activation: "identity"
@@ -53,7 +53,7 @@ kernel:
   type: "exponential"
   theta_init: 1.0e-3
   power_exponent_init: 1.8
-  likelihood_noise_init: 1.0e-2
+  likelihood_noise_init: 5.0e-4
   tau2_init: 1.0e-1
   matern_nu: 2.5
   likelihood_noise_floor: 1.0e-6
@@ -65,4 +65,4 @@ kernel:
   tau2_floor: 1.0e-5
   tau2_ceiling: 1.0e3
 
-trend_degree: 0
+trend_degree: 1

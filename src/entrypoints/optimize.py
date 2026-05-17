@@ -37,6 +37,7 @@ def run_optimization(
     output_dir: Path,
     n_trials_override: Optional[int] = None,
     timeout_override: Optional[int] = None,
+    run_id: Optional[str] = None,
 ) -> None:
     try:
         import optuna
@@ -46,6 +47,8 @@ def run_optimization(
     logger.info("=" * 70)
     logger.info(f"Hyperparameter Optimization for {model_name.upper()}")
     logger.info("=" * 70)
+    if run_id:
+        logger.info(f"Optimization run_id: {run_id}")
 
     loaded = load_run_configs(config_dir, model_name, include_optimize=True)
     main_cfg = loaded["main_cfg"]
@@ -94,6 +97,7 @@ def run_optimization(
         opt_cfg=opt_cfg,
         device=device,
         seed=global_seed,
+        n_seeds=int(opt_cfg.get("study", {}).get("n_seeds", 3)),
     )
 
     n_trials = int(study_cfg.get("n_trials", 1))
@@ -125,6 +129,7 @@ def run_optimization(
         run_type=RunType.OPTIMIZATION,
         model_name=model_name,
         output_base_dir=output_dir,
+        run_id=run_id,
     )
     run_dir = output_resolver.root
     run_dir.mkdir(parents=True, exist_ok=True)

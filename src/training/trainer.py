@@ -76,6 +76,44 @@ def _current_likelihood_noise(model: Any) -> float:
         return float("nan")
     return float(likelihood.noise.detach().cpu().item())
 
+
+def _build_run_log_prefix(training_cfg: Dict[str, Any], trial: Optional["optuna.Trial"] = None) -> str:
+    pieces: List[str] = []
+
+    run_mode = training_cfg.get("run_mode")
+    if run_mode is not None:
+        pieces.append(f"mode={run_mode}")
+
+    run_phase = training_cfg.get("run_phase")
+    if run_phase is not None:
+        pieces.append(f"phase={run_phase}")
+
+    run_model = training_cfg.get("run_model")
+    if run_model is not None:
+        pieces.append(f"model={run_model}")
+
+    split_tag = training_cfg.get("run_split_tag")
+    if split_tag is not None:
+        pieces.append(f"split={split_tag}")
+
+    run_index = training_cfg.get("run_index")
+    if run_index is not None:
+        pieces.append(f"run={run_index}")
+
+    trial_number = training_cfg.get("run_trial_number")
+    if trial is not None and hasattr(trial, "number"):
+        trial_number = int(trial.number) + 1
+    trial_total = training_cfg.get("run_trial_total")
+    if trial_number is not None:
+        if trial_total is not None:
+            pieces.append(f"trial={trial_number}/{trial_total}")
+        else:
+            pieces.append(f"trial={trial_number}")
+
+    if not pieces:
+        return ""
+    return "[" + " | ".join(str(piece) for piece in pieces) + "] "
+
 def _build_scheduler(
     optimizer: torch.optim.Optimizer, training_cfg: Dict[str, Any]
 ) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
@@ -281,10 +319,13 @@ class MLPTrainer:
         # Per-epoch losses are always computed; full metric dicts only at these intervals.
         self.validation_check_interval = int(training_cfg.get("validation_check_interval", 10))
         self.train_metrics_log_interval = int(training_cfg.get("train_metrics_log_interval", 10))
+        self.progress_log_interval = int(training_cfg.get("progress_log_interval", 10))
         if self.validation_check_interval <= 0:
             raise ValueError("validation_check_interval must be a positive integer")
         if self.train_metrics_log_interval <= 0:
             raise ValueError("train_metrics_log_interval must be a positive integer")
+        if self.progress_log_interval <= 0:
+            raise ValueError("progress_log_interval must be a positive integer")
 
         _warn_deprecated_keys(training_cfg)
         self.convergence_monitor = ConvergenceMonitor(training_cfg)
@@ -304,7 +345,7 @@ class MLPTrainer:
         self.best_val_loss = float("inf")
         self._best_model_state: Optional[Dict[str, Any]] = None
         self._last_reported_step: Optional[int] = None
-        self._last_reported_step: Optional[int] = None
+        self.log_prefix = _build_run_log_prefix(training_cfg, trial)
 
         logger.info(f"MLPTrainer initialized on device: {self.device}")
 
@@ -395,21 +436,24 @@ class MLPTrainer:
 
             should_stop = self.convergence_monitor.step(epoch, train_loss, val_loss)
 
-            if epoch % 10 == 0:
+            if _check_interval(epoch, self.progress_log_interval):
                 state = self.convergence_monitor.state
+                best_val_display = self.best_val_loss if torch.isfinite(torch.tensor(self.best_val_loss)) else float("nan")
                 if val_metrics is not None:
                     logger.info(
-                        f"Epoch {epoch}/{self.n_epochs} - "
+                        f"{self.log_prefix}Epoch {epoch}/{self.n_epochs} - "
                         f"Train Loss: {train_loss:.6f}, "
                         f"Val Loss: {val_loss if val_loss is not None else float('nan'):.6f}, "
-                        f"Val R²: {val_metrics.get('r2', float('nan')):.4f} | "
+                        f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
+                        f"Best Val: {best_val_display:.6f} | "
                         f"train_streak={state['train_converged_streak']}, "
                         f"val_no_improve={state['val_no_improve_streak']}"
                     )
                 else:
                     logger.info(
-                        f"Epoch {epoch}/{self.n_epochs} - Train Loss: {train_loss:.6f}, "
+                        f"{self.log_prefix}Epoch {epoch}/{self.n_epochs} - Train Loss: {train_loss:.6f}, "
                         f"Val Loss: {val_loss} | "
+                        f"Best Val: {best_val_display:.6f} | "
                         f"train_streak={state['train_converged_streak']}, "
                         f"val_no_improve={state['val_no_improve_streak']}"
                     )
@@ -523,11 +567,14 @@ class GPTrainer(_BaseGPTrainer):
 
         self.validation_check_interval = int(training_cfg.get("validation_check_interval", 10))
         self.train_metrics_log_interval = int(training_cfg.get("train_metrics_log_interval", 10))
+        self.progress_log_interval = int(training_cfg.get("progress_log_interval", 10))
 
         if self.validation_check_interval <= 0:
             raise ValueError("validation_check_interval must be a positive integer")
         if self.train_metrics_log_interval <= 0:
             raise ValueError("train_metrics_log_interval must be a positive integer")
+        if self.progress_log_interval <= 0:
+            raise ValueError("progress_log_interval must be a positive integer")
 
         _warn_deprecated_keys(training_cfg)
         self.convergence_monitor = ConvergenceMonitor(training_cfg)
@@ -558,7 +605,7 @@ class GPTrainer(_BaseGPTrainer):
         self.best_val_loss = float("inf")
         self._best_model_state: Optional[Dict[str, Any]] = None
         self._last_reported_step: Optional[int] = None
-        self._last_reported_step: Optional[int] = None
+        self.log_prefix = _build_run_log_prefix(training_cfg, trial)
 
         logger.info(f"GPTrainer initialized on device: {self.device}")
         logger.info(f"Initial GP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
@@ -652,25 +699,28 @@ class GPTrainer(_BaseGPTrainer):
 
                 should_stop = self.convergence_monitor.step(step, loss_value, val_loss)
 
-                if step % 10 == 0:
+                if _check_interval(step, self.progress_log_interval):
                     val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
                     state = self.convergence_monitor.state
+                    best_val_display = self.best_val_loss if torch.isfinite(torch.tensor(self.best_val_loss)) else float("nan")
                     if val_metrics is not None:
                         logger.info(
-                            f"Step {step}/{self.n_training_steps} - "
+                            f"{self.log_prefix}Step {step}/{self.n_training_steps} - "
                             f"Train Loss (MLL): {mll_value:.6f}, "
                             f"Val MSE: {val_loss_display}, "
                             f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
                             f"Val MAE: {val_metrics.get('mae', float('nan')):.4f}, "
+                            f"Best Val: {best_val_display:.6f}, "
                             f"Noise: {current_noise:.6e} | "
                             f"train_streak={state['train_converged_streak']}, "
                             f"val_no_improve={state['val_no_improve_streak']}"
                         )
                     else:
                         logger.info(
-                            f"Step {step}/{self.n_training_steps} - "
+                            f"{self.log_prefix}Step {step}/{self.n_training_steps} - "
                             f"Train Loss (MLL): {mll_value:.6f}, "
                             f"Val MSE: {val_loss_display}, "
+                            f"Best Val: {best_val_display:.6f}, "
                             f"Noise: {current_noise:.6e} | "
                             f"train_streak={state['train_converged_streak']}, "
                             f"val_no_improve={state['val_no_improve_streak']}"
@@ -754,11 +804,14 @@ class MLPGPTrainer(_BaseGPTrainer):
 
         self.validation_check_interval = int(training_cfg.get("validation_check_interval", 10))
         self.train_metrics_log_interval = int(training_cfg.get("train_metrics_log_interval", 10))
+        self.progress_log_interval = int(training_cfg.get("progress_log_interval", 10))
 
         if self.validation_check_interval <= 0:
             raise ValueError("validation_check_interval must be a positive integer")
         if self.train_metrics_log_interval <= 0:
             raise ValueError("train_metrics_log_interval must be a positive integer")
+        if self.progress_log_interval <= 0:
+            raise ValueError("progress_log_interval must be a positive integer")
 
         _warn_deprecated_keys(training_cfg)
         self.convergence_monitor = ConvergenceMonitor(training_cfg)
@@ -772,6 +825,8 @@ class MLPGPTrainer(_BaseGPTrainer):
         self.val_metrics_history: List[Optional[Dict[str, float]]] = []
         self.best_val_loss = float("inf")
         self._best_model_state: Optional[Dict[str, Any]] = None
+        self._last_reported_step: Optional[int] = None
+        self.log_prefix = _build_run_log_prefix(training_cfg, trial)
 
         logger.info(f"MLPGPTrainer initialized on device: {self.device}")
         logger.info(f"Initial MLPGP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
@@ -880,25 +935,28 @@ class MLPGPTrainer(_BaseGPTrainer):
 
                 should_stop = self.convergence_monitor.step(step, loss_value, val_loss)
 
-                if step % 10 == 0:
+                if _check_interval(step, self.progress_log_interval):
                     val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
                     state = self.convergence_monitor.state
+                    best_val_display = self.best_val_loss if torch.isfinite(torch.tensor(self.best_val_loss)) else float("nan")
                     if val_metrics is not None:
                         logger.info(
-                            f"Step {step}/{self.n_training_steps} - "
+                            f"{self.log_prefix}Step {step}/{self.n_training_steps} - "
                             f"MLL: {mll_value:.6f}, "
                             f"Val MSE: {val_loss_display}, "
                             f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
                             f"Val MAE: {val_metrics.get('mae', float('nan')):.4f}, "
+                            f"Best Val: {best_val_display:.6f}, "
                             f"Noise: {current_noise:.6e} | "
                             f"train_streak={state['train_converged_streak']}, "
                             f"val_no_improve={state['val_no_improve_streak']}"
                         )
                     else:
                         logger.info(
-                            f"Step {step}/{self.n_training_steps} - "
+                            f"{self.log_prefix}Step {step}/{self.n_training_steps} - "
                             f"MLL: {mll_value:.6f}, "
                             f"Val MSE: {val_loss_display}, "
+                            f"Best Val: {best_val_display:.6f}, "
                             f"Noise: {current_noise:.6e} | "
                             f"train_streak={state['train_converged_streak']}, "
                             f"val_no_improve={state['val_no_improve_streak']}"
@@ -981,10 +1039,13 @@ class SVGPTrainer:
 
         self.validation_check_interval = int(training_cfg.get("validation_check_interval", 10))
         self.train_metrics_log_interval = int(training_cfg.get("train_metrics_log_interval", 10))
+        self.progress_log_interval = int(training_cfg.get("progress_log_interval", 10))
         if self.validation_check_interval <= 0:
             raise ValueError("validation_check_interval must be a positive integer")
         if self.train_metrics_log_interval <= 0:
             raise ValueError("train_metrics_log_interval must be a positive integer")
+        if self.progress_log_interval <= 0:
+            raise ValueError("progress_log_interval must be a positive integer")
 
         _warn_deprecated_keys(training_cfg)
         self.convergence_monitor = ConvergenceMonitor(training_cfg)
@@ -1000,6 +1061,8 @@ class SVGPTrainer:
 
         self.best_val_loss = float("inf")
         self._best_model_state: Optional[Dict[str, Any]] = None
+        self._last_reported_step: Optional[int] = None
+        self.log_prefix = _build_run_log_prefix(training_cfg, trial)
 
         logger.info(
             f"SVGPTrainer initialized on device: {self.device} | "
@@ -1120,23 +1183,26 @@ class SVGPTrainer:
 
             should_stop = self.convergence_monitor.step(epoch, train_loss, val_loss)
 
-            if epoch % 10 == 0:
+            if _check_interval(epoch, self.progress_log_interval):
                 state = self.convergence_monitor.state
                 val_loss_display = f"{val_loss:.6f}" if val_loss is not None else "None"
+                best_val_display = self.best_val_loss if torch.isfinite(torch.tensor(self.best_val_loss)) else float("nan")
                 if val_metrics is not None:
                     logger.info(
-                        f"Epoch {epoch}/{self.n_epochs} - "
+                        f"{self.log_prefix}Epoch {epoch}/{self.n_epochs} - "
                         f"Train ELBO Loss: {train_loss:.6f}, "
                         f"Val MSE: {val_loss_display}, "
-                        f"Val R²: {val_metrics.get('r2', float('nan')):.4f} | "
+                        f"Val R²: {val_metrics.get('r2', float('nan')):.4f}, "
+                        f"Best Val: {best_val_display:.6f} | "
                         f"train_streak={state['train_converged_streak']}, "
                         f"val_no_improve={state['val_no_improve_streak']}"
                     )
                 else:
                     logger.info(
-                        f"Epoch {epoch}/{self.n_epochs} - "
+                        f"{self.log_prefix}Epoch {epoch}/{self.n_epochs} - "
                         f"Train ELBO Loss: {train_loss:.6f}, "
-                        f"Val MSE: {val_loss_display} | "
+                        f"Val MSE: {val_loss_display}, "
+                        f"Best Val: {best_val_display:.6f} | "
                         f"train_streak={state['train_converged_streak']}, "
                         f"val_no_improve={state['val_no_improve_streak']}"
                     )

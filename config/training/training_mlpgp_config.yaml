@@ -9,7 +9,7 @@ optimizer: "adamw"
 # kernel hyperparameters; weight decay only applied to the MLP side.
 mlp_learning_rate: 1.0e-1
 gp_learning_rate: 1.0e-2
-mlp_weight_decay: 1.0e-3
+mlp_weight_decay: 1.0e-1
 
 n_training_steps: 3000
 

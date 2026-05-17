@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from optuna.samplers import BaseSampler
     from optuna.trial import FrozenTrial
 
-from src.pipeline import train_model
+from src.pipeline import save_run_artifacts, train_model
 from src.utils import OutputPathResolver, RunType, set_global_seed, setup_logger
 
 logger = setup_logger(__name__)
@@ -207,24 +207,63 @@ def _make_logging_callback(
     """
     start_time: Dict[str, float] = {}
 
+    def _compact_param_summary(params: Dict[str, Any]) -> str:
+        if not params:
+            return "{}"
+
+        if model_name in {"mlp", "mlpgp"}:
+            activation = params.get("activation")
+            layer_keys = sorted([key for key in params if _is_dynamic_layer_size(key)])
+            layers = [str(int(params[key])) for key in layer_keys]
+            lr = params.get("learning_rate")
+            wd = params.get("weight_decay")
+            parts: List[str] = []
+            if layers:
+                parts.append(f"layers=[{','.join(layers)}]")
+            if activation is not None:
+                parts.append(f"act={activation}")
+            if lr is not None:
+                parts.append(f"lr={float(lr):.2e}")
+            if wd is not None:
+                parts.append(f"wd={float(wd):.2e}")
+            return "{" + ", ".join(parts) + "}" if parts else str(params)
+
+        if model_name == "gp":
+            kernel_keys = ["tau2_init", "theta_init", "power_exponent_init", "likelihood_noise_init"]
+            parts = [
+                f"{key}={float(params[key]):.2e}" for key in kernel_keys if key in params
+            ]
+            return "{" + ", ".join(parts) + "}" if parts else str(params)
+
+        return str(params)
+
     def callback(study: Study, trial: FrozenTrial) -> None:
         start_time.setdefault("t0", time.perf_counter())
-        if log_every <= 0 or trial.number % log_every != 0:
-            return
         try:
             best = study.best_value
+            best_trial = study.best_trial
         except ValueError:
             best = float("nan")
+            best_trial = None
         current = trial.value if trial.value is not None else float("nan")
         completed = trial.number + 1
         elapsed = time.perf_counter() - start_time["t0"]
         eta = (n_trials - completed) * (elapsed / completed) if completed > 0 else float("nan")
         pct = completed / max(n_trials, 1) * 100
+
         logger.info(
-            f"[{model_name.upper()}] {completed:>3}/{n_trials} ({pct:4.0f}%) | "
-            f"current={current:.5f}  best={best:.5f} | "
-            f"elapsed {_format_duration(elapsed)} | ETA {_format_duration(eta)}"
+            f"[{model_name.upper()}] trial {completed:>3}/{n_trials} ({pct:4.0f}%) | "
+            f"current={current:.5f} | best={best:.5f} | params={_compact_param_summary(trial.params)}"
         )
+
+        if log_every <= 0 or trial.number % log_every == 0:
+            best_params_summary = _compact_param_summary(best_trial.params) if best_trial is not None else "{}"
+            best_trial_number = (best_trial.number + 1) if best_trial is not None else "?"
+            logger.info(
+                f"[{model_name.upper()}] best@trial={best_trial_number} | "
+                f"metric={metric_name} | params={best_params_summary} | "
+                f"elapsed {_format_duration(elapsed)} | ETA {_format_duration(eta)}"
+            )
 
     return callback
 
@@ -424,19 +463,22 @@ def make_objective(
     opt_cfg: Dict[str, Any],
     device: torch.device,
     seed: Optional[int] = None,
+    n_seeds: int = 3,
 ) -> Callable[[Trial], float]:
     """Create an Optuna objective bound to the shared training pipeline.
 
     When ``seed`` is provided, every trial re-seeds Python/NumPy/PyTorch
     before training so that only the sampled HPs vary across trials —
     init RNG state is not inherited from the previous trial.
-    
-    Multi-seed robustness: each trial runs the model `n_seeds` times with
-    different seeds and returns mean + std (penalizing high variance).
+
+    Multi-seed robustness: each trial runs the model ``n_seeds`` times with
+    different seeds and returns mean + std (penalizing high variance). For
+    GP-only training (pure exact GP, no MLP feature extractor) every seed
+    produces an identical result — set ``n_seeds=1`` to avoid wasted compute.
     """
     active_search_space = _resolve_active_search_space(opt_cfg, base_model_cfg)
     architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
-    n_seeds: int = 3  # Number of seed-based runs per trial for robustness evaluation
+    n_seeds = max(1, int(n_seeds))
 
     def objective(trial: Trial) -> float:
         model_params = suggest_from_config(trial, active_search_space, "model")
@@ -621,6 +663,23 @@ def save_optimization_results(
             yaml.dump(best_training_cfg, f, default_flow_style=False, allow_unicode=True)
 
         logger.debug(f"Best configs saved to {config_dir}")
+
+        save_run_artifacts(
+            output_resolver,
+            mode="optimization",
+            model_name=model_name,
+            history={},
+            metrics={
+                "best_value": float(study.best_value),
+                "n_trials_completed": len(study.trials),
+                "objective_metric": opt_cfg.get("study", {}).get("metric"),
+            },
+            timings={},
+            extra={
+                "best_params": study.best_params,
+                "direction": opt_cfg.get("study", {}).get("direction"),
+            },
+        )
 
 
 __all__ = [

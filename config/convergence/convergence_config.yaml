@@ -42,14 +42,26 @@ optimization_overrides:
     # n_trials accepts either an int (applied to every model) or a dict
     # per-model with optional 'default' fallback.
     n_trials:
-      mlp: 30
+      mlp: 15
       gp: 5
-      mlpgp: 50
+      mlpgp: 30
+    # n_seeds: how many re-trainings per HP-set Optuna runs to estimate
+    # robustness. Objective returned to Optuna is mean+std across seeds.
+    # NB: within an HPO study the data split is built once per (split, model),
+    # so multi-seed only varies model init. Pure GP has deterministic init
+    # (kernel/likelihood params from explicit config values, no Kaiming/Xavier)
+    # → std is always 0 and extra seeds are wasted compute, use 1.
+    # MLP/MLPGP have random weight init → use 3-5 for meaningful variance.
+    # Accepts int or per-model dict (with optional 'default' fallback).
+    n_seeds:
+      mlp: 2
+      gp: 1
+      mlpgp: 2
     timeout: 7200
     metric: "val_rmse"
     sampler: "tpe"
     pruner: "median"
-    n_startup_trials: 25
+    n_startup_trials: 15
     n_warmup_steps: 50
     pruner_interval: 5
     log_every_n_trials: 5

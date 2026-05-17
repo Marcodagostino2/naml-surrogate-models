@@ -13,7 +13,7 @@ from src.utils.config import (
     setup_logger,
     setup_torch_dtype,
 )
-from src.utils.paths import ModelName, OutputPathResolver, RunType
+from src.utils.paths import ModelName, OutputPathResolver, RunType, make_run_id
 
 __all__ = [
     "load_yaml",
@@ -30,4 +30,5 @@ __all__ = [
     "RunType",
     "ModelName",
     "OutputPathResolver",
+    "make_run_id",
 ]
