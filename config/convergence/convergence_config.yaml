@@ -15,26 +15,6 @@ runs_per_model:
   gp: 5
   mlpgp: 5
 
-# Random kernel-initialization bounds for the GP-family models.
-# The script samples one value per parameter within the configured bounds.
-kernel_init_bounds:
-  gp:
-    type: "exponential"
-    theta_init: {low: 1.0e-3, high: 1.0e-1}
-    power_exponent_init: {low: 1.5, high: 2.0}
-    tau2_init: {low: 1.0e-4, high: 1.0e-1}
-    likelihood_noise_init: {low: 1.0e-5, high: 1.0e-2}
-    matern_nu: {low: 0.5, high: 2.5}
-  mlpgp:
-    type: "exponential"
-    theta_init: {low: 1.0e-3, high: 1.0e-1}
-    power_exponent_init: {low: 1.5, high: 2.0}
-    tau2_init: {low: 1.0e-4, high: 1.0e-1}
-    likelihood_noise_init: {low: 1.0e-5, high: 1.0e-2}
-    matern_nu: {low: 0.5, high: 2.5}
-
-preserve_kernel_if_present: true
-
 # Optional overrides for the optimization mode.
 # These settings are merged into config/optimization/*.yaml at runtime.
 optimization_overrides:

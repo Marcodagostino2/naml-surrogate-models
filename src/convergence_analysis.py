@@ -7,7 +7,6 @@ top-level ``run_visualization`` dispatcher.
 from __future__ import annotations
 
 import json
-import random
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -53,14 +52,6 @@ def _run_count_for_model(config: Dict[str, Any], key: str, model_name: str, defa
         return max(1, int(value))
     except Exception:
         return default
-
-
-def _sample_from_bounds(bounds: Dict[str, Any], rng: random.Random) -> Any:
-    low = float(bounds["low"])
-    high = float(bounds["high"])
-    if low > high:
-        raise ValueError(f"Invalid bounds: low={low} > high={high}")
-    return rng.uniform(low, high)
 
 
 def _normalize_split_value(value: float) -> float:
@@ -135,47 +126,6 @@ def _prepare_data_bundle(dataset_cfg: Dict[str, Any], train_plus_val_ratio: floa
         random_seed=int(seed),
         default_type=default_type,
     )
-
-
-def _kernel_init_for_model(analysis_cfg: Dict[str, Any], model_name: str, seed: int) -> Dict[str, Any] | None:
-    bounds_cfg = analysis_cfg.get("kernel_init_bounds", {})
-    if not isinstance(bounds_cfg, dict):
-        return None
-
-    model_bounds = bounds_cfg.get(model_name, bounds_cfg.get("default"))
-    if not isinstance(model_bounds, dict):
-        return None
-
-    rng = random.Random(seed)
-    sampled: Dict[str, Any] = {}
-    for key, value in model_bounds.items():
-        if key == "type":
-            sampled[key] = value
-        elif isinstance(value, dict) and "low" in value and "high" in value:
-            sampled[key] = _sample_from_bounds(value, rng)
-        else:
-            sampled[key] = value
-    return sampled
-
-
-def _set_kernel_seeded_values(
-    model_cfg: Dict[str, Any], kernel_init: Dict[str, Any] | None, *, preserve_existing: bool = False
-) -> Dict[str, Any]:
-    """Return a copy of `model_cfg` with kernel values possibly updated from `kernel_init`.
-
-    If `preserve_existing` is True and `model_cfg` already contains a dict under the
-    "kernel" key, the existing kernel dict is left untouched (useful for analysis runs
-    where the user explicitly provided kernel parameters to keep)."""
-    if kernel_init is None:
-        return deepcopy(model_cfg)
-    updated = deepcopy(model_cfg)
-    existing = updated.get("kernel")
-    if preserve_existing and isinstance(existing, dict):
-        return updated
-    kernel_cfg = existing if isinstance(existing, dict) else {}
-    kernel_cfg.update(kernel_init)
-    updated["kernel"] = kernel_cfg
-    return updated
 
 
 def _analysis_output_resolver(
@@ -311,9 +261,7 @@ def _run_analysis_mode(
                 seed = global_seed + split_index * 1000 + run_index * 10 + MODEL_SEQUENCE.index(model_name)
                 set_global_seed(seed)
                 data_bundle = _prepare_data_bundle(dataset_cfg, train_plus_val_ratio, validation_train_ratio, seed)
-                kernel_init = _kernel_init_for_model(analysis_cfg, model_name, seed)
-                preserve = bool(analysis_cfg.get("preserve_kernel_if_present", False))
-                model_cfg = _set_kernel_seeded_values(model_cfg_map[model_name], kernel_init, preserve_existing=preserve)
+                model_cfg = deepcopy(model_cfg_map[model_name])
                 training_cfg = deepcopy(training_cfg_map[model_name])
 
                 result = _train_best_model(
@@ -344,7 +292,6 @@ def _run_analysis_mode(
                         "n_test": int(data_bundle.X_test.shape[0]),
                         "seed": seed,
                         "run_index": run_index,
-                        "kernel_init": json.dumps(kernel_init, sort_keys=True) if kernel_init is not None else None,
                         "elapsed_time": result["elapsed_time"],
                         "training_seconds": result["training_seconds"],
                         "inference_total_seconds": result["inference_total_seconds"],
@@ -469,12 +416,6 @@ def _run_optimization_mode(
             best_model_cfg = load_yaml(output_resolver.config_dir / "model" / f"{model_name}_config.yaml")
             best_training_cfg = load_yaml(output_resolver.config_dir / "training" / f"training_{model_name}_config.yaml")
             optimized_kernel_cfg = deepcopy(best_model_cfg.get("kernel")) if isinstance(best_model_cfg.get("kernel"), dict) else None
-
-            if analysis_cfg.get("kernel_init_bounds"):
-                logger.debug(
-                    "Ignoring analysis_cfg.kernel_init_bounds in optimization mode; "
-                    "retrain runs use kernel settings from optimized best model config."
-                )
 
             n_retrain_runs = _run_count_for_model(
                 analysis_cfg,
