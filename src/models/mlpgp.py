@@ -359,6 +359,8 @@ class MLPGPModel(_MLPGPMixin, ExactGP):
     ``ExactGP.forward`` (which raises ``NotImplementedError``) via MRO.
     """
 
+    architecture_override: Optional[str] = None
+
     def __init__(
         self,
         X_train: torch.Tensor,
@@ -366,11 +368,25 @@ class MLPGPModel(_MLPGPMixin, ExactGP):
         model_cfg: Dict,
         likelihood: Optional[gpytorch.likelihoods.Likelihood] = None,
     ) -> None:
+        if self.architecture_override is not None:
+            model_cfg = {**model_cfg, "architecture_name": self.architecture_override}
         kernel_cfg = model_cfg.get("kernel", model_cfg)
         initial_likelihood_noise, noise_floor, noise_ceiling = _parse_noise_cfg(kernel_cfg)
         if likelihood is None:
             likelihood = _build_gaussian_likelihood(initial_likelihood_noise, noise_floor, noise_ceiling)
         super().__init__(X_train, y_train, likelihood)
         self._init_mlpgp(X_train, model_cfg, initial_likelihood_noise)
+
+
+class MLPGPNonStationaryModel(MLPGPModel):
+    """MLPGP with the Gibbs (non-stationary) kernel, regardless of ``architecture_name`` in the config."""
+
+    architecture_override = "non_stationary"
+
+
+class MLPGPDeepKernelModel(MLPGPModel):
+    """MLPGP with deep-kernel learning, regardless of ``architecture_name`` in the config."""
+
+    architecture_override = "dkl"
 
 

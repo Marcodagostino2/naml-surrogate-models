@@ -28,7 +28,7 @@ from src.utils import OutputPathResolver, RunType, load_run_configs, load_yaml, 
 from src.visualization import VisualizationConfig, run_visualization
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MODEL_SEQUENCE: Sequence[str] = ("mlp", "gp", "mlpgp")
+MODEL_SEQUENCE: Sequence[str] = ("mlp", "gp", "mlpgp_ns", "mlpgp_dkl")
 ANALYSIS_ROOT_NAME = "convergence_analysis"
 
 logger = setup_logger(__name__)

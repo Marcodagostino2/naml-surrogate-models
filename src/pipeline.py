@@ -15,7 +15,7 @@ import yaml
 
 from src.data import DataBundle
 from src.inference import Predictor
-from src.models import GPRegressionModel, MLPGPModel, MLPRegressor
+from src.models import GPRegressionModel, MLPGPDeepKernelModel, MLPGPNonStationaryModel, MLPRegressor
 from src.training import GPTrainer, MLPGPTrainer, MLPTrainer, compute_all_metrics
 from src.utils import OutputPathResolver, resolve_device, setup_logger
 from src.visualization.plots.diagnostics import generate_diagnostics
@@ -30,7 +30,8 @@ if TYPE_CHECKING:
 _MODEL_REGISTRY: Dict[str, Tuple[type, type, bool]] = {
     "mlp": (MLPRegressor, MLPTrainer, False),
     "gp": (GPRegressionModel, GPTrainer, True),
-    "mlpgp": (MLPGPModel, MLPGPTrainer, True),
+    "mlpgp_ns": (MLPGPNonStationaryModel, MLPGPTrainer, True),
+    "mlpgp_dkl": (MLPGPDeepKernelModel, MLPGPTrainer, True),
 }
 
 

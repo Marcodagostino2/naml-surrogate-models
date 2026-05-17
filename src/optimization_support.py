@@ -50,6 +50,22 @@ def _is_dynamic_layer_size(name: str) -> bool:
     return bool(_LAYER_SIZE_RE.fullmatch(name))
 
 
+_MLPGP_HP_DESTINATIONS: Dict[str, str] = {
+    **{hp: "feature_extractor" for hp in _BLOCK_HPS},
+    "dropout": "feature_extractor",
+    "batch_norm": "feature_extractor",
+    "output_activation": "feature_extractor",
+    "output_width": "feature_extractor",
+    "sigma_floor": "feature_extractor",
+    "lengthscale_floor": "feature_extractor",
+    "lengthscale_mode": "feature_extractor",
+    "tau2_init": "kernel",
+    "theta_init": "kernel",
+    "power_exponent_init": "kernel",
+    "likelihood_noise_init": "kernel",
+    "trend_degree": "root",
+}
+
 _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("mlp", "dropout"): "dropout",
     **{("mlp", hp): "architecture" for hp in _BLOCK_HPS},
@@ -60,19 +76,8 @@ _HP_TO_MODEL_CFG: Dict[tuple[str, str], str] = {
     ("gp", "likelihood_noise_init"): "kernel",
     ("gp", "trend_degree"): "root",
 
-    **{("mlpgp", hp): "feature_extractor" for hp in _BLOCK_HPS},
-    ("mlpgp", "dropout"): "feature_extractor",
-    ("mlpgp", "batch_norm"): "feature_extractor",
-    ("mlpgp", "output_activation"): "feature_extractor",
-    ("mlpgp", "output_width"): "feature_extractor",
-    ("mlpgp", "sigma_floor"): "feature_extractor",
-    ("mlpgp", "lengthscale_floor"): "feature_extractor",
-    ("mlpgp", "lengthscale_mode"): "feature_extractor",
-    ("mlpgp", "tau2_init"): "kernel",
-    ("mlpgp", "theta_init"): "kernel",
-    ("mlpgp", "power_exponent_init"): "kernel",
-    ("mlpgp", "likelihood_noise_init"): "kernel",
-    ("mlpgp", "trend_degree"): "root",
+    **{("mlpgp_ns", hp): dest for hp, dest in _MLPGP_HP_DESTINATIONS.items()},
+    **{("mlpgp_dkl", hp): dest for hp, dest in _MLPGP_HP_DESTINATIONS.items()},
 }
 
 
@@ -89,18 +94,23 @@ _ROOT_COERCERS: Dict[str, Callable[[Any], Any]] = {
 }
 
 
-def _resolve_architecture_name(opt_cfg: Dict[str, Any], base_model_cfg: Dict[str, Any]) -> str:
-    """Resolve the active MLPGP architecture name."""
+def _resolve_architecture_name(model_name: str, opt_cfg: Dict[str, Any], base_model_cfg: Dict[str, Any]) -> str:
+    """Resolve the MLPGP architecture for ``model_name`` (canonical names are authoritative)."""
+    if model_name == "mlpgp_dkl":
+        return "dkl"
+    if model_name == "mlpgp_ns":
+        return "non_stationary"
     architecture_name = opt_cfg.get("architecture_name", base_model_cfg.get("architecture_name", "non_stationary"))
     return str(architecture_name).lower()
 
 
 def _resolve_active_search_space(
+    model_name: str,
     opt_cfg: Dict[str, Any],
     base_model_cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Select the active search space for the current architecture."""
-    architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
+    architecture_name = _resolve_architecture_name(model_name, opt_cfg, base_model_cfg)
 
     search_spaces = opt_cfg.get("search_spaces")
     if isinstance(search_spaces, dict):
@@ -211,7 +221,7 @@ def _make_logging_callback(
         if not params:
             return "{}"
 
-        if model_name in {"mlp", "mlpgp"}:
+        if model_name in {"mlp", "mlpgp_ns", "mlpgp_dkl"}:
             activation = params.get("activation")
             layer_keys = sorted([key for key in params if _is_dynamic_layer_size(key)])
             layers = [str(int(params[key])) for key in layer_keys]
@@ -370,7 +380,7 @@ def _apply_hp(model_name: str, params: Dict[str, Any], architecture_name: Option
     Parameters
     ----------
     model_name : str
-        Model identifier used for registry lookup (e.g. ``"mlp"``, ``"gp"``, ``"mlpgp"``).
+        Model identifier used for registry lookup (e.g. ``"mlp"``, ``"gp"``, ``"mlpgp_ns"``, ``"mlpgp_dkl"``).
     scope : str
         Optimisation scope (``"model"`` or ``"training"``); currently unused but
         kept for forward compatibility.
@@ -394,7 +404,7 @@ def _apply_hp(model_name: str, params: Dict[str, Any], architecture_name: Option
         if (arch := _build_architecture(arch_params)) is not None:
             patch["architecture"] = arch
 
-    if model_name == "mlpgp" and scoped.get("feature_extractor"):
+    if model_name in {"mlpgp_ns", "mlpgp_dkl"} and scoped.get("feature_extractor"):
         fe_params = scoped["feature_extractor"]
         feature_patch: Dict[str, Any] = {}
 
@@ -470,8 +480,8 @@ def make_objective(
     GP-only training (pure exact GP, no MLP feature extractor) every seed
     produces an identical result — set ``n_seeds=1`` to avoid wasted compute.
     """
-    active_search_space = _resolve_active_search_space(opt_cfg, base_model_cfg)
-    architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
+    active_search_space = _resolve_active_search_space(model_name, opt_cfg, base_model_cfg)
+    architecture_name = _resolve_architecture_name(model_name, opt_cfg, base_model_cfg)
     n_seeds = max(1, int(n_seeds))
 
     def objective(trial: Trial) -> float:
@@ -606,8 +616,8 @@ def save_optimization_results(
     model_name: str,
 ) -> None:
     """Persist trials, best params and the optimized configs."""
-    active_search_space = _resolve_active_search_space(opt_cfg, base_model_cfg)
-    architecture_name = _resolve_architecture_name(opt_cfg, base_model_cfg)
+    active_search_space = _resolve_active_search_space(model_name, opt_cfg, base_model_cfg)
+    architecture_name = _resolve_architecture_name(model_name, opt_cfg, base_model_cfg)
     run_dir = output_resolver.root
     run_dir.mkdir(parents=True, exist_ok=True)
 

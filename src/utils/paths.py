@@ -25,7 +25,8 @@ class RunType(str, Enum):
 class ModelName(str, Enum):
     GP = "gp"
     MLP = "mlp"
-    MLPGP = "mlpgp"
+    MLPGP_NS = "mlpgp_ns"
+    MLPGP_DKL = "mlpgp_dkl"
 
 
 RunTypeLike = Literal[
@@ -38,7 +39,16 @@ RunTypeLike = Literal[
     "convergence_analysis",
     "testing",
 ]
-ModelNameLike = Literal[ModelName.GP, ModelName.MLP, ModelName.MLPGP, "gp", "mlp", "mlpgp"]
+ModelNameLike = Literal[
+    ModelName.GP,
+    ModelName.MLP,
+    ModelName.MLPGP_NS,
+    ModelName.MLPGP_DKL,
+    "gp",
+    "mlp",
+    "mlpgp_ns",
+    "mlpgp_dkl",
+]
 
 
 @dataclass(frozen=True)

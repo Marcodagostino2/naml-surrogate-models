@@ -1,7 +1,7 @@
 {
   "dataset": "yacht_hydrodynamics",
   "mode": "single_run",
-  "model": "mlpgp",
+  "model": "mlpgp_dkl",
   "metrics": {
     "train": {
       "mse": 0.16202469170093536,
@@ -28,14 +28,13 @@
   "combo_id": "single_run.mlpgp_dkl",
   "spec": {
     "mode": "single_run",
-    "model": "mlpgp",
+    "model": "mlpgp_dkl",
     "main_patch": {
       "dataset": "yacht_hydrodynamics",
       "precision": "float32",
       "mode": "single_run",
-      "model_to_train": "mlpgp",
+      "model_to_train": "mlpgp_dkl",
       "run_mode": "training"
-    },
-    "mlpgp_architecture": "dkl"
+    }
   }
 }

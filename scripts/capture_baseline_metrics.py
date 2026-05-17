@@ -56,15 +56,13 @@ CONFIG_MATRIX: dict[str, dict[str, Any]] = {
     },
     "single_run.mlpgp_ns": {
         "mode": "single_run",
-        "model": "mlpgp",
-        "main_patch": _main_patch({"mode": "single_run", "model_to_train": "mlpgp", "run_mode": "training"}),
-        "mlpgp_architecture": "non_stationary",
+        "model": "mlpgp_ns",
+        "main_patch": _main_patch({"mode": "single_run", "model_to_train": "mlpgp_ns", "run_mode": "training"}),
     },
     "single_run.mlpgp_dkl": {
         "mode": "single_run",
-        "model": "mlpgp",
-        "main_patch": _main_patch({"mode": "single_run", "model_to_train": "mlpgp", "run_mode": "training"}),
-        "mlpgp_architecture": "dkl",
+        "model": "mlpgp_dkl",
+        "main_patch": _main_patch({"mode": "single_run", "model_to_train": "mlpgp_dkl", "run_mode": "training"}),
     },
     # Optimization + convergence baselines deliberately omitted from --all:
     # optimization legacy mode is going away in Stage 7 (no long-term baseline value),
@@ -89,8 +87,6 @@ def _prepare_config_dir(combo_id: str, spec: dict[str, Any]) -> Path:
     shutil.copytree(SMOKE_CONFIG_DIR, target)
 
     _patch_yaml(target / "main_config.yaml", spec["main_patch"])
-    if "mlpgp_architecture" in spec:
-        _patch_yaml(target / "model" / "mlpgp_config.yaml", {"architecture_name": spec["mlpgp_architecture"]})
     if "convergence_patch" in spec:
         _patch_yaml(target / "convergence" / "convergence_config.yaml", spec["convergence_patch"])
     return target

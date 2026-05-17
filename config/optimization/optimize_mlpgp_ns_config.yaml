@@ -1,0 +1,110 @@
+study:
+  n_trials: 150
+  timeout: 5400
+  direction: minimize
+  metric: val_rmse
+  sampler: tpe
+  pruner: median
+  n_startup_trials: 25
+  n_warmup_steps: 200
+  pruner_interval: 5
+  log_every_n_trials: 5
+
+training_overrides:
+  n_training_steps: 2000
+
+architecture_name: "dkl"  # "non_stationary" | "dkl"
+
+# Kernel for the GP head:
+# - Non-stationary: must be "exponential" (Gibbs kernel).
+# - DKL: any of "exponential" | "rbf" | "matern".
+kernel_name: "exponential"
+
+# Hidden anchor host: not consumed by the loader, only referenced below.
+# Both architectures share the same single-block search: depth (n_layers),
+# per-layer width via the layer_size template (sampled n_layers times at
+# trial time), activation, dropout. Init is fixed per activation.
+_shared:
+  block: &block
+    n_layers:
+      type: int
+      low: 1
+      high: 4
+    layer_size:
+      type: categorical
+      choices: [8, 16, 32, 64]
+    activation:
+      type: categorical
+      choices: [relu, tanh, mish]
+    dropout:
+      type: float
+      low: 0.0
+      high: 0.0
+
+search_spaces:
+  non_stationary:
+    model:
+      <<: *block
+      power_exponent_init:
+        type: categorical
+        choices: [1.8]
+      theta_init:
+        type: categorical
+        choices: [1.0e-3]
+      likelihood_noise_init:
+        type: categorical
+        choices: [5.0e-5, 1.0e-4, 5.0e-4, 1.0e-3]
+      trend_degree:
+        type: int
+        low: 0
+        high: 2
+    training:
+      mlp_learning_rate:
+        type: categorical
+        choices: [1.0e-3, 1.0e-2, 1.0e-1]
+      gp_learning_rate:
+        type: categorical
+        choices: [1.0e-3, 1.0e-2, 1.0e-1]
+      mlp_weight_decay:
+        type: categorical
+        choices: [1.0e-3, 1.0e-2, 1.0e-1]
+
+  dkl:
+    model:
+      <<: *block
+      batch_norm:
+        type: categorical
+        choices: [false]
+      output_width:
+        type: int
+        low: 5
+        high: 10
+      output_activation:
+        type: categorical
+        choices: [identity]
+      theta_init:
+        type: categorical
+        choices: [1.0e-3]
+      power_exponent_init:
+        type: categorical
+        choices: [1.8]
+      tau2_init:
+        type: categorical
+        choices: [1.0e-2]
+      likelihood_noise_init:
+        type: categorical
+        choices: [5.0e-5, 1.0e-4, 5.0e-4, 1.0e-3, 5.0e-3]
+      trend_degree:
+        type: int
+        low: 0
+        high: 2
+    training:
+      mlp_learning_rate:
+        type: categorical
+        choices: [1.0e-3, 1.0e-2, 1.0e-1]
+      gp_learning_rate:
+        type: categorical
+        choices: [1.0e-3, 1.0e-2, 1.0e-1]
+      mlp_weight_decay:
+        type: categorical
+        choices: [1.0e-3, 1.0e-2, 1.0e-1]

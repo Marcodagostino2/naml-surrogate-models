@@ -126,7 +126,7 @@ def _run_single_run(
     if not training_enabled and not testing_enabled:
         raise ValueError("run_mode must include 'training', 'test', or 'training+test'.")
 
-    if model_to_train not in {"mlp", "gp", "mlpgp", "all"}:
+    if model_to_train not in {"mlp", "gp", "mlpgp_ns", "mlpgp_dkl", "all"}:
         raise ValueError(f"Unknown model_to_train: {model_to_train}")
 
     logger.info("Loading and preprocessing data...")
@@ -136,7 +136,7 @@ def _run_single_run(
         f"X_val={data_bundle.X_val.shape}, X_test={data_bundle.X_test.shape}"
     )
 
-    selected_models = ["mlp", "gp", "mlpgp"] if model_to_train == "all" else [model_to_train]
+    selected_models = ["mlp", "gp", "mlpgp_ns", "mlpgp_dkl"] if model_to_train == "all" else [model_to_train]
     trained_models: Dict[str, Any] = {}
 
     train_run_id = run_id_cfg or make_run_id("single")
@@ -348,7 +348,7 @@ def _run_optimization(
     logger.info(f"Optimization run_id: {run_id}")
 
     if model_to_train == "all":
-        for selected_model in ["mlp", "gp", "mlpgp"]:
+        for selected_model in ["mlp", "gp", "mlpgp_ns", "mlpgp_dkl"]:
             run_optimization_workflow(
                 config_dir,
                 selected_model,
@@ -384,7 +384,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=str, default="outputs", help="Base output directory.")
     parser.add_argument(
         "--model", type=str, default=None,
-        choices=["mlp", "gp", "mlpgp", "all"],
+        choices=["mlp", "gp", "mlpgp_ns", "mlpgp_dkl", "all"],
         help="Override the optimization model selection from config/main_config.yaml.",
     )
     parser.add_argument("--n-trials", type=int, default=None, help="Override the number of optimization trials.")

@@ -13,7 +13,8 @@ validation_train_ratio: 0.2  # Validation uses a fixed ratio of the training spl
 runs_per_model:
   mlp: 5
   gp: 5
-  mlpgp: 5
+  mlpgp_ns: 5
+  mlpgp_dkl: 5
 
 # Optional overrides for the optimization mode.
 # These settings are merged into config/optimization/*.yaml at runtime.
@@ -24,7 +25,8 @@ optimization_overrides:
     n_trials:
       mlp: 15
       gp: 5
-      mlpgp: 30
+      mlpgp_ns: 30
+      mlpgp_dkl: 30
     # n_seeds: how many re-trainings per HP-set Optuna runs to estimate
     # robustness. Objective returned to Optuna is mean+std across seeds.
     # NB: within an HPO study the data split is built once per (split, model),
@@ -36,7 +38,8 @@ optimization_overrides:
     n_seeds:
       mlp: 2
       gp: 1
-      mlpgp: 2
+      mlpgp_ns: 2
+      mlpgp_dkl: 2
     timeout: 7200
     metric: "val_rmse"
     sampler: "tpe"

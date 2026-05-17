@@ -22,7 +22,7 @@ from ..plots.uncertainty import run_uncertainty_gp
 from ..utils import is_gp_model
 
 logger = logging.getLogger(__name__)
-ALL_MODELS = frozenset({"mlp", "gp", "mlpgp"})
+ALL_MODELS = frozenset({"mlp", "gp", "mlpgp_ns", "mlpgp_dkl"})
 
 
 def _require_keys(data: dict[str, Any], keys: list[str]) -> None:

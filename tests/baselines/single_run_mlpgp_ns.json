@@ -1,7 +1,7 @@
 {
   "dataset": "yacht_hydrodynamics",
   "mode": "single_run",
-  "model": "mlpgp",
+  "model": "mlpgp_ns",
   "metrics": {
     "train": {
       "mse": 0.04706359654664993,
@@ -28,14 +28,13 @@
   "combo_id": "single_run.mlpgp_ns",
   "spec": {
     "mode": "single_run",
-    "model": "mlpgp",
+    "model": "mlpgp_ns",
     "main_patch": {
       "dataset": "yacht_hydrodynamics",
       "precision": "float32",
       "mode": "single_run",
-      "model_to_train": "mlpgp",
+      "model_to_train": "mlpgp_ns",
       "run_mode": "training"
-    },
-    "mlpgp_architecture": "non_stationary"
+    }
   }
 }
