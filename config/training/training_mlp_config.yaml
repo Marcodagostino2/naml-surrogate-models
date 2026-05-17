@@ -18,4 +18,3 @@ validation_check_interval: 10
 # "mse" | "mae" | "huber"
 loss_function: "mse"
 device: "auto"
-save_checkpoint_every_n_epochs: 10

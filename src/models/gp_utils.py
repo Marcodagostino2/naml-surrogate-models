@@ -35,10 +35,6 @@ def extract_config_value(
     raise KeyError(f"Missing required config key {alias_text} in {context}.")
 
 
-def extract_required_config_value(config: Dict[str, Any], key: str | Sequence[str], context: str) -> Any:
-    return extract_config_value(config, key, context)
-
-
 def clamp_to_bounds(value: torch.Tensor, lower: Optional[float], upper: Optional[float]) -> torch.Tensor:
     """Clamp a tensor, leaving a small epsilon margin so constraint inverse transforms stay finite."""
     if lower is None and upper is None:

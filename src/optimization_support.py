@@ -320,7 +320,7 @@ def build_pruner(study_cfg: Dict[str, Any]) -> BasePruner:
 
     pruner_name = study_cfg.get("pruner", "median")
 
-    from optuna.pruners import HyperbandPruner, MedianPruner, NopPruner
+    from optuna.pruners import MedianPruner, NopPruner
     if pruner_name is None or pruner_name == "null":
         return NopPruner()
     if pruner_name == "median":
@@ -329,13 +329,7 @@ def build_pruner(study_cfg: Dict[str, Any]) -> BasePruner:
             n_warmup_steps=study_cfg.get("n_warmup_steps", 0),
             interval_steps=study_cfg.get("pruner_interval", 1),
         )
-    if pruner_name == "hyperband":
-        return HyperbandPruner(
-            min_resource=study_cfg.get("min_resource", 10),
-            max_resource=study_cfg.get("max_resource", "auto"),
-            reduction_factor=study_cfg.get("reduction_factor", 3),
-        )
-    raise ValueError(f"Unknown pruner: {pruner_name}")
+    raise ValueError(f"Unknown pruner: {pruner_name!r}. Valid: 'median', 'null', None.")
 
 
 def _build_architecture(params: Dict[str, Any]) -> Optional[Dict[str, Any]]:

@@ -27,7 +27,6 @@ from src.models.gp_utils import (
     build_kernel,
     extract_config_value,
     extract_kernel_name,
-    extract_required_config_value,
 )
 from src.models.mlp import MLPRegressor
 from src.utils import setup_logger
@@ -259,7 +258,7 @@ class _MLPGPMixin:
         if self.architecture_name == "non_stationary" and extract_kernel_name(kernel_cfg) != "exponential":
             raise ValueError("Non-stationary architecture requires kernel type='exponential'.")
 
-        trend_degree = int(extract_required_config_value(model_cfg, "trend_degree", "MLPGP model config"))
+        trend_degree = int(extract_config_value(model_cfg, "trend_degree", "MLPGP model config"))
         self.likelihood.initialize(noise=initial_likelihood_noise)
         self.mean_module = PolynomialTrendMean(input_dim=input_dim, degree=trend_degree)
 

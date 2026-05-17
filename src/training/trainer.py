@@ -579,7 +579,7 @@ class GPTrainer(_BaseGPTrainer):
         _warn_deprecated_keys(training_cfg)
         self.convergence_monitor = ConvergenceMonitor(training_cfg)
 
-        params = self._optimizable_parameters()
+        params = list(self.model.parameters())
         if self.optimizer_name == "sgd":
             self.optimizer = torch.optim.SGD(params, lr=self.learning_rate)
         elif self.optimizer_name == "adamw":
@@ -609,9 +609,6 @@ class GPTrainer(_BaseGPTrainer):
 
         logger.info(f"GPTrainer initialized on device: {self.device}")
         logger.info(f"Initial GP likelihood noise: {_current_likelihood_noise(self.model):.6e}")
-
-    def _optimizable_parameters(self):
-        return list(self.model.parameters())
 
     def train(self) -> Dict[str, Any]:
         logger.info(f"Starting GP training for up to {self.n_training_steps} steps")

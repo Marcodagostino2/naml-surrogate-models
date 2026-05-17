@@ -17,7 +17,6 @@ from src.models.gp_utils import (
     clamp_to_bounds,
     extract_config_value,
     extract_kernel_name,
-    extract_required_config_value,
 )
 from src.utils import setup_logger
 
@@ -93,7 +92,7 @@ class _GPRegressionMixin:
 
     def _setup_mean_and_kernel(self, X_train: torch.Tensor, model_cfg: Dict[str, Any]) -> None:
         kernel_cfg = model_cfg.get("kernel", model_cfg)
-        trend_degree = int(extract_required_config_value(model_cfg, "trend_degree", "GP model config"))
+        trend_degree = int(extract_config_value(model_cfg, "trend_degree", "GP model config"))
         input_dim = int(X_train.shape[-1])
         self.mean_module = PolynomialTrendMean(input_dim=input_dim, degree=trend_degree)
         self.covar_module = build_kernel(extract_kernel_name(kernel_cfg), input_dim, kernel_cfg)

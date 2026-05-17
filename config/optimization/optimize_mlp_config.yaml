@@ -9,10 +9,6 @@ study:
   log_every_n_trials: 5
   n_warmup_steps: 20      # warmup steps for the pruner
   pruner_interval: 5      # interval (in epochs) at which the pruner checks
-  # Hyperband-only:
-  min_resource: 10
-  max_resource: 300
-  reduction_factor: 3
 
 training_overrides:
   n_epochs: 2000
