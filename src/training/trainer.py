@@ -195,6 +195,37 @@ def _warn_deprecated_keys(training_cfg: Dict[str, Any]) -> None:
             logger.warning(f"[deprecated config key] {message}")
 
 
+def _maybe_save_best_state(trainer: Any, val_loss: Optional[float]) -> None:
+    """Update ``trainer._best_model_state`` when ``val_loss`` improves on ``trainer.best_val_loss``."""
+    if val_loss is None or val_loss >= trainer.best_val_loss:
+        return
+    trainer.best_val_loss = val_loss
+    trainer._best_model_state = {"model": copy.deepcopy(trainer.model.state_dict())}
+
+
+def _maybe_report_to_trial(trainer: Any, step: int, val_loss: Optional[float], model_name: str) -> None:
+    """Report ``val_loss`` to ``trainer.trial`` and prune the trial if Optuna says so."""
+    if trainer.trial is None or val_loss is None:
+        return
+    try:
+        if trainer._last_reported_step != step:
+            trainer.trial.report(val_loss, step=step)
+            trainer._last_reported_step = step
+    except Exception:
+        logger.debug("Optuna trial.report() failed or was ignored")
+    if trainer.trial.should_prune():
+        import optuna
+        logger.info(f"{model_name} trial pruned at step {step}")
+        raise optuna.TrialPruned()
+
+
+def _restore_best_state(trainer: Any, model_name: str) -> None:
+    """Load ``trainer._best_model_state`` back into the model if anything was saved."""
+    if trainer._best_model_state is not None:
+        trainer.model.load_state_dict(trainer._best_model_state["model"])
+        logger.info(f"Restored {model_name} model to best validation state")
+
+
 class ConvergenceMonitor:
     """Early stopping with two independent criteria; stops as soon as EITHER fires.
 
@@ -458,21 +489,8 @@ class MLPTrainer:
                         f"val_no_improve={state['val_no_improve_streak']}"
                     )
 
-            if val_loss is not None and val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
-
-            if self.trial is not None and val_loss is not None:
-                try:
-                    if self._last_reported_step != epoch:
-                        self.trial.report(val_loss, step=epoch)
-                        self._last_reported_step = epoch
-                except Exception:
-                    logger.debug("Optuna trial.report() failed or was ignored")
-                if self.trial.should_prune():
-                    import optuna
-                    logger.info(f"Trial pruned at epoch {epoch}")
-                    raise optuna.TrialPruned()
+            _maybe_save_best_state(self, val_loss)
+            _maybe_report_to_trial(self, epoch, val_loss, "MLP")
 
             if should_stop:
                 logger.info(
@@ -483,9 +501,7 @@ class MLPTrainer:
 
         elapsed = time.time() - start_time
         logger.info(f"MLP training completed in {elapsed:.2f} seconds")
-        if self._best_model_state is not None:
-            self.model.load_state_dict(self._best_model_state["model"])
-            logger.info("Restored MLP model to best validation state")
+        _restore_best_state(self, "MLP")
 
         return {
             "train_losses": train_losses,
@@ -723,21 +739,8 @@ class GPTrainer(_BaseGPTrainer):
                             f"val_no_improve={state['val_no_improve_streak']}"
                         )
 
-                if val_loss is not None and val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
-                    self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
-
-                if self.trial is not None and val_loss is not None:
-                    try:
-                        if self._last_reported_step != step:
-                            self.trial.report(val_loss, step=step)
-                            self._last_reported_step = step
-                    except Exception:
-                        logger.debug("Optuna trial.report() failed or was ignored")
-                    if self.trial.should_prune():
-                        import optuna
-                        logger.info(f"Trial pruned at step {step}")
-                        raise optuna.TrialPruned()
+                _maybe_save_best_state(self, val_loss)
+                _maybe_report_to_trial(self, step, val_loss, "GP")
 
                 if should_stop:
                     logger.info(
@@ -748,10 +751,7 @@ class GPTrainer(_BaseGPTrainer):
 
         elapsed = time.time() - start_time
         logger.info(f"GP training completed in {elapsed:.2f} seconds")
-
-        if self._best_model_state is not None:
-            self.model.load_state_dict(self._best_model_state["model"])
-            logger.info("Restored GP model to best validation state")
+        _restore_best_state(self, "GP")
 
         return {
             "train_losses": train_losses,          # negative mll
@@ -959,21 +959,8 @@ class MLPGPTrainer(_BaseGPTrainer):
                             f"val_no_improve={state['val_no_improve_streak']}"
                         )
 
-                if val_loss is not None and val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
-                    self._best_model_state = {"model": copy.deepcopy(self.model.state_dict())}
-
-                if self.trial is not None and val_loss is not None:
-                    try:
-                        if self._last_reported_step != step:
-                            self.trial.report(val_loss, step=step)
-                            self._last_reported_step = step
-                    except Exception:
-                        logger.debug("Optuna trial.report() failed or was ignored")
-                    if self.trial.should_prune():
-                        import optuna
-                        logger.info(f"Trial pruned at step {step}")
-                        raise optuna.TrialPruned()
+                _maybe_save_best_state(self, val_loss)
+                _maybe_report_to_trial(self, step, val_loss, "MLPGP")
 
                 if should_stop:
                     logger.info(
@@ -984,10 +971,7 @@ class MLPGPTrainer(_BaseGPTrainer):
 
         elapsed = time.time() - start_time
         logger.info(f"MLPGP training completed in {elapsed:.2f} seconds")
-
-        if self._best_model_state is not None:
-            self.model.load_state_dict(self._best_model_state["model"])
-            logger.info("Restored MLPGP model to best validation state")
+        _restore_best_state(self, "MLPGP")
 
         return {
             "train_losses": train_losses,          # negative mll
