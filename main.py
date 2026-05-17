@@ -13,6 +13,7 @@ this script only routes.
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict
@@ -178,7 +179,10 @@ def _run_single_run(
     if testing_enabled and not training_enabled:
         logger.info(f"Testing run_id: {test_run_id}")
 
-    for selected_model in selected_models:
+    total_models = len(selected_models)
+    for model_index, selected_model in enumerate(selected_models, start=1):
+        stage_tag = f"[Stage {model_index}/{total_models} | model={selected_model}]"
+        logger.info(f"{stage_tag} starting")
         model_configs = load_run_configs(config_dir, selected_model, include_optimize=False)
         model_cfg = model_configs["model_cfg"]
         training_cfg = model_configs["training_cfg"]
@@ -210,14 +214,20 @@ def _run_single_run(
                 viz_cfg=viz_cfg,
             )
 
-            results = train_model(
-                model_name=selected_model,
-                data_bundle=data_bundle,
-                dataset_cfg=dataset_cfg,
-                model_cfg=model_cfg,
-                training_cfg=contextual_training_cfg,
-                output_resolver=output_resolver,
-            )
+            try:
+                results = train_model(
+                    model_name=selected_model,
+                    data_bundle=data_bundle,
+                    dataset_cfg=dataset_cfg,
+                    model_cfg=model_cfg,
+                    training_cfg=contextual_training_cfg,
+                    output_resolver=output_resolver,
+                )
+            except (KeyboardInterrupt, MemoryError):
+                raise
+            except Exception:
+                logger.exception(f"{stage_tag} training failed; continuing with next model")
+                continue
             trained_models[selected_model] = results["model"]
 
             timings = results.get("timings", {}) or {}
@@ -283,14 +293,20 @@ def _run_single_run(
                 viz_cfg=viz_cfg,
             )
 
-            test_results = test_model_from_checkpoint(
-                model_name=selected_model,
-                data_bundle=data_bundle,
-                dataset_cfg=dataset_cfg,
-                model_cfg=source_model_cfg,
-                checkpoint_path=checkpoint_path,
-                output_resolver=test_resolver,
-            )
+            try:
+                test_results = test_model_from_checkpoint(
+                    model_name=selected_model,
+                    data_bundle=data_bundle,
+                    dataset_cfg=dataset_cfg,
+                    model_cfg=source_model_cfg,
+                    checkpoint_path=checkpoint_path,
+                    output_resolver=test_resolver,
+                )
+            except (KeyboardInterrupt, MemoryError):
+                raise
+            except Exception:
+                logger.exception(f"{stage_tag} testing failed; continuing with next model")
+                continue
 
             from src.visualization import run_visualization
             from src.visualization.config import VisualizationConfig
@@ -403,24 +419,30 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = _build_parser().parse_args()
-    project_root = Path(__file__).resolve().parent
-    config_dir = project_root / args.config_dir
-    output_dir = project_root / args.output_dir
-    workflow_cfg = load_run_configs(config_dir, "mlp", include_optimize=False)["main_cfg"]
-    workflow_mode = str(args.mode or workflow_cfg.get("mode", "single_run")).lower()
+    try:
+        args = _build_parser().parse_args()
+        project_root = Path(__file__).resolve().parent
+        config_dir = project_root / args.config_dir
+        output_dir = project_root / args.output_dir
+        workflow_cfg = load_run_configs(config_dir, "mlp", include_optimize=False)["main_cfg"]
+        workflow_mode = str(args.mode or workflow_cfg.get("mode", "single_run")).lower()
 
-    if workflow_mode == "optimization":
-        raise ValueError(
-            "Top-level mode 'optimization' has been retired. HPO now runs via "
-            "`mode: convergence` with `convergence_config.yaml: mode: optimization`."
-        )
-    if workflow_mode == "single_run":
-        _run_single_run(config_dir, output_dir, args.run_id, args.resume_run_id)
-    elif workflow_mode == "convergence":
-        _run_convergence(project_root / args.config_path)
-    else:
-        raise ValueError(f"Unknown workflow mode: {workflow_mode}")
+        if workflow_mode == "optimization":
+            raise ValueError(
+                "Top-level mode 'optimization' has been retired. HPO now runs via "
+                "`mode: convergence` with `convergence_config.yaml: mode: optimization`."
+            )
+        if workflow_mode == "single_run":
+            _run_single_run(config_dir, output_dir, args.run_id, args.resume_run_id)
+        elif workflow_mode == "convergence":
+            _run_convergence(project_root / args.config_path)
+        else:
+            raise ValueError(f"Unknown workflow mode: {workflow_mode}")
+    except (KeyboardInterrupt, MemoryError):
+        raise
+    except Exception:
+        logger.exception("Unhandled error in main workflow; exiting non-zero")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

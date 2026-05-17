@@ -260,28 +260,46 @@ def _run_analysis_mode(
     analysis_root = PROJECT_ROOT / "outputs" / dataset_name / ANALYSIS_ROOT_NAME / "runs" / analysis_run_id
     analysis_root.mkdir(parents=True, exist_ok=True)
 
+    n_splits = len(split_grid)
     for split_index, train_plus_val_ratio in enumerate(split_grid):
         split_tag = _split_tag(round(train_plus_val_ratio, 6))
+        logger.info(f"[Analysis | split {split_index + 1}/{n_splits} ({split_tag})] starting")
         for model_name in model_cfg_map.keys():
             n_runs = _run_count_for_model(analysis_cfg, "runs_per_model", model_name, default=1)
             for run_index in range(n_runs):
+                stage_tag = f"[Analysis | split {split_index + 1}/{n_splits} | model={model_name} | run {run_index + 1}/{n_runs}]"
+                logger.info(f"{stage_tag} starting")
                 seed = global_seed + split_index * 1000 + run_index * 10 + MODEL_SEQUENCE.index(model_name)
                 set_global_seed(seed)
                 data_bundle = _prepare_data_bundle(dataset_cfg, train_plus_val_ratio, validation_train_ratio, seed)
                 model_cfg = deepcopy(model_cfg_map[model_name])
                 training_cfg = deepcopy(training_cfg_map[model_name])
 
-                result = _train_best_model(
-                    dataset_name=dataset_name,
-                    model_name=model_name,
-                    data_bundle=data_bundle,
-                    dataset_cfg=dataset_cfg,
-                    model_cfg=model_cfg,
-                    training_cfg=training_cfg,
-                    analysis_run_id=analysis_run_id,
-                    split_tag=split_tag,
-                    sub_tag=f"run_{run_index}",
-                )
+                try:
+                    result = _train_best_model(
+                        dataset_name=dataset_name,
+                        model_name=model_name,
+                        data_bundle=data_bundle,
+                        dataset_cfg=dataset_cfg,
+                        model_cfg=model_cfg,
+                        training_cfg=training_cfg,
+                        analysis_run_id=analysis_run_id,
+                        split_tag=split_tag,
+                        sub_tag=f"run_{run_index}",
+                    )
+                except (KeyboardInterrupt, MemoryError):
+                    raise
+                except Exception:
+                    logger.exception(f"{stage_tag} training failed; recording NaN row and continuing")
+                    metrics_rows.append({
+                        "mode": "analysis", "model": model_name,
+                        "train_split": float(train_plus_val_ratio),
+                        "seed": seed, "run_index": run_index,
+                        "r2": float("nan"), "rmse": float("nan"),
+                        "mae": float("nan"), "mape": float("nan"),
+                        "output_dir": None,
+                    })
+                    continue
 
                 train_ratio_actual = float(data_bundle.X_train.shape[0]) / float(data_bundle.X_train.shape[0] + data_bundle.X_val.shape[0] + data_bundle.X_test.shape[0])
                 val_ratio_actual = float(data_bundle.X_val.shape[0]) / float(data_bundle.X_train.shape[0] + data_bundle.X_val.shape[0] + data_bundle.X_test.shape[0])
@@ -431,6 +449,8 @@ def _run_optimization_mode(
                 default=_run_count_for_model(analysis_cfg, "runs_per_model", model_name, default=1),
             )
             for run_index in range(n_retrain_runs):
+                stage_tag = f"[HPO retrain | split={split_tag} | model={model_name} | run {run_index + 1}/{n_retrain_runs}]"
+                logger.info(f"{stage_tag} starting")
                 retrain_seed = seed + run_index
                 set_global_seed(retrain_seed)
                 retrain_data_bundle = _prepare_data_bundle(dataset_cfg, train_ratio, validation_train_ratio, retrain_seed)
