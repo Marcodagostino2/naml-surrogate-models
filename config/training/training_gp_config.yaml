@@ -5,24 +5,8 @@
 # "adam" | "adamw" | "sgd" | "lbfgs"
 optimizer: "adamw"
 learning_rate: 1.0e-2
-# Hard cap; early stopping usually fires first.
+# Hard cap; early stopping (see training_common_config.yaml) usually fires first.
 n_training_steps: 2000
-
-# Early stopping fires when EITHER:
-#   1) |L_{t-1} - L_t| <= abs_tol + rel_tol * |L_{t-1}| for `train_patience`
-#      consecutive steps (Numpy isclose / scipy least_squares style); OR
-#   2) val_loss fails to improve by abs_tol + rel_tol * |best_val_loss| for
-#      `val_patience` consecutive steps (Prechelt 1998).
-rel_tol: 1.0e-4
-abs_tol: 1.0e-6
-train_patience: 200
-val_patience: 400
-warmup_epochs: 400
-
-# Full metric dicts (R^2, MAE, RMSE) only recomputed at these intervals;
-# val_loss for the stop criterion is computed every step.
-train_metrics_log_interval: 10
-validation_check_interval: 10
 
 # "cuda" | "cpu" | "auto"
 device: "auto"

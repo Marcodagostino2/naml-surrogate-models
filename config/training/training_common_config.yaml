@@ -17,3 +17,14 @@ scheduler_warmup_steps: 200
 
 # Periodic trainer progress log cadence (epoch/step based, model-dependent).
 progress_log_interval: 30
+
+# Early-stopping defaults (consumed by ConvergenceMonitor).
+rel_tol: 1.0e-4
+abs_tol: 1.0e-6
+train_patience: 200
+val_patience: 400
+warmup_epochs: 400
+
+# Metric/validation refresh cadence inside the training loop.
+train_metrics_log_interval: 10
+validation_check_interval: 10

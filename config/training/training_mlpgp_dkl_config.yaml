@@ -13,18 +13,6 @@ mlp_weight_decay: 1.0e-1
 
 n_training_steps: 3000
 
-# Two stop criteria, same as GP trainer (logical OR). val_patience is more
-# permissive: the joint loss landscape lets val loss plateau transiently while
-# MLP and kernel rebalance.
-rel_tol: 1.0e-4
-abs_tol: 1.0e-6
-train_patience: 200
-val_patience: 400
-warmup_epochs: 400
-
-train_metrics_log_interval: 10
-validation_check_interval: 10
-
 device: "auto"
 
 force_cholesky: true
