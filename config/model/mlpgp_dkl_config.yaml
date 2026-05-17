@@ -1,18 +1,9 @@
-# MLPGP model configuration.
-#
-# Architecture:
-#   - "non_stationary": MLP predicts local sigma(x) and l(x) for the Gibbs
-#     kernel; requires kernel.type == "exponential".
-#   - "dkl": Deep Kernel Learning. MLP maps x to a small feature space, then a
-#     stationary kernel is evaluated on those features.
-#
-# Each feature extractor has a single hidden block with one activation shared
-# across its layers (see src/models/mlp.py for the format). Block activations:
-# relu | leaky_relu | selu | tanh | mish — init is fixed per activation.
-architecture_name: "non_stationary"
+# Deep Kernel Learning MLPGP: an MLP maps x to a small feature space, then a
+# stationary kernel acts on those features. The kernel choice (exponential,
+# rbf, or matern) is honoured by build_kernel; matern_nu is only consumed
+# when kernel.type == "matern".
 
 dkl_feature_extractor:
-  name: "dkl"
   architecture:
     layers: [128, 128, 32, 32]
     activation: "mish"
@@ -21,28 +12,8 @@ dkl_feature_extractor:
   output_width: 2
   output_activation: "identity"
 
-non_stationary_feature_extractor:
-  name: "non_stationary"
-  architecture:
-    layers: [32, 64, 32]
-    activation: "tanh"
-  dropout: 0.0
-  batch_norm: false
-  output_activation: "identity"
-  log_sigma_floor: -4
-  log_sigma_ceiling: 1
-  log_lengthscale_floor: -4
-  log_lengthscale_ceiling: 1
-  lengthscale_mode: "per_dimension"
-  fixed_lengthscale: 1.0
-
-# Kernel choices: "exponential" | "rbf" | "matern".
-# "exponential" is required for the non_stationary architecture.
-# theta_init / power_exponent_init / tau2_init only used by "exponential";
-# matern_nu only used by "matern". DKL uses the ScaleKernel outputscale (tau^2);
-# non_stationary encodes amplitude via sigma(x) and ignores tau2_init.
 kernel:
-  type: "exponential"
+  type: "exponential"                    # "exponential" | "rbf" | "matern"
   theta_init: 1.0e-3
   power_exponent_init: 1.8
   likelihood_noise_init: 5.0e-4

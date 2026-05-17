@@ -1,28 +1,9 @@
-# MLPGP model configuration.
-#
-# Architecture:
-#   - "non_stationary": MLP predicts local sigma(x) and l(x) for the Gibbs
-#     kernel; requires kernel.type == "exponential".
-#   - "dkl": Deep Kernel Learning. MLP maps x to a small feature space, then a
-#     stationary kernel is evaluated on those features.
-#
-# Each feature extractor has a single hidden block with one activation shared
-# across its layers (see src/models/mlp.py for the format). Block activations:
-# relu | leaky_relu | selu | tanh | mish — init is fixed per activation.
-architecture_name: "non_stationary"
-
-dkl_feature_extractor:
-  name: "dkl"
-  architecture:
-    layers: [128, 128, 32, 32]
-    activation: "mish"
-  dropout: 0.0
-  batch_norm: false
-  output_width: 2
-  output_activation: "identity"
+# Non-stationary MLPGP: an MLP predicts local sigma(x) and lengthscale ell(x)
+# for a Gibbs kernel (Paciorek & Schervish 2006). The Gibbs kernel encodes the
+# amplitude directly via sigma(x) and only accepts the exponential base, so
+# tau2_* / matern_nu are not used here.
 
 non_stationary_feature_extractor:
-  name: "non_stationary"
   architecture:
     layers: [32, 64, 32]
     activation: "tanh"
@@ -33,28 +14,19 @@ non_stationary_feature_extractor:
   log_sigma_ceiling: 1
   log_lengthscale_floor: -4
   log_lengthscale_ceiling: 1
-  lengthscale_mode: "per_dimension"
-  fixed_lengthscale: 1.0
+  lengthscale_mode: "per_dimension"      # "scalar" | "per_dimension" | "fixed"
+  fixed_lengthscale: 1.0                 # only used when lengthscale_mode == "fixed"
 
-# Kernel choices: "exponential" | "rbf" | "matern".
-# "exponential" is required for the non_stationary architecture.
-# theta_init / power_exponent_init / tau2_init only used by "exponential";
-# matern_nu only used by "matern". DKL uses the ScaleKernel outputscale (tau^2);
-# non_stationary encodes amplitude via sigma(x) and ignores tau2_init.
 kernel:
   type: "exponential"
   theta_init: 1.0e-3
   power_exponent_init: 1.8
   likelihood_noise_init: 5.0e-4
-  tau2_init: 1.0e-1
-  matern_nu: 2.5
   likelihood_noise_floor: 1.0e-6
   likelihood_noise_ceiling: 1.0
   theta_floor: 1.0e-5
   theta_ceiling: 1.0e3
   power_exponent_floor: 1.5
   power_exponent_ceiling: 2.0
-  tau2_floor: 1.0e-5
-  tau2_ceiling: 1.0e3
 
 trend_degree: 1
