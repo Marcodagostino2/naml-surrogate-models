@@ -1,0 +1,32 @@
+# Non-stationary MLPGP: an MLP predicts local sigma(x) and lengthscale ell(x)
+# for a Gibbs kernel (Paciorek & Schervish 2006). The Gibbs kernel encodes the
+# amplitude directly via sigma(x) and only accepts the exponential base, so
+# tau2_* / matern_nu are not used here.
+
+non_stationary_feature_extractor:
+  architecture:
+    layers: [32, 64, 32]
+    activation: "tanh"
+  dropout: 0.0
+  batch_norm: false
+  output_activation: "identity"
+  log_sigma_floor: -4
+  log_sigma_ceiling: 1
+  log_lengthscale_floor: -4
+  log_lengthscale_ceiling: 1
+  lengthscale_mode: "per_dimension"      # "scalar" | "per_dimension" | "fixed"
+  fixed_lengthscale: 1.0                 # only used when lengthscale_mode == "fixed"
+
+kernel:
+  type: "exponential"
+  theta_init: 1.0e-3
+  power_exponent_init: 1.8
+  likelihood_noise_init: 5.0e-4
+  likelihood_noise_floor: 1.0e-6
+  likelihood_noise_ceiling: 1.0
+  theta_floor: 1.0e-5
+  theta_ceiling: 1.0e3
+  power_exponent_floor: 1.5
+  power_exponent_ceiling: 2.0
+
+trend_degree: 1

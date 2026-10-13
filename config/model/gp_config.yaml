@@ -1,0 +1,22 @@
+# GP model configuration.
+# Kernel: "exponential" (anisotropic, learnable theta and power_exponent),
+# "rbf", or "matern" (nu in {0.5, 1.5, 2.5}). All are wrapped in a learnable
+# ScaleKernel (outputscale = tau^2).
+kernel:
+  type: "exponential"
+  theta_init: 1.0e-2
+  power_exponent_init: 1.8
+  tau2_init: 1.0e-1
+  likelihood_noise_init: 1.0e-2
+  matern_nu: 2.5
+  likelihood_noise_floor: 1.0e-6
+  likelihood_noise_ceiling: 1.0
+  theta_floor: 1.0e-5
+  theta_ceiling: 1.0e3
+  power_exponent_floor: 1.5
+  power_exponent_ceiling: 2.0
+  tau2_floor: 1.0e-5
+  tau2_ceiling: 1.0e3
+
+# Polynomial trend mean degree (0 = constant, 1 = linear, 2 = quadratic, ...)
+trend_degree: 1

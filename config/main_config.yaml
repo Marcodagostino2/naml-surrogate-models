@@ -1,0 +1,12 @@
+# Workflow mode: "single_run" | "convergence" (HPO lives inside convergence).
+mode: "single_run"
+global_seed: 6
+# "float32" or "float64"
+precision: "float32"
+# Key in config/dataset/dataset_config.yaml
+dataset: "HYDDB"
+# List of canonical models: any subset of [mlp, gp, mlpgp_ns, mlpgp_dkl]; "all" is an alias for the full set.
+models_to_train: ["all"]
+# single_run sub-mode: "training" | "test" | "training+test"
+run_mode: "training"
+verbose: true

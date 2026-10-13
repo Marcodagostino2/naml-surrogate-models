@@ -1,0 +1,50 @@
+# User-friendly config for convergence_analysis.py.
+# split_percentages accepts either fractions [0,1] or percentages [0,100].
+
+mode: "optimization"  # "analysis" or "optimization"
+
+global_seed: 21
+
+split_percentages: [0.85] # Train split grid.
+validation_train_ratio: 0.2  # Validation uses a fixed ratio of the training split.
+
+# Number of runs to perform for each model.
+# Used for both analysis mode and the post-optimization uncertainty retrains.
+runs_per_model:
+  mlp: 5
+  gp: 5
+  mlpgp_ns: 5
+  mlpgp_dkl: 5
+
+# Optional overrides for the optimization mode.
+# These settings are merged into config/optimization/*.yaml at runtime.
+optimization_overrides:
+  study:
+    # n_trials accepts either an int (applied to every model) or a dict
+    # per-model with optional 'default' fallback.
+    n_trials:
+      mlp: 30
+      gp: 10
+      mlpgp_ns: 30
+      mlpgp_dkl: 30
+    # n_seeds: how many re-trainings per HP-set Optuna runs to estimate
+    # robustness. Objective returned to Optuna is mean+std across seeds.
+    # NB: within an HPO study the data split is built once per (split, model),
+    # so multi-seed only varies model init. Pure GP has deterministic init
+    # (kernel/likelihood params from explicit config values, no Kaiming/Xavier)
+    # → std is always 0 and extra seeds are wasted compute, use 1.
+    # MLP/MLPGP have random weight init → use 3-5 for meaningful variance.
+    # Accepts int or per-model dict (with optional 'default' fallback).
+    n_seeds:
+      mlp: 2
+      gp: 1
+      mlpgp_ns: 2
+      mlpgp_dkl: 2
+    timeout: 7200
+    metric: "val_rmse"
+    sampler: "tpe"
+    pruner: "median"
+    n_startup_trials: 15
+    n_warmup_steps: 50
+    pruner_interval: 5
+    log_every_n_trials: 5
